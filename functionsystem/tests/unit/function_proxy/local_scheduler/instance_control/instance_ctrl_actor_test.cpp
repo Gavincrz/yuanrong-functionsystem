@@ -808,7 +808,7 @@ TEST_F(InstanceCtrlActorTest, CancelSchedule)
  */
 TEST_F(InstanceCtrlActorTest, RetryNotificationSignal) {
     auto scheduleReq = std::make_shared<messages::ScheduleRequest>();
-    scheduleReq->mutable_instance()->mutable_instancestatus()->set_code(static_cast<int32_t>(InstanceState::RUNNING));
+    scheduleReq->mutable_instance()->mutable_instancestatus()->set_code(static_cast<int32_t>(InstanceState::CREATING));
     scheduleReq->mutable_instance()->set_functionproxyid(TEST_NODE_ID);
     scheduleReq->mutable_instance()->set_instanceid(SUBSCRIBER_ID);
     scheduleReq->set_requestid("requestId");

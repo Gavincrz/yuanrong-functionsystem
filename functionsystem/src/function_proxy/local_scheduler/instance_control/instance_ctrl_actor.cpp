@@ -327,7 +327,6 @@ litebus::Future<KillResponse> InstanceCtrlActor::Kill(const std::string &srcInst
         case NOTIFY_SIGNAL: {
             return CheckInstanceExist(srcInstanceID, killReq)
                 .Then(litebus::Defer(GetAID(), &InstanceCtrlActor::CheckKillParam, _1, srcInstanceID, killReq))
-                .Then(litebus::Defer(GetAID(), &InstanceCtrlActor::ProcessKillCtxByInstanceState, _1))
                 .Then(litebus::Defer(GetAID(), &InstanceCtrlActor::SignalRoute, _1))
                 .Then(litebus::Defer(GetAID(), &InstanceCtrlActor::SendNotificationSignal, _1, srcInstanceID,
                                      killReq, 0));
