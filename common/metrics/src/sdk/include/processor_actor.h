@@ -29,11 +29,11 @@ namespace observability::sdk::metrics {
 namespace MetricsSdk = observability::sdk::metrics;
 namespace MetricsExporter = observability::exporters::metrics;
 
-const spdlog::level::level_enum LOGGER_LEVEL = spdlog::level::info;
+const yr_spdlog::level::level_enum LOGGER_LEVEL = yr_spdlog::level::info;
 
 class ProcessorActor : public litebus::ActorBase {
 public:
-    using MetricLogger = std::shared_ptr<spdlog::logger>;
+    using MetricLogger = std::shared_ptr<yr_spdlog::logger>;
     ProcessorActor(std::shared_ptr<MetricsExporter::Exporter> &&exporter, const ExportConfigs &exportConfigs);
     ~ProcessorActor() override = default;
 

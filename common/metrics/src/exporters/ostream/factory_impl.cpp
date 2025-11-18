@@ -25,7 +25,9 @@ namespace observability::exporters::metrics {
 
 class ExporterHandle final : public observability::plugin::metrics::ExporterHandle {
 public:
-    explicit ExporterHandle(std::shared_ptr<OStreamExporter> &&exporter) noexcept : exporter_(exporter) {}
+    explicit ExporterHandle(std::shared_ptr<OStreamExporter> &&exporter) noexcept : exporter_(exporter)
+    {
+    }
 
     observability::exporters::metrics::Exporter &Exporter() const noexcept override
     {
@@ -46,14 +48,14 @@ public:
         if (exporter == nullptr) {
             return nullptr;
         }
-        return std::unique_ptr<ExporterHandle>{new (std::nothrow) ExporterHandle(std::move(exporter))};
+        return std::unique_ptr<ExporterHandle>{ new (std::nothrow) ExporterHandle(std::move(exporter)) };
     }
 };
 
 static std::unique_ptr<observability::plugin::metrics::Factory::FactoryImpl> MakeFactoryImpl(
-    std::unique_ptr<char[]> & /* error */) noexcept
+    std::unique_ptr<char[]>& /* error */) noexcept
 {
-    return std::unique_ptr<observability::plugin::metrics::Factory::FactoryImpl>{new (std::nothrow) FactoryImpl{}};
+    return std::unique_ptr<observability::plugin::metrics::Factory::FactoryImpl>{ new (std::nothrow) FactoryImpl{} };
 }
 
 OBSERVABILITY_DEFINE_PLUGIN_HOOK(MakeFactoryImpl);

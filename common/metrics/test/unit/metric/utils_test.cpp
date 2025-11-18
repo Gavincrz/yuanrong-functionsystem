@@ -20,6 +20,7 @@
 #define private public
 #define protected public
 #include "metrics/exporters/file_exporter/file_exporter.h"
+#include "metrics/exporters/prometheus_push_exporter/prometheus_push_exporter.h"
 #include "common/include/utils.h"
 #include "utils/os_utils.hpp"
 
@@ -82,5 +83,21 @@ TEST_F(UtilsTest, FileExporterConfig)
     jsonConfig["rolling"]["maxFiles"] = normalMaxFiles;
     exporter = std::make_unique<MetricsExporter::FileExporter>(jsonConfig.dump());
     EXPECT_EQ(exporter->options_.maxFiles, normalMaxFiles);
+}
+
+TEST_F(UtilsTest, RegisterOnHealthChangeCb)
+{
+    exporters::metrics::PrometheusPushExportOptions options;
+    options.endpoint = "127.0.0.1:9091";
+    options.jobName = "prometheusPushExportTest";
+    options.heartbeatInterval = 10;
+    options.heartbeatUrl = "/healthcheck";
+
+    auto exporter = exporters::metrics::PrometheusPushExporter(options);
+    exporter.RegisterOnHealthChangeCb([](bool newStatus) {
+        (void)newStatus;
+    });
+    EXPECT_TRUE(exporter.httpHeartBeatClient_ != nullptr);
+    EXPECT_EQ(exporter.heartbeatParam_.heartbeatInterval, 5000);
 }
 }

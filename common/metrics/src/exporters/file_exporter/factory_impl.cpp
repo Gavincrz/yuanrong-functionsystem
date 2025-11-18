@@ -47,7 +47,7 @@ public:
         if (exporter == nullptr) {
             return nullptr;
         }
-        return std::unique_ptr<ExporterHandle>{ new (std::nothrow)ExporterHandle(std::move(exporter)) };
+        return std::unique_ptr<ExporterHandle>{ new (std::nothrow) ExporterHandle(std::move(exporter)) };
     }
 };
 

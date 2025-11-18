@@ -17,9 +17,9 @@
 #include <utils/os_utils.hpp>
 #include <fstream>
 #include <nlohmann/json.hpp>
-
 #include "metrics/api/provider.h"
 #include "metrics/plugin/dynamic_load.h"
+#include "metrics/exporters/prometheus_push_exporter/prometheus_push_exporter.h"
 #include "metrics/sdk/metric_data.h"
 #include "../mocks/mock_exporter.h"
 
@@ -58,7 +58,7 @@ const MetricsSdk::MetricData metricData2 = { .instrumentDescriptor = instrumentD
                                              .aggregationTemporality = sdk::metrics::AggregationTemporality::UNSPECIFIED,
                                              .collectionTs = std::chrono::system_clock::now(),
                                              .pointData = pointData2 };
-const std::string MetricsStr = "{\"aggregationTemporality\":\"DELTA\",\"instrumentDescriptor\":\"{\\\"description\\\":\\\"\\\",\\\"name\\\":\\\"\\\",\\\"type\\\":\\\"GAUGE\\\",\\\"unit\\\":\\\"\\\",\\\"valueType\\\":\\\"DOUBLE\\\"}\",\"pointData\":\"{\\\"labels\\\":[[\\\"DELEGATE_DIRECTORY_QUOTA\\\",\\\"512\\\"],[\\\"cpu_type\\\",\\\"Intel(R) Xeon(R) Gold 6161 CPU @ 2.20GHz\\\"],[\\\"end_ms\\\",\\\"1721394795346\\\"],[\\\"export_sub_url\\\",\\\"/instanceId/540c0000-0000-4000-9509-39dff5dc9819/requestId/12600855a41aed2105\\\"],[\\\"function_name\\\",\\\"12345678901234561234567890123456/0@fasa001@hello/latest\\\"],[\\\"interval_ms\\\",\\\"4\\\"],[\\\"pool_label\\\",\\\"[\\\\\\\"HOST_IP:127.0.0.1\\\\\\\",\\\\\\\"NODE_ID:dggphis35946\\\\\\\",\\\\\\\"app:function-agent-pool24-600-512-fusion\\\\\\\",\\\\\\\"pod-template-hash:67dfd5f795\\\\\\\",\\\\\\\"resource.owner:default\\\\\\\",\\\\\\\"reuse:false\\\\\\\"]\\\"],[\\\"request_id\\\",\\\"12600855a41aed2105\\\"],[\\\"schedule_policy\\\",\\\"monopoly\\\"],[\\\"start_ms\\\",\\\"1721394795342\\\"],[\\\"status_code\\\",\\\"0\\\"]],\\\"value\\\":\\\"4\\\"}\",\"pointTimeStamp\":\"1721392554332\"}";
+const std::string MetricsStr = "{\"aggregationTemporality\":\"DELTA\",\"instrumentDescriptor\":\"{\\\"description\\\":\\\"\\\",\\\"name\\\":\\\"\\\",\\\"type\\\":\\\"GAUGE\\\",\\\"unit\\\":\\\"\\\",\\\"valueType\\\":\\\"DOUBLE\\\"}\",\"pointData\":\"{\\\"labels\\\":[[\\\"DELEGATE_DIRECTORY_QUOTA\\\",\\\"512\\\"],[\\\"cpu_type\\\",\\\"Intel(R) Xeon(R) Gold 6161 CPU @ 2.20GHz\\\"],[\\\"end_ms\\\",\\\"1721394795346\\\"],[\\\"export_sub_url\\\",\\\"/instanceId/540c0000-0000-4000-9509-39dff5dc9819/requestId/12600855a41aed2105\\\"],[\\\"function_name\\\",\\\"12345678901234561234567890123456/0@fasa001@hello/latest\\\"],[\\\"interval_ms\\\",\\\"4\\\"],[\\\"pool_label\\\",\\\"[\\\\\\\"HOST_IP:10.244.176.93\\\\\\\",\\\\\\\"NODE_ID:dggphis35946\\\\\\\",\\\\\\\"app:function-agent-pool24-600-512-fusion\\\\\\\",\\\\\\\"pod-template-hash:67dfd5f795\\\\\\\",\\\\\\\"resource.owner:default\\\\\\\",\\\\\\\"reuse:false\\\\\\\"]\\\"],[\\\"request_id\\\",\\\"12600855a41aed2105\\\"],[\\\"schedule_policy\\\",\\\"monopoly\\\"],[\\\"start_ms\\\",\\\"1721394795342\\\"],[\\\"status_code\\\",\\\"0\\\"]],\\\"value\\\":\\\"4\\\"}\",\"pointTimeStamp\":\"1721392554332\"}";
 const std::string FilePath = "/metrics-test";
 
 void GenDir(const std::string &path)

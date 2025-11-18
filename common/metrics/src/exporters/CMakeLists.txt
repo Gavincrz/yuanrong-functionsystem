@@ -2,3 +2,4 @@
 
 add_subdirectory(file_exporter)
 add_subdirectory(ostream)
+add_subdirectory(prometheus_push_exporter)

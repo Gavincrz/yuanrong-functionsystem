@@ -28,8 +28,8 @@
 
 namespace observability {
 namespace metrics {
-using namespace spdlog;
-using namespace spdlog::sinks;
+using namespace yr_spdlog;
+using namespace yr_spdlog::sinks;
 
 class MetricFileSink final : public base_sink<std::mutex> {
 public:

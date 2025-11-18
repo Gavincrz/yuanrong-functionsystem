@@ -25,7 +25,7 @@
 namespace observability {
 namespace metrics {
 
-const unsigned int DEFAULT_MAX_ASYNC_QUEUE_SIZE = 51200;
+const unsigned int DEFAULT_MAX_ASYNC_QUEUE_SIZE = 1024;
 const unsigned int DEFAULT_ASYNC_THREAD_COUNT = 1;
 const uint32_t DEFAULT_MAX_FILE_NUM = 3;
 const int64_t SIZE_MEGA_BYTES = 1024 * 1024;                // 1 MB
@@ -51,7 +51,7 @@ public:
 private:
     void CreateLogger(const FileParam &fileParam);
 
-    std::shared_ptr<spdlog::logger> logger;
+    std::shared_ptr<yr_spdlog::logger> logger;
     const std::string asyncLoggerName = "metric_logger";
 
     FileParam fileParam_;

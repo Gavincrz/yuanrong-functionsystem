@@ -14,34 +14,23 @@
  * limitations under the License.
  */
 
-#include <gtest/gtest.h>
+#ifndef OBSERVABILITY_METRICS_HTTP_HEARTBEAT_CLIENT_H
+#define OBSERVABILITY_METRICS_HTTP_HEARTBEAT_CLIENT_H
 
-#include "sdk/include/observer_result_t.h"
+#include "http_heartbeat_observer.h"
 
-namespace observability::test {
+namespace observability::exporters::metrics {
+class HttpHeartBeatClient {
+public:
+    explicit HttpHeartBeatClient(const HeartbeatParam &heartbeatParam);
+    ~HttpHeartBeatClient();
 
-class ObserveResultTest : public ::testing::Test {
+    void Start();
+    void RegisterOnHealthChangeCb(const std::function<void(bool)> &onChange);
 
-protected:
-    void SetUp() override
-    {
-        observeResultPtr = std::make_shared<observability::metrics::ObserverResultT<double>>();
-    }
-
-    void TearDown() override
-    {
-        observeResultPtr = nullptr;
-    }
-
-    std::shared_ptr<observability::metrics::ObserverResultT<double>> observeResultPtr;
-
+private:
+    std::shared_ptr<HttpHeartbeatObserver> observer_;
 };
-
-TEST_F(ObserveResultTest, SetValue)
-{
-    double value = 0.99;
-    observeResultPtr->Observe(value);
-    EXPECT_EQ(observeResultPtr->Value(), value);
 }
 
-}
+#endif // OBSERVABILITY_METRICS_HTTP_HEARTBEAT_CLIENT_H

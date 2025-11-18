@@ -32,8 +32,8 @@
 namespace observability {
 
 namespace metrics::common {
-using namespace spdlog::sinks;
-using namespace spdlog;
+using namespace yr_spdlog::sinks;
+using namespace yr_spdlog;
 using details::os::filename_to_str;
 using details::os::path_exists;
 
@@ -89,17 +89,11 @@ bool FileSink::RenameFile(const std::string &srcFileName, const std::string &tar
     return details::os::rename(srcFileName, targetFileName) == 0;
 }
 
-void FileSink::sink_it_(const spdlog::details::log_msg &msg)
+void FileSink::sink_it_(const yr_spdlog::details::log_msg &msg)
 {
     if (fileHelper_.filename().empty()) {
-        try {
-            fileHelper_.open(GetFileNameByIndex(basicFileName_, 0));
-            currentSize_ = fileHelper_.size();  // expensive. called only once
-        } catch (const spdlog::spdlog_ex &ex) {
-            std::cerr << "failed to open file: " << GetFileNameByIndex(basicFileName_, 0)
-                      << ", reason: " << ex.what() << std::endl;
-            return;
-        }
+        fileHelper_.open(GetFileNameByIndex(basicFileName_, 0));
+        currentSize_ = fileHelper_.size();  // expensive. called only once
     }
     memory_buf_t formatted;
     base_sink<std::mutex>::formatter_->format(msg, formatted);
@@ -171,8 +165,8 @@ void FileSink::Compress(const std::string &file)
     std::string basename;
     std::string ext;
     std::string idx;
-    std::tie(basename, ext) = spdlog::details::file_helper::split_by_extension(file);
-    std::tie(basename, idx) = spdlog::details::file_helper::split_by_extension(basename);
+    std::tie(basename, ext) = yr_spdlog::details::file_helper::split_by_extension(file);
+    std::tie(basename, idx) = yr_spdlog::details::file_helper::split_by_extension(basename);
 
     std::mt19937 mt(rd_());
     std::uniform_int_distribution<> dis(RANDOM_LOWER_BOUND, RANDOM_UPPER_BOUND);
@@ -206,7 +200,7 @@ void FileSink::CheckFileExist()
 {
     std::string basename;
     std::string ext;
-    std::tie(basename, ext) = spdlog::details::file_helper::split_by_extension(basicFileName_);
+    std::tie(basename, ext) = yr_spdlog::details::file_helper::split_by_extension(basicFileName_);
 
     std::vector<std::string> files;
     std::stringstream ss;

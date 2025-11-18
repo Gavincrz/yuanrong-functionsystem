@@ -27,8 +27,8 @@
 
 namespace observability {
 namespace metrics {
-using namespace spdlog::sinks;
-using namespace spdlog;
+using namespace yr_spdlog::sinks;
+using namespace yr_spdlog;
 using details::os::filename_to_str;
 using details::os::path_exists;
 
@@ -46,7 +46,7 @@ MetricFileSink::MetricFileSink(const filename_t &basicFileName, std::size_t sing
     try {
         fileHelper_.open(GetFileNameByIndex(basicFileName_, 0));
         currentSize_ = fileHelper_.size();  // expensive. called only once
-    } catch (const spdlog::spdlog_ex &ex) {
+    } catch (const yr_spdlog::spdlog_ex &ex) {
         std::cerr << "failed to open file: " << GetFileNameByIndex(basicFileName_, 0)
                   << ", reason: " << ex.what() << std::endl;
     }
@@ -148,11 +148,9 @@ void MetricFileSink::Compress(const filename_t &file) const
     GetFileModifiedTime(file, timestamp);
 
     // e.g: <filename>.1.data -> <filename>.{TIME}.data -> <filename>.{TIME}.data.gz
-    std::string basename;
-    std::string ext;
-    std::string idx;
-    std::tie(basename, ext) = spdlog::details::file_helper::split_by_extension(file);
-    std::tie(basename, idx) = spdlog::details::file_helper::split_by_extension(basename);
+    std::string basename, ext, idx;
+    std::tie(basename, ext) = yr_spdlog::details::file_helper::split_by_extension(file);
+    std::tie(basename, idx) = yr_spdlog::details::file_helper::split_by_extension(basename);
     std::string targetFile = basename + "." + std::to_string(timestamp) + ext;
     if (!RenameFile(file, targetFile)) {
         throw_spdlog_ex(

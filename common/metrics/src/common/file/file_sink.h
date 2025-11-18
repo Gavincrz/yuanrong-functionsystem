@@ -31,7 +31,7 @@
 
 namespace observability::metrics::common {
 
-class FileSink final : public spdlog::sinks::base_sink<std::mutex> {
+class FileSink final : public yr_spdlog::sinks::base_sink<std::mutex> {
 public:
     FileSink(const std::string &basicFileName, std::size_t singleFileMaxSize, std::size_t maxFileNum,
              bool rotate = true, bool compress = false);
@@ -43,7 +43,7 @@ protected:
 
     bool RenameFile(const std::string &srcFileName, const std::string &targetFileName) const;
 
-    void sink_it_(const spdlog::details::log_msg &msg) override;
+    void sink_it_(const yr_spdlog::details::log_msg &msg) override;
 
 private:
     void Rotate();
@@ -53,7 +53,7 @@ private:
     std::size_t currentSize_{ 0 };
     std::size_t singleFileMaxSize_;
     std::size_t maxFileNum_;
-    spdlog::details::file_helper fileHelper_;
+    yr_spdlog::details::file_helper fileHelper_;
     bool rotate_{ true };
     bool compress_{ false };
 

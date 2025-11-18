@@ -20,7 +20,6 @@
 
 #include <cstring>
 #include <sstream>
-#include <memory>
 
 #include "file_utils.h"
 
@@ -49,6 +48,7 @@ void Glob(const std::string &pathPattern, std::vector<std::string> &paths)
             break;
         case GLOB_NOMATCH:
             globfree(&result);
+            std::cout << "failed to glob files, reason: no match." << std::endl;
             return;
         case GLOB_NOSPACE:
             globfree(&result);
@@ -104,10 +104,10 @@ int CompressFile(const std::string &src, const std::string &dest)
     }
 
     size_t size = BUFFER_SIZE;
-    auto buf = std::make_unique<uint8_t[]>(BUFFER_SIZE);
+    uint8_t buf[size] = "\0";
     while (size != 0) {
         try {
-            Read(file, buf.get(), &size);
+            Read(file, buf, &size);
         } catch (const std::exception &e) {
             (void)gzclose(gzf);
             (void)fclose(file);
@@ -117,7 +117,7 @@ int CompressFile(const std::string &src, const std::string &dest)
         if (size == 0) {
             break;
         }
-        int n = gzwrite(gzf, buf.get(), static_cast<unsigned int>(size));
+        int n = gzwrite(gzf, buf, static_cast<unsigned int>(size));
         if (n <= 0) {
             int err;
             const char *errStr = gzerror(gzf, &err);

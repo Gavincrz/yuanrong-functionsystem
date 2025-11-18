@@ -14,34 +14,18 @@
  * limitations under the License.
  */
 
-#include <gtest/gtest.h>
+#ifndef OBSERVABILITY_EXPORTERS_PROMETHEUS_TEXT_SERIALIZER_H
+#define OBSERVABILITY_EXPORTERS_PROMETHEUS_TEXT_SERIALIZER_H
 
-#include "sdk/include/observer_result_t.h"
+#include <ostream>
 
-namespace observability::test {
+#include "metrics/exporters/serializer.h"
 
-class ObserveResultTest : public ::testing::Test {
-
-protected:
-    void SetUp() override
-    {
-        observeResultPtr = std::make_shared<observability::metrics::ObserverResultT<double>>();
-    }
-
-    void TearDown() override
-    {
-        observeResultPtr = nullptr;
-    }
-
-    std::shared_ptr<observability::metrics::ObserverResultT<double>> observeResultPtr;
-
+namespace observability::exporters::metrics {
+class PrometheusTextSerializer : public Serializer {
+public:
+    void Serialize(std::ostream &ost, const observability::sdk::metrics::MetricData &metric) const override;
 };
+}  // namespace observability::exporters::metrics
 
-TEST_F(ObserveResultTest, SetValue)
-{
-    double value = 0.99;
-    observeResultPtr->Observe(value);
-    EXPECT_EQ(observeResultPtr->Value(), value);
-}
-
-}
+#endif  // OBSERVABILITY_EXPORTERS_PROMETHEUS_TEXT_SERIALIZER_H

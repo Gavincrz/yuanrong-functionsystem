@@ -17,16 +17,15 @@
 #include <memory>
 #include <new>
 
-#include "example_exporter.h"
+#include "metrics/exporters/prometheus_push_exporter/prometheus_push_exporter.h"
 #include "metrics/plugin/exporter_handle.h"
-#include "metrics/plugin/factory.h"
 #include "metrics/plugin/hook.h"
 
-namespace observability::test::plugin {
+namespace observability::exporters::metrics {
 
 class ExporterHandle final : public observability::plugin::metrics::ExporterHandle {
 public:
-    explicit ExporterHandle(std::shared_ptr<ExampleExporter> &&exporter) noexcept : exporter_(exporter)
+    explicit ExporterHandle(std::shared_ptr<PrometheusPushExporter> &&exporter) noexcept : exporter_(exporter)
     {
     }
 
@@ -36,15 +35,15 @@ public:
     }
 
 private:
-    std::shared_ptr<ExampleExporter> exporter_;
+    std::shared_ptr<PrometheusPushExporter> exporter_;
 };
 
 class FactoryImpl final : public observability::plugin::metrics::Factory::FactoryImpl {
 public:
     std::unique_ptr<observability::plugin::metrics::ExporterHandle> MakeExpoterHandle(
-        std::string expoterConfig, std::unique_ptr<char[]> & /*error*/) const noexcept override
+        std::string expoterConfig, std::unique_ptr<char[]> &) const noexcept override
     {
-        std::shared_ptr<ExampleExporter> exporter{ new (std::nothrow) ExampleExporter(expoterConfig) };
+        std::shared_ptr<PrometheusPushExporter> exporter = std::make_shared<PrometheusPushExporter>(expoterConfig);
         if (exporter == nullptr) {
             return nullptr;
         }
@@ -53,11 +52,10 @@ public:
 };
 
 static std::unique_ptr<observability::plugin::metrics::Factory::FactoryImpl> MakeFactoryImpl(
-    std::unique_ptr<char[]> &error) noexcept
+    std::unique_ptr<char[]>& /* error */) noexcept
 {
-    (void)error;
     return std::unique_ptr<observability::plugin::metrics::Factory::FactoryImpl>{ new (std::nothrow) FactoryImpl{} };
 }
 
 OBSERVABILITY_DEFINE_PLUGIN_HOOK(MakeFactoryImpl);
-}  // namespace observability::test::plugin
+}  // namespace observability::exporters::metrics

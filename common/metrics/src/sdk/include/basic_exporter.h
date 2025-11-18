@@ -79,8 +79,8 @@ protected:
     ExporterOptions exporterOptions_;
 };
 // dlsym type
-using ExporterCreateFunc = BasicExporter* (*)(const ExporterOptions options);
-using ExporterDelFunc = void (*)(BasicExporter*);
+typedef BasicExporter *(*ExporterCreateFunc)(const ExporterOptions options);
+typedef void (*ExporterDelFunc)(BasicExporter *);
 }  // namespace metrics
 }  // namespace observability
 #endif  // OBSERVABILITY_BASIC_EXPORTER_H

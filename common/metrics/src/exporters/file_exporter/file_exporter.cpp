@@ -80,7 +80,7 @@ namespace exporters::metrics {
 namespace MetricsSdk = observability::sdk::metrics;
 namespace MetricsApi = observability::api::metrics;
 namespace MetricsExporter = observability::exporters::metrics;
-const spdlog::level::level_enum LOGGER_LEVEL = spdlog::level::info;
+const yr_spdlog::level::level_enum LOGGER_LEVEL = yr_spdlog::level::info;
 const uint32_t MIN_FILE_CAPACITY = 1;
 const uint32_t MAX_FILE_CAPACITY = 1024;
 const uint32_t MIN_FILE_CNT = 1;
@@ -172,7 +172,7 @@ FileExporter::FileExporter(const std::string &config)
     try {
         ParseFileExporterOptions(config, options);
     } catch (std::exception &e) {
-        std::cerr << "failed to parse FileExporterOptions: " << e.what() << std::endl;
+        std::cerr << "failed to parse FileExporterOptions" << std::endl;
         return;
     }
     options_ = options;
@@ -226,21 +226,21 @@ FileExporter::LogExporter FileExporter::CreateRotatingLogger(const std::string &
 {
     auto sink = std::make_shared<observability::metrics::common::FileSink>(filename, maxFileSize, maxFiles, true,
                                                                            compress);
-    auto rotatingLogger = std::make_shared<spdlog::logger>(loggerName, sink);
+    auto rotatingLogger = std::make_shared<yr_spdlog::logger>(loggerName, sink);
     rotatingLogger->set_level(LOGGER_LEVEL);
-    auto f = std::make_unique<spdlog::pattern_formatter>("%v", spdlog::pattern_time_type::local, std::string(""));
+    auto f = std::make_unique<yr_spdlog::pattern_formatter>("%v", yr_spdlog::pattern_time_type::local, std::string(""));
     rotatingLogger->set_formatter(std::move(f));
     rotatingLogger->flush_on(LOGGER_LEVEL);
     return rotatingLogger;
 }
 
 FileExporter::LogExporter FileExporter::CreateBasicLogger(const std::string &loggerName, const std::string &filename,
-                                                          spdlog::level::level_enum logLevel) const
+                                                          yr_spdlog::level::level_enum logLevel) const
 {
-    auto sink = std::make_shared<spdlog::sinks::basic_file_sink_st>(filename);
-    auto basicLogger = std::make_shared<spdlog::logger>(loggerName, sink);
+    auto sink = std::make_shared<yr_spdlog::sinks::basic_file_sink_st>(filename);
+    auto basicLogger = std::make_shared<yr_spdlog::logger>(loggerName, sink);
     basicLogger->set_level(logLevel);
-    auto f = std::make_unique<spdlog::pattern_formatter>("%v", spdlog::pattern_time_type::local, std::string(""));
+    auto f = std::make_unique<yr_spdlog::pattern_formatter>("%v", yr_spdlog::pattern_time_type::local, std::string(""));
     basicLogger->set_formatter(std::move(f));
     basicLogger->flush_on(logLevel);
     return basicLogger;
@@ -325,18 +325,18 @@ MetricsExporter::ExportResult FileExporter::LogToFile(const std::stringstream &s
     return MetricsExporter::ExportResult::SUCCESS;
 }
 
-std::function<void(std::string)> FileExporter::GetLogFunc(const spdlog::level::level_enum level) const
+std::function<void(std::string)> FileExporter::GetLogFunc(const yr_spdlog::level::level_enum level) const
 {
     switch (level) {
-        case spdlog::level::info:
+        case yr_spdlog::level::info:
             return [&](std::string content) { logExporter_->info(content); };
-        case spdlog::level::level_enum::trace:
-        case spdlog::level::level_enum::debug:
-        case spdlog::level::level_enum::warn:
-        case spdlog::level::level_enum::err:
-        case spdlog::level::level_enum::critical:
-        case spdlog::level::level_enum::off:
-        case spdlog::level::level_enum::n_levels:
+        case yr_spdlog::level::level_enum::trace:
+        case yr_spdlog::level::level_enum::debug:
+        case yr_spdlog::level::level_enum::warn:
+        case yr_spdlog::level::level_enum::err:
+        case yr_spdlog::level::level_enum::critical:
+        case yr_spdlog::level::level_enum::off:
+        case yr_spdlog::level::level_enum::n_levels:
         default:
             return [&](std::string content) { logExporter_->info(content); };
     }

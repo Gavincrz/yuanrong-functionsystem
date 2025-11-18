@@ -339,8 +339,13 @@ std::string ProcessorActor::ReadFailureDataFromFile(const std::string &path) con
         METRICS_LOG_INFO("No real path of failure data file, error: {} is invalid", path);
         return "";
     }
-    auto content = litebus::os::Read(realPath);
-    return content.IsNone() ? "" : content.Get();
+    std::string filePath = std::string(realPath);
+    std::ifstream in(filePath);
+    std::stringstream buffer;
+    buffer << in.rdbuf();
+    std::string contents(buffer.str());
+    in.close();
+    return contents;
 }
 
 void ProcessorActor::StartBatchExportTimer(const int interval)
@@ -370,7 +375,7 @@ void ProcessorActor::InitMetricLogger()
     auto sink = std::make_shared<::observability::metrics::common::FileSink>(
              filePath + exportConfigs_.exporterName + GetFailureFileName(),
              exportConfigs_.failureDataFileMaxCapacity * SIZE_MEGA_BYTES, 1, false);
-    metricLogger_ = std::make_shared<spdlog::logger>(exportConfigs_.exporterName + "FailureFileLogger", sink);
+    metricLogger_ = std::make_shared<yr_spdlog::logger>(exportConfigs_.exporterName + "FailureFileLogger", sink);
     metricLogger_->set_level(LOGGER_LEVEL);
     metricLogger_->set_pattern("%v");
     metricLogger_->flush_on(LOGGER_LEVEL);
@@ -419,22 +424,22 @@ MetricData ProcessorActor::Deserialize(const std::string &content) const
         }
         if (metricDataJson.contains("collectionTs")) {
             std::string timeStr = metricDataJson.at("collectionTs");
-            auto milliseconds = std::chrono::milliseconds{std::stoll(timeStr)};
-            metricData.collectionTs =
-                std::chrono::time_point<std::chrono::system_clock, std::chrono::milliseconds>(milliseconds);
-        }
-        if (metricDataJson.contains("instrumentDescriptor")) {
-            std::string descriptorStr = metricDataJson.at("instrumentDescriptor");
-            auto instrumentDescriptorJson = nlohmann::json::parse(descriptorStr);
-            InstrumentDescriptor descriptor;
-            descriptor.description = instrumentDescriptorJson.at("description");
-            descriptor.name = instrumentDescriptorJson.at("name");
-            descriptor.type = GetInstrumentType(instrumentDescriptorJson.at("type"));
-            descriptor.unit = instrumentDescriptorJson.at("unit");
-            descriptor.valueType = GetInstrumentValueType(instrumentDescriptorJson.at("valueType"));
-            metricData.instrumentDescriptor = descriptor;
-        }
-        if (metricDataJson.contains("pointData")) {
+        auto milliseconds = std::chrono::milliseconds{std::stoll(timeStr)};
+        metricData.collectionTs =
+            std::chrono::time_point<std::chrono::system_clock, std::chrono::milliseconds>(milliseconds);
+    }
+    if (metricDataJson.contains("instrumentDescriptor")) {
+        std::string descriptorStr = metricDataJson.at("instrumentDescriptor");
+        auto instrumentDescriptorJson = nlohmann::json::parse(descriptorStr);
+        InstrumentDescriptor descriptor;
+        descriptor.description = instrumentDescriptorJson.at("description");
+        descriptor.name = instrumentDescriptorJson.at("name");
+        descriptor.type = GetInstrumentType(instrumentDescriptorJson.at("type"));
+        descriptor.unit = instrumentDescriptorJson.at("unit");
+        descriptor.valueType = GetInstrumentValueType(instrumentDescriptorJson.at("valueType"));
+        metricData.instrumentDescriptor = descriptor;
+    }
+    if (metricDataJson.contains("pointData")) {
             metricData.pointData.push_back(ToPointData(metricDataJson.at("pointData"),
                                                        metricData.instrumentDescriptor.valueType));
         }

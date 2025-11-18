@@ -18,7 +18,6 @@
 
 #include <nlohmann/json.hpp>
 
-#include "common/logs/log.h"
 #include "sdk/include/metrics_data.h"
 
 namespace observability {
@@ -41,7 +40,7 @@ public:
             std::string metricString = metricJson.dump();
             return metricString;
         } catch (std::exception &e) {
-            METRICS_LOG_ERROR("dump metric json failed, error: {}", e.what());
+            std::cerr << "dump metric json failed, error: " << e.what() << std::endl;
             return std::string();
         }
     }

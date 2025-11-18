@@ -73,7 +73,7 @@ int CountLinesFileSink(const std::string &filename)
 TEST(MetricFileSinkTest, FlushTest)
 {
    const std::string filename = "/tmp/metrics/file_sink/get_file_name_test.txt";
-    auto logger = spdlog::create_async<observability::metrics::MetricFileSink>(
+    auto logger = yr_spdlog::create_async<observability::metrics::MetricFileSink>(
         "FlusheTest", filename, 1024*1024, 3);
 
     for(int i =0; i < 9; i++){
@@ -100,7 +100,7 @@ TEST(MetricFileSinkTest, RotateCompressTest)
 {
     const std::string filename = "/tmp/metrics/file_sink/rotate_compress_test.txt";
 
-    auto logger = spdlog::create_async<observability::metrics::MetricFileSink>(
+    auto logger = yr_spdlog::create_async<observability::metrics::MetricFileSink>(
         "rotate_compress_test", filename, 3, 3);
 
     std::ostringstream oss;

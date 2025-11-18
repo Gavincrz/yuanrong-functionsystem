@@ -44,7 +44,7 @@ struct FileExporterOptions {
 
 class FileExporter : public observability::exporters::metrics::Exporter {
 public:
-    using LogExporter = std::shared_ptr<spdlog::logger>;
+    using LogExporter = std::shared_ptr<yr_spdlog::logger>;
     explicit FileExporter(const std::string &config);
     explicit FileExporter(const FileExporterOptions &options);
     ~FileExporter() override;
@@ -65,7 +65,7 @@ private:
     LogExporter CreateRotatingLogger(const std::string &loggerName, const std::string &filename, size_t maxFileSize,
                                      size_t maxFiles, bool compress) const;
     LogExporter CreateBasicLogger(const std::string &loggerName, const std::string &filename,
-                                  spdlog::level::level_enum logLevel) const;
+                                  yr_spdlog::level::level_enum logLevel) const;
     void SerializeMetricStandard(std::ostream &ss,
                                  const observability::sdk::metrics::InstrumentDescriptor &descriptor,
                                  const observability::sdk::metrics::PointTimeStamp &timestamp,
@@ -74,7 +74,7 @@ private:
     void SerializeMetricLabels(std::ostream &ss, const observability::sdk::metrics::PointLabels &labels) const;
 
     ExportResult LogToFile(const std::stringstream &ss) const;
-    std::function<void(std::string)> GetLogFunc(const spdlog::level::level_enum level) const;
+    std::function<void(std::string)> GetLogFunc(const yr_spdlog::level::level_enum level) const;
     FileExporterOptions options_;
 
     LogExporter logExporter_{ nullptr };

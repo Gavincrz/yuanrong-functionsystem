@@ -16,6 +16,7 @@ include(spdlog)
 include(securec)
 include(openssl)
 include(cjson)
+include(curl)
 
 if(BUILD_LLT)
   include(gtest_1_12_1)

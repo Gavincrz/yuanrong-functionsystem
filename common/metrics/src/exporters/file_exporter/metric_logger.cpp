@@ -76,15 +76,15 @@ std::string GetFullPath(const FileParam &fileParam)
 void MetricLogger::CreateLogger(const FileParam &fileParam)
 {
     try {
-        spdlog::drop(asyncLoggerName);
+        yr_spdlog::drop(asyncLoggerName);
         std::string fileFullPath = GetFullPath(fileParam);
 
-        logger = spdlog::create_async<observability::metrics::MetricFileSink>(asyncLoggerName, fileFullPath,
+        logger = yr_spdlog::create_async<observability::metrics::MetricFileSink>(asyncLoggerName, fileFullPath,
                                                                               fileParam.maxSize, fileParam.maxFileNum);
 
-        logger->set_level(spdlog::level::info);
+        logger->set_level(yr_spdlog::level::info);
         logger->set_pattern("%v");
-    } catch (const spdlog::spdlog_ex &ex) {
+    } catch (const yr_spdlog::spdlog_ex &ex) {
         std::cerr << "failed to init logger:" << ex.what() << std::endl << std::flush;
     }
 }

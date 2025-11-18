@@ -43,7 +43,7 @@ public:
     void RegisterCollectFunc(const std::function<CollectFunc> &collectFunc);
     void RegisterExportFunc(const std::function<ExportFunc> &exportFunc);
     void SetExportMode(const ExporterOptions &options);
-    void ReportData(const int interval) const;
+    void ReportData(const int interval);
     bool ExportAllData();
     void ExportTemporarilyData(const std::shared_ptr<BasicMetric> &instrument);
 

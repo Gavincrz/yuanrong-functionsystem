@@ -25,7 +25,7 @@ const uint8_t ASCII_UPPER_LIMIT = 127;
 
 inline bool ValidateName(const std::string &name)
 {
-    if (name.empty() || name.size() > METRICS_NAME_MAX_SIZE) {
+    if (name.size() > METRICS_NAME_MAX_SIZE) {
         return false;
     }
     // first char should be alpha

@@ -14,10 +14,8 @@
  * limitations under the License.
  */
 
-#include <utility>
-
-#include "common/include/transfer.h"
 #include "api/include/processor_actor.h"
+#include "common/include/transfer.h"
 
 namespace observability {
 namespace metrics {
@@ -35,7 +33,7 @@ void ProcessorActor::SetExportMode(const ExporterOptions &options)
 
 void ProcessorActor::Finalize()
 {
-    for (auto &timerInfo : std::as_const(collectTimerInfos_)) {
+    for (const auto &timerInfo : collectTimerInfos_) {
         auto timer = timerInfo.second;
         (void)litebus::TimerTools::Cancel(timer);
     }
@@ -76,7 +74,7 @@ void ProcessorActor::CollectOnceThenExport(const int interval)
     }
 }
 
-void ProcessorActor::ReportData(const int interval) const
+void ProcessorActor::ReportData(const int interval)
 {
     litebus::Async(GetAID(), processMethod_, interval);
 }
@@ -131,14 +129,15 @@ std::vector<MetricsData> ProcessorActor::GetTemporarilyData(const std::shared_pt
     std::vector<MetricsData> metricDataList;
     auto timestamp = instrument->GetTimestamp().time_since_epoch().count() == 0 ? std::chrono::system_clock::now()
                                                                                 : instrument->GetTimestamp();
-    MetricsData metricData;
-    metricData.collectTimeStamp = timestamp;
-    metricData.description = instrument->GetDescription();
-    metricData.labels = instrument->GetLabels();
-    metricData.metricType = GetMetricTypeStr(instrument->GetMetricType());
-    metricData.metricValue = GetInstrumentValue(instrument);
-    metricData.name = instrument->GetName();
-    metricData.unit = instrument->GetUnit();
+    MetricsData metricData = {
+        .labels = instrument->GetLabels(),
+        .name = instrument->GetName(),
+        .description = instrument->GetDescription(),
+        .unit = instrument->GetUnit(),
+        .metricType = GetMetricTypeStr(instrument->GetMetricType()),
+        .collectTimeStamp = timestamp,
+        .metricValue = GetInstrumentValue(instrument)
+    };
     metricDataList.push_back(metricData);
     return metricDataList;
 }

@@ -22,7 +22,8 @@ target_link_libraries(
           observability-metrics
           observability-metrics-sdk
           observability-metrics-exporter-ostream
-          observability-metrics-file-exporter)
+          observability-metrics-file-exporter
+          observability-prometheus-push-exporter)
 
 target_include_directories(
   ${UNIT_TEST_MODULE}

@@ -12,7 +12,8 @@ target_include_directories(
   ${TARGET_NAME} PUBLIC "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src>")
 
 target_link_libraries(
-  ${TARGET_NAME} PUBLIC observability-metrics-headers ${yrlogs_LIB} ${zlib_LIB} metrics-common)
+  ${TARGET_NAME} PUBLIC observability-metrics-headers ${yrlogs_LIB} ${zlib_LIB}
+                        ${spdlog_LIB} metrics-common)
 
 install(TARGETS ${TARGET_NAME} LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
 

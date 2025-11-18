@@ -17,6 +17,8 @@
 #ifndef OBSERVABILITY_METRICS_COMMON_LOGS_LOGGING_H
 #define OBSERVABILITY_METRICS_COMMON_LOGS_LOGGING_H
 
+#include <csignal>
+
 #include "logs/api/provider.h"
 
 #define METRICS_LOG_DEBUG(...) LOGS_CORE_LOGGER(LOGS_LEVEL_DEBUG, __VA_ARGS__)

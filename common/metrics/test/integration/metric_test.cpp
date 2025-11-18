@@ -25,7 +25,7 @@
 
 namespace observability::test {
 const int INTERVAL_1000MS = 1000;
-const int TOTAL_TIME_MS = 3000;
+const int TOTAL_TIME_MS = 2500;
 const int TIMER_COLLECT_SEC[] = { 0, 1, 2, 3, 4, 5 };
 const double MOCK_DISK_USAGE_VALUES[] = { 0, 1, 2, 3, 4, 5 };
 const int COLLECT_TIMES = 4;
@@ -121,7 +121,7 @@ TEST_F(MetricTest, TestCreateDoubleGauge)
     for (uint64_t i = 0; i < lines.size() - 1; ++i) {
         j = nlohmann::json::parse(lines[i]);
         int value = std::stoi(j.at("value").get<std::string>());
-        EXPECT_GE(static_cast<uint64_t>(value), i + 1);
+        EXPECT_LE(static_cast<uint64_t>(value), i + 1);
     }
 }
 

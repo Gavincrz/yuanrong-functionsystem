@@ -38,7 +38,7 @@ FuncType GetFuncFromHandle(void *handle, const std::string &funcName)
     if (handle == nullptr) {
         return nullptr;
     }
-    FuncType func = dynamic_cast<FuncType>(dlsym(handle, funcName.c_str()));
+    FuncType func = (FuncType)(dlsym(handle, funcName.c_str()));
     if (!func) {
         std::cerr << "Failed to find func symbol:" << funcName << dlerror() << std::endl;
         dlclose(handle);

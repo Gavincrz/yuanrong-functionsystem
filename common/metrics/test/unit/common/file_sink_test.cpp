@@ -68,7 +68,7 @@ TEST(CommonFileSinkTest, FlushTest)
 {
     const std::string filename = "/tmp/metrics/file_sink/get_file_name_test.txt";
     std::remove(filename.c_str());
-    auto logger = spdlog::create_async<FileSink>("CommonFlushTest", filename, 1024 * 1024, 3);
+    auto logger = yr_spdlog::create_async<FileSink>("CommonFlushTest", filename, 1024 * 1024, 3);
 
     for (int i = 0; i < 9; i++) {
         auto str = std::to_string(i) + "-get_file_name_test";
@@ -99,7 +99,7 @@ TEST(CommonFileSinkTest, RotateWithoutCompressTest)
     std::remove(filename.c_str());
 
     auto sink = std::make_shared<observability::metrics::common::FileSink>(filename, 300, 3, true, false);
-    auto logger = std::make_shared<spdlog::logger>("rotate_without_compress", sink);
+    auto logger = std::make_shared<yr_spdlog::logger>("rotate_without_compress", sink);
     logger->set_pattern("%v");
 
     std::ostringstream oss;
@@ -167,7 +167,7 @@ TEST(CommonFileSinkTest, RotateCompressTest)
     std::remove(filename.c_str());
 
     auto sink = std::make_shared<observability::metrics::common::FileSink>(filename, 300, 3, true, true);
-    auto logger = std::make_shared<spdlog::logger>("rotate_with_compress", sink);
+    auto logger = std::make_shared<yr_spdlog::logger>("rotate_with_compress", sink);
     logger->set_pattern("%v");
 
     std::ostringstream oss;
