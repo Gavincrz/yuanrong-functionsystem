@@ -261,7 +261,8 @@ while getopts 'yghrxVbm:v:o:j:S:Cc:u:t:M:d:T:s:R:P:p:k' opt; do
         fi
         ;;
     v)
-        YR_VERSION="${OPTARG}"
+        VERSION="${OPTARG}"
+        YR_VERSION="yr-functionsystem-v${VERSION}"
         ;;
     V)
         VERBOSE="-v"

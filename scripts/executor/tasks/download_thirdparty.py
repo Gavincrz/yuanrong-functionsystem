@@ -9,7 +9,7 @@ import subprocess
 import urllib.request
 
 
-def download_opensource(config_path, download_path):
+def download_thirdparty(config_path, download_path):
     """主函数"""
     config_path = os.path.abspath(config_path)
     if not os.path.exists(config_path):
@@ -131,5 +131,5 @@ if __name__ == "__main__":
     _parser.add_argument('--config', type=str, required=True, help='配置文件路径')
     _parser.add_argument('--output', type=str, required=True, help='依赖下载路径')
     _args = _parser.parse_args()
-    _code = download_opensource(_args.config, _args.output)
+    _code = download_thirdparty(_args.config, _args.output)
     exit(_code)
