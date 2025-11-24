@@ -21,7 +21,7 @@
 
 #include <cstdint>
 
-#include "rpc/stream/posix/control_client.h"
+#include "common/rpc/stream/posix/control_client.h"
 
 namespace functionsystem::test {
 class MockPosixControlWrapper : public grpc::PosixControlWrapper {

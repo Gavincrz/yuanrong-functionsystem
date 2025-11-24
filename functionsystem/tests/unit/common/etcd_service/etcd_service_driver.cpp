@@ -22,7 +22,7 @@
 #include "common/etcd_service/etcd_kv_service.h"
 #include "common/etcd_service/etcd_lease_service.h"
 #include "common/etcd_service/etcd_watch_service.h"
-#include "logs/logging.h"
+#include "common/logs/logging.h"
 #include "grpcpp/server_builder.h"
 
 namespace functionsystem::meta_store::test {
@@ -68,7 +68,7 @@ void EtcdServiceDriver::StartServer(const std::string &address, const std::strin
 void EtcdServiceDriver::StopServer()
 {
     if (server_ != nullptr) {
-        server_->Shutdown();
+        server_->Shutdown(std::chrono::system_clock::now() + std::chrono::seconds(5));
         server_ = nullptr;
     }
 

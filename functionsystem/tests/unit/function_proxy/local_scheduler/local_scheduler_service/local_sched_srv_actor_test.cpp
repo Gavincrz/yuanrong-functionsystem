@@ -22,9 +22,9 @@
 
 #include "common/constants/actor_name.h"
 #include "common/explorer/explorer.h"
-#include "logs/logging.h"
+#include "common/logs/logging.h"
 #include "common/resource_view/resource_tool.h"
-#include "resource_type.h"
+#include "common/resource_view/resource_type.h"
 #include "common/resource_view/view_utils.h"
 #include "common/utils/generate_message.h"
 #include "constants.h"
@@ -58,8 +58,7 @@ public:
 
         functionAgentMgr_ = std::make_shared<MockFunctionAgentMgr>("FunctionAgentMgr", nullptr);
         subscriptionMgr_ = SubscriptionMgr::Init("SubscriptionMgr", SubscriptionMgrConfig{ .isPartialWatchInstances = true });
-        auto pingPongActor = std::make_shared<MockPingPongDriver>();
-        mockInstanceCtrl_ = std::make_shared<MockInstanceCtrl>(nullptr);
+        mockInstanceCtrl_ = std::make_shared<MockInstanceCtrl>();
         LocalSchedSrvActor::Param param = { .nodeID = "localSchedSrvDstActor",
                                             .globalSchedAddress = driverActor_->GetAID().UnfixUrl(),
                                             .isK8sEnabled = true,
@@ -77,7 +76,6 @@ public:
         resourceViewMgr->virtual_ = virtual_;
         dstActor_->BindResourceView(resourceViewMgr);
         dstActor_->BindInstanceCtrl(mockInstanceCtrl_);
-        dstActor_->BindPingPongDriver(pingPongActor);
         dstActor_->BindFunctionAgentMgr(functionAgentMgr_);
         dstActor_->BindSubscriptionMgr(subscriptionMgr_);
         litebus::Spawn(dstActor_);
@@ -98,7 +96,9 @@ public:
         topo.mutable_leader()->CopyFrom(leader);
         litebus::Async(dstActor_->GetAID(), &LocalSchedSrvActor::UpdateDomainSchedulerAddress,
                        domainSchedStubActor_->GetAID());
-        litebus::Async(driverActor_->GetAID(), &LocalSchedSrvActorTestDriver::UpdateSchedTopoView, dstActor_->GetAID(),
+        litebus::Async(dstActor_->GetAID(), &LocalSchedSrvActor::UpdateGlobalSchedulerAddress,
+                       globalSchedStubActor_->GetAID());
+        litebus::Async(globalSchedStubActor_->GetAID(), &GlobalSchedStubActor::UpdateSchedTopoView, dstActor_->GetAID(),
                        topo);
     }
 
@@ -147,9 +147,9 @@ public:
 
         auto unit = view_utils::Get1DResourceUnit();
         EXPECT_CALL(*primary_, GetFullResourceView())
-            .WillRepeatedly(Return(std::make_shared<resource_view::ResourceUnit>(unit)));
+            .WillRepeatedly(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnit>(unit))));
         EXPECT_CALL(*virtual_, GetFullResourceView())
-            .WillRepeatedly(Return(std::make_shared<resource_view::ResourceUnit>(unit)));
+            .WillRepeatedly(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnit>(unit))));
 
         litebus::Async(dstActor_->GetAID(), &LocalSchedSrvActor::UpdateMasterInfo,
                        GetLeaderInfo(globalSchedStubActor_->GetAID()));
@@ -191,10 +191,10 @@ TEST_F(LocalSchedSrvActorTest, ScheduleSuccess)
     rsp.set_message(successMsg);
     rsp.set_instanceid(instanceID);
     rsp.set_requestid(requestID);
-    EXPECT_CALL(*mockInstanceCtrl_, Schedule).WillOnce(testing::Return(rsp));
+    EXPECT_CALL(*mockInstanceCtrl_, Schedule).WillOnce(testing::Return(AsyncReturn(rsp)));
     auto changes = std::make_shared<resource_view::ResourceUnitChanges>();
-    EXPECT_CALL(*primary_, GetResourceViewChanges()).WillRepeatedly(Return(changes));
-    EXPECT_CALL(*virtual_, GetResourceViewChanges()).WillRepeatedly(Return(changes));
+    EXPECT_CALL(*primary_, GetResourceViewChanges()).WillRepeatedly(Return(AsyncReturn(changes)));
+    EXPECT_CALL(*virtual_, GetResourceViewChanges()).WillRepeatedly(Return(AsyncReturn(changes)));
     dstActor_->domainSchedRegisterInfo_.aid = driverActor_->GetAID();
     messages::ScheduleRequest req;
     req.set_requestid(requestID);
@@ -230,10 +230,10 @@ TEST_F(LocalSchedSrvActorTest, ScheduleResourceNotEnough)
     rsp.set_message(successMsg);
     rsp.set_instanceid(instanceID);
     rsp.set_requestid(requestID);
-    EXPECT_CALL(*mockInstanceCtrl_, Schedule).WillOnce(testing::Return(rsp));
+    EXPECT_CALL(*mockInstanceCtrl_, Schedule).WillOnce(testing::Return(AsyncReturn(rsp)));
     auto changes = std::make_shared<resource_view::ResourceUnitChanges>();
-    EXPECT_CALL(*primary_, GetResourceViewChanges()).WillRepeatedly(Return(changes));
-    EXPECT_CALL(*virtual_, GetResourceViewChanges()).WillRepeatedly(Return(changes));
+    EXPECT_CALL(*primary_, GetResourceViewChanges()).WillRepeatedly(Return(AsyncReturn(changes)));
+    EXPECT_CALL(*virtual_, GetResourceViewChanges()).WillRepeatedly(Return(AsyncReturn(changes)));
     dstActor_->domainSchedRegisterInfo_.aid = driverActor_->GetAID();
     messages::ScheduleRequest req;
     req.set_requestid(requestID);
@@ -245,15 +245,38 @@ TEST_F(LocalSchedSrvActorTest, ScheduleResourceNotEnough)
     EXPECT_EQ(getRsp.instanceid(), instanceID);
     EXPECT_EQ(getRsp.requestid(), requestID);
 }
+#if 0
+/**
+ * Feature: LocalSchedSrvActor
+ * Description: Simulates receiving a Schedule request from DomainSchedule and LocalScheduler resource not enough
+ * Steps:
+ * 1. ScheduleRequest param is empty requestID
+ * 2. send Schedule request to LocalSchedSrvActorTestDriver(LocalSchedSrvActorTestDriver simulates DomainScheduler
+ *    and send schedule request to LocalSchedSrvActor).
+ * 3. get Schedule result.
+ * Expectation: schedule error code result is ScheduleResourceNotEnough
+ */
+TEST_F(LocalSchedSrvActorTest, ScheduleWithEmptyRequest)
+{
+    RegisterLocalScheduler();
+    messages::ScheduleRequest req;
+    auto rspFuture =
+        litebus::Async(driverActor_->GetAID(), &LocalSchedSrvActorTestDriver::Schedule, dstActor_->GetAID(), req);
+    const auto &getRsp = rspFuture.Get();
+    EXPECT_EQ(getRsp.code(), StatusCode::PARAMETER_ERROR);
+}
+#endif
 
 // test for LocalSchedSrvActor::UpdateSchedTopoViewTest
 // receive update domain scheduler request from global scheduler
-TEST_F(LocalSchedSrvActorTest, UpdateSchedTopoView)
-{
-    auto domainSchedulerAID = litebus::Async(driverActor_->GetAID(),
-                                             &LocalSchedSrvActorTestDriver::GetDomainSchedulerAID, dstActor_->GetAID())
-                                  .Get();
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+TEST_F(LocalSchedSrvActorTest, UpdateSchedTopoView) {
+    auto future = litebus::Async(driverActor_->GetAID(),
+                               &LocalSchedSrvActorTestDriver::GetDomainSchedulerAID, 
+                               dstActor_->GetAID());
+
+    EXPECT_AWAIT_READY_FOR(future, 100);
+    
+    auto domainSchedulerAID = future.Get();
     EXPECT_EQ(std::string(domainSchedulerAID), std::string(domainSchedStubActor_->GetAID()));
 }
 
@@ -266,6 +289,69 @@ TEST_F(LocalSchedSrvActorTest, RegisterSuccess)
 }
 
 // test for LocalSchedSrvActor::Register
+// send register request to global scheduler(response success) then send register request to domain scheduler(response
+// success)
+#if 0
+TEST_F(LocalSchedSrvActorTest, RegisterSuccessButHearbeatWithoutPing)
+{
+    // registry response of global scheduler
+    litebus::Async(dstActor_->GetAID(), &LocalSchedSrvActor::BindPingPongDriver, nullptr);
+    messages::Registered registeredToGlobal;
+    registeredToGlobal.set_code(StatusCode::SUCCESS);
+    registeredToGlobal.set_message(REGISTERED_GLOBAL_SCHED_SUCCESS_MSG);
+    messages::ScheduleTopology topo;
+    topo.mutable_leader()->set_name(REGISTERED_DOMAIN_SCHED_NAME);
+    topo.mutable_leader()->set_address(domainSchedStubActor_->GetAID().UnfixUrl());
+    registeredToGlobal.mutable_topo()->CopyFrom(topo);
+    EXPECT_CALL(*globalSchedStubActor_.get(), MockRegister).WillRepeatedly([registeredToGlobal]() {
+        // avoid re-register too fast, failed to get heartbeat
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        return registeredToGlobal.SerializeAsString();
+    });
+
+    // registry response of domain scheduler
+    messages::Registered registeredToDomain;
+    registeredToDomain.set_code(StatusCode::SUCCESS);
+    registeredToDomain.set_message(REGISTERED_DOMAIN_SCHED_SUCCESS_MSG);
+    EXPECT_CALL(*domainSchedStubActor_.get(), MockRegister)
+        .WillRepeatedly(Return(registeredToDomain.SerializeAsString()));
+
+    EXPECT_CALL(*primary_, GetFullResourceView())
+        .WillRepeatedly(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnit>())));
+    EXPECT_CALL(*virtual_, GetFullResourceView())
+        .WillRepeatedly(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnit>())));
+
+    litebus::AID pingpong;
+    pingpong.SetName("localSchedSrvDstActor" + PINGPONG_BASENAME);
+    pingpong.SetUrl(dstActor_->GetAID().Url());
+    auto heartbeatDriver =
+        std::make_shared<HeartbeatObserveDriver>("localSchedSrvDstActor", pingpong, [](const litebus::AID &) {});
+    EXPECT_CALL(*domainSchedStubActor_, RegisterCall)
+        .WillOnce(Return())
+        .WillOnce([&heartbeatDriver]() { heartbeatDriver->Start(); })
+        .WillRepeatedly(Return());
+
+    litebus::Async(driverActor_->GetAID(), &LocalSchedSrvActorTestDriver::UpdateMasterInfo, dstActor_->GetAID(),
+                   GetLeaderInfo(globalSchedStubActor_->GetAID()));
+    ASSERT_AWAIT_TRUE(
+        [=]() -> bool { return !litebus::Async(dstActor_->GetAID(), &LocalSchedSrvActor::HeartBeatInvalid).Get(); });
+    ASSERT_AWAIT_TRUE(
+        [=]() -> bool { return litebus::Async(dstActor_->GetAID(), &LocalSchedSrvActor::GetEnableFlag).Get(); });
+    ASSERT_AWAIT_TRUE(
+        [=]() -> bool { return litebus::Async(dstActor_->GetAID(), &LocalSchedSrvActor::HeartBeatInvalid).Get(); });
+    ASSERT_AWAIT_TRUE(
+        [=]() -> bool { return !litebus::Async(dstActor_->GetAID(), &LocalSchedSrvActor::HeartBeatInvalid).Get(); });
+    // sleep to heartbeat available which would not influence the test result
+    std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+    heartbeatDriver->Stop();
+    ASSERT_AWAIT_TRUE(
+        [=]() -> bool { return litebus::Async(dstActor_->GetAID(), &LocalSchedSrvActor::HeartBeatInvalid).Get(); });
+    ASSERT_AWAIT_TRUE(
+        [=]() -> bool { return !litebus::Async(dstActor_->GetAID(), &LocalSchedSrvActor::HeartBeatInvalid).Get(); });
+}
+#endif
+
+// test for LocalSchedSrvActor::Register
 // send register request to global scheduler(response failed) then send register request to domain scheduler(response
 // success)
 TEST_F(LocalSchedSrvActorTest, RegisterFailedToGlobalSchedudler)
@@ -275,7 +361,7 @@ TEST_F(LocalSchedSrvActorTest, RegisterFailedToGlobalSchedudler)
     litebus::Async(dstActor_->GetAID(), &LocalSchedSrvActor::UpdateMasterInfo,
                    GetLeaderInfo(globalSchedStubActor_->GetAID()));
     litebus::Async(dstActor_->GetAID(), &LocalSchedSrvActor::ToReady);
-    EXPECT_FALSE(dstActor_->HeartBeatInvalid());
+    EXPECT_TRUE(dstActor_->HeartBeatInvalid());
 }
 
 // test for LocalSchedSrvActor::Register and LocalSchedSrvActor::Registered
@@ -304,9 +390,9 @@ TEST_F(LocalSchedSrvActorTest, RegisterFailedToDomainSchedudler)
         .WillOnce(Return(registeredToDomainSuccess.SerializeAsString()));
 
     EXPECT_CALL(*primary_, GetFullResourceView())
-        .WillRepeatedly(Return(std::make_shared<resource_view::ResourceUnit>()));
+        .WillRepeatedly(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnit>())));
     EXPECT_CALL(*virtual_, GetFullResourceView())
-        .WillRepeatedly(Return(std::make_shared<resource_view::ResourceUnit>()));
+        .WillRepeatedly(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnit>())));
 
     litebus::Async(dstActor_->GetAID(), &LocalSchedSrvActor::UpdateMasterInfo,
                    GetLeaderInfo(globalSchedStubActor_->GetAID()));
@@ -385,9 +471,9 @@ TEST_F(LocalSchedSrvActorTest, ForwardScheduleSuccess)
     EXPECT_CALL(*domainSchedStubActor_.get(), MockForwardSchedule).WillOnce(Return(rsp.SerializeAsString()));
 
     EXPECT_CALL(*primary_, GetResourceViewChanges())
-        .WillRepeatedly(Return(std::make_shared<resource_view::ResourceUnitChanges>()));
+        .WillRepeatedly(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnitChanges>())));
     EXPECT_CALL(*virtual_, GetResourceViewChanges())
-        .WillRepeatedly(Return(std::make_shared<resource_view::ResourceUnitChanges>()));
+        .WillRepeatedly(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnitChanges>())));
 
     auto forwardScheduleFuture = litebus::Async(driverActor_->GetAID(), &LocalSchedSrvActorTestDriver::ForwardSchedule,
                                                 dstActor_->GetAID(), req);
@@ -415,9 +501,9 @@ TEST_F(LocalSchedSrvActorTest, ForwardScheduleFailedTest)
     EXPECT_CALL(*domainSchedStubActor_.get(), MockForwardSchedule).WillOnce(Return(rsp.SerializeAsString()));
 
     EXPECT_CALL(*primary_, GetResourceViewChanges())
-        .WillRepeatedly(Return(std::make_shared<resource_view::ResourceUnitChanges>()));
+        .WillRepeatedly(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnitChanges>())));
     EXPECT_CALL(*virtual_, GetResourceViewChanges())
-        .WillRepeatedly(Return(std::make_shared<resource_view::ResourceUnitChanges>()));
+        .WillRepeatedly(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnitChanges>())));
 
     auto forwardScheduleFuture = litebus::Async(driverActor_->GetAID(), &LocalSchedSrvActorTestDriver::ForwardSchedule,
                                                 dstActor_->GetAID(), req);
@@ -440,9 +526,9 @@ TEST_F(LocalSchedSrvActorTest, ForwardScheduleTimeoutTest)
     auto req = std::make_shared<messages::ScheduleRequest>();
     req->set_requestid(requestID);
     EXPECT_CALL(*primary_, GetResourceViewChanges())
-        .WillRepeatedly(Return(std::make_shared<resource_view::ResourceUnitChanges>()));
+        .WillRepeatedly(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnitChanges>())));
     EXPECT_CALL(*virtual_, GetResourceViewChanges())
-        .WillRepeatedly(Return(std::make_shared<resource_view::ResourceUnitChanges>()));
+        .WillRepeatedly(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnitChanges>())));
 
     auto forwardScheduleFuture = litebus::Async(driverActor_->GetAID(), &LocalSchedSrvActorTestDriver::ForwardSchedule,
                                                 dstActor_->GetAID(), req);
@@ -466,9 +552,9 @@ TEST_F(LocalSchedSrvActorTest, ForwardScheduleRetryTest)
     req->set_requestid(requestID);
     req->mutable_instance()->mutable_scheduleoption()->set_initcalltimeout(2);
     EXPECT_CALL(*primary_, GetResourceViewChanges())
-        .WillRepeatedly(Return(std::make_shared<resource_view::ResourceUnitChanges>()));
+        .WillRepeatedly(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnitChanges>())));
     EXPECT_CALL(*virtual_, GetResourceViewChanges())
-        .WillRepeatedly(Return(std::make_shared<resource_view::ResourceUnitChanges>()));
+        .WillRepeatedly(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnitChanges>())));
 
     auto forwardScheduleFuture = litebus::Async(driverActor_->GetAID(), &LocalSchedSrvActorTestDriver::ForwardSchedule,
                                                 dstActor_->GetAID(), req);
@@ -500,9 +586,9 @@ TEST_F(LocalSchedSrvActorTest, ForwardScheduleParamCheck)
     rsp.set_requestid("forwardSchedule123");
     EXPECT_CALL(*domainSchedStubActor_.get(), MockForwardSchedule).WillOnce(Return(rsp.SerializeAsString()));
     EXPECT_CALL(*primary_, GetResourceViewChanges())
-        .WillRepeatedly(Return(std::make_shared<resource_view::ResourceUnitChanges>(view_utils::Get1DResourceUnitChanges())));
+        .WillRepeatedly(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnitChanges>(view_utils::Get1DResourceUnitChanges()))));
     EXPECT_CALL(*virtual_, GetResourceViewChanges())
-        .WillRepeatedly(Return(std::make_shared<resource_view::ResourceUnitChanges>(view_utils::Get1DResourceUnitChanges())));
+        .WillRepeatedly(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnitChanges>(view_utils::Get1DResourceUnitChanges()))));
 
     litebus::Future<std::string> msgName;
     litebus::Future<std::string> msgValue;
@@ -589,7 +675,7 @@ TEST_F(LocalSchedSrvActorTest, EvictAgent)
         req->set_agentid("agentID");
         req->set_requestid("agentID");
         req->set_timeoutsec(1);
-        EXPECT_CALL(*functionAgentMgr_, EvictAgent(_)).WillOnce(Return(Status(FAILED, "falied to evict")));
+        EXPECT_CALL(*functionAgentMgr_, EvictAgent(_)).WillOnce(Return(AsyncReturn(Status(FAILED, "falied to evict"))));
         auto future = globalSchedStubActor_->SendEvictAgent(aid, req->SerializeAsString());
         EXPECT_AWAIT_READY(future);
         auto rsp = future.Get();
@@ -604,7 +690,7 @@ TEST_F(LocalSchedSrvActorTest, EvictAgent)
         req->set_agentid("agentID");
         req->set_requestid("agentID");
         req->set_timeoutsec(1);
-        EXPECT_CALL(*functionAgentMgr_, EvictAgent(_)).WillOnce(Return(Status::OK()));
+        EXPECT_CALL(*functionAgentMgr_, EvictAgent(_)).WillOnce(Return(AsyncReturn(Status::OK())));
         auto future = globalSchedStubActor_->SendEvictAgent(aid, req->SerializeAsString());
         EXPECT_AWAIT_READY(future);
         auto rsp = future.Get();
@@ -620,7 +706,7 @@ TEST_F(LocalSchedSrvActorTest, EvictAgent)
         req->set_timeoutsec(1);
         req->add_instances("ins1");
         req->add_instances("ins2");
-        EXPECT_CALL(*mockInstanceCtrl_, EvictInstances).WillOnce(testing::Return(Status::OK()));
+        EXPECT_CALL(*mockInstanceCtrl_, EvictInstances).WillOnce(testing::Return(AsyncReturn(Status::OK())));
         auto future = globalSchedStubActor_->SendPreemptInstance(aid, req->SerializeAsString());
         EXPECT_AWAIT_READY(future);
         auto rsp = future.Get();
@@ -756,9 +842,9 @@ TEST_F(LocalSchedSrvActorTest, TryCancelSchedule)
 TEST_F(LocalSchedSrvActorTest, GracefulShutdownTest)
 {
     RegisterLocalScheduler();
-    EXPECT_CALL(*functionAgentMgr_, GracefulShutdown()).WillOnce(Return(Status::OK())).WillOnce(Return(Status::OK()));
+    EXPECT_CALL(*functionAgentMgr_, GracefulShutdown()).WillOnce(Return(AsyncReturn(Status::OK()))).WillOnce(Return(AsyncReturn(Status::OK())));
     EXPECT_CALL(*mockInstanceCtrl_, SetAbnormal()).WillOnce(Return()).WillOnce(Return());
-    EXPECT_CALL(*mockInstanceCtrl_, GracefulShutdown()).WillOnce(Return(Status::OK())).WillOnce(Return(Status::OK()));
+    EXPECT_CALL(*mockInstanceCtrl_, GracefulShutdown()).WillOnce(Return(AsyncReturn(Status::OK()))).WillOnce(Return(AsyncReturn(Status::OK())));
     messages::Registered unRegisteredToGlobal;
     unRegisteredToGlobal.set_code(StatusCode::SUCCESS);
     EXPECT_CALL(*globalSchedStubActor_.get(), MockUnRegister)

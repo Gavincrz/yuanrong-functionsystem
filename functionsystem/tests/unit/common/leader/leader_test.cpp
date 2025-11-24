@@ -22,11 +22,14 @@
 #include "common/constants/signal.h"
 #include "common/etcd_service/etcd_service_driver.h"
 #include "common/explorer/etcd_explorer_actor.h"
+#include "common/explorer/k8s_explorer_actor.h"
 #include "common/explorer/explorer.h"
 #include "common/leader/etcd_leader_actor.h"
-#include "logs/logging.h"
-#include "metadata/metadata.h"
+#include "common/leader/k8s_leader_actor.h"
+#include "common/logs/logging.h"
+#include "common/metadata/metadata.h"
 #include "common/utils/generate_message.h"
+#include "mocks/mock_kube_client.h"
 #include "mocks/mock_meta_store_client.h"
 #include "mocks/mock_scheduler.h"
 #include "utils/future_test_helper.h"
@@ -403,4 +406,193 @@ TEST_F(LeaderTest, RepeatElect)
     litebus::Terminate(leaderActor->GetAID());
     litebus::Await(leaderActor->GetAID());
 }
+
+/**
+ * Feature: K8s Election
+ * Description: elect without leader
+ * 1. create 3 candidate wait to elect
+ * 2. invoke elect
+ * Expectation: one become leader, other become candidate
+ */
+TEST_F(LeaderTest, K8sMultiElectWithoutLeader)
+{
+    auto mockClient1 = std::make_shared<MockKubeClient>();
+    explorer::ElectionInfo electionInfo1{.identity = "proposal001", .mode = K8S_ELECTION_MODE, .electKeepAliveInterval = 1, .electLeaseTTL = 300,  .electRenewInterval= 300,};
+    auto candidateLeader1 = std::make_shared<K8sLeaderActor>("function-master", electionInfo1, mockClient1, "default");
+    explorer::ElectionInfo electionInfo2{.identity = "proposal002", .mode = K8S_ELECTION_MODE, .electKeepAliveInterval = 1, .electLeaseTTL = 300, .electRenewInterval= 300,};
+    auto mockClient2 = std::make_shared<MockKubeClient>();
+    auto candidateLeader2 = std::make_shared<K8sLeaderActor>("function-master", electionInfo2, mockClient2, "default");
+    explorer::ElectionInfo electionInfo3{.identity = "proposal003", .mode = K8S_ELECTION_MODE,.electKeepAliveInterval = 1,  .electLeaseTTL = 300, .electRenewInterval= 300,};
+    auto mockClient3 = std::make_shared<MockKubeClient>();
+    auto candidateLeader3 = std::make_shared<K8sLeaderActor>("function-master", electionInfo3, mockClient3, "default");
+    litebus::Promise<std::shared_ptr<V1Lease>> errPromise;
+    errPromise.SetFailed(404);
+    EXPECT_CALL(*mockClient1, ReadNamespacedLease).WillOnce(testing::Return(errPromise.GetFuture())).WillRepeatedly(testing::Return(MockKubeClient::CreateLease("proposal002")));
+    EXPECT_CALL(*mockClient2, ReadNamespacedLease).WillOnce(testing::Return(errPromise.GetFuture())).WillRepeatedly(testing::Return(MockKubeClient::CreateLease("proposal002")));
+    EXPECT_CALL(*mockClient3, ReadNamespacedLease).WillOnce(testing::Return(errPromise.GetFuture())).WillRepeatedly(testing::Return(MockKubeClient::CreateLease("proposal002")));
+    EXPECT_CALL(*mockClient1, CreateNamespacedLease).WillRepeatedly(testing::Return(errPromise.GetFuture()));
+    EXPECT_CALL(*mockClient2, CreateNamespacedLease).WillRepeatedly(testing::Return(MockKubeClient::CreateLease("proposal002")));
+    EXPECT_CALL(*mockClient3, CreateNamespacedLease).WillRepeatedly(testing::Return(errPromise.GetFuture()));
+    EXPECT_CALL(*mockClient2, ReplaceNamespacedLease).WillRepeatedly(testing::Return(MockKubeClient::CreateLease("proposal002")));
+    litebus::Spawn(candidateLeader1);
+    litebus::Spawn(candidateLeader2);
+    litebus::Spawn(candidateLeader3);
+    litebus::Async(candidateLeader1->GetAID(), &K8sLeaderActor::Elect);
+    litebus::Async(candidateLeader2->GetAID(), &K8sLeaderActor::Elect);
+    litebus::Async(candidateLeader3->GetAID(), &K8sLeaderActor::Elect);
+    ASSERT_AWAIT_TRUE([&]() -> bool { return candidateLeader1->GetObservedRecord() != nullptr; });
+    ASSERT_AWAIT_TRUE([&]() -> bool { return candidateLeader2->GetObservedRecord() != nullptr; });
+    ASSERT_AWAIT_TRUE([&]() -> bool { return candidateLeader3->GetObservedRecord() != nullptr; });
+    EXPECT_EQ("proposal002", candidateLeader1->GetObservedRecord()->holderIdentity);
+    EXPECT_EQ("proposal002", candidateLeader2->GetObservedRecord()->holderIdentity);
+    EXPECT_EQ("proposal002", candidateLeader3->GetObservedRecord()->holderIdentity);
+    litebus::Terminate(candidateLeader1->GetAID());
+    litebus::Await(candidateLeader1->GetAID());
+    litebus::Terminate(candidateLeader2->GetAID());
+    litebus::Await(candidateLeader2->GetAID());
+    litebus::Terminate(candidateLeader3->GetAID());
+    litebus::Await(candidateLeader3->GetAID());
+}
+
+/**
+ * Feature: K8s Election
+ * Description: elect with empty leader
+ * 1. create 3 candidate wait to elect
+ * 2. invoke elect
+ * Expectation: one become leader, other become candidate
+ */
+TEST_F(LeaderTest, K8sMultiElectWithEmptyLeader)
+{
+    auto mockClient1 = std::make_shared<MockKubeClient>();
+    explorer::ElectionInfo electionInfo1{.identity = "proposal001", .mode = K8S_ELECTION_MODE, .electKeepAliveInterval = 1, .electLeaseTTL = 300,  .electRenewInterval= 300,};
+    auto candidateLeader1 = std::make_shared<K8sLeaderActor>("function-master", electionInfo1, mockClient1, "default");
+    explorer::ElectionInfo electionInfo2{.identity = "proposal002", .mode = K8S_ELECTION_MODE, .electKeepAliveInterval = 1, .electLeaseTTL = 300, .electRenewInterval= 300,};
+    auto mockClient2 = std::make_shared<MockKubeClient>();
+    auto candidateLeader2 = std::make_shared<K8sLeaderActor>("function-master", electionInfo2, mockClient2, "default");
+    explorer::ElectionInfo electionInfo3{.identity = "proposal003", .mode = K8S_ELECTION_MODE, .electKeepAliveInterval = 1, .electLeaseTTL = 300, .electRenewInterval= 300,};
+    auto mockClient3 = std::make_shared<MockKubeClient>();
+    auto candidateLeader3 = std::make_shared<K8sLeaderActor>("function-master", electionInfo3, mockClient3, "default");
+    litebus::Promise<std::shared_ptr<V1Lease>> errPromise;
+    errPromise.SetFailed(400);
+    EXPECT_CALL(*mockClient1, ReadNamespacedLease).WillOnce(testing::Return(MockKubeClient::CreateLease(""))).WillRepeatedly(testing::Return(MockKubeClient::CreateLease("proposal003")));
+    EXPECT_CALL(*mockClient2, ReadNamespacedLease).WillOnce(testing::Return(MockKubeClient::CreateLease(""))).WillRepeatedly(testing::Return(MockKubeClient::CreateLease("proposal003")));
+    EXPECT_CALL(*mockClient3, ReadNamespacedLease).WillOnce(testing::Return(MockKubeClient::CreateLease(""))).WillRepeatedly(testing::Return(MockKubeClient::CreateLease("proposal003")));
+    EXPECT_CALL(*mockClient1, ReplaceNamespacedLease).WillRepeatedly(testing::Return(errPromise.GetFuture()));
+    EXPECT_CALL(*mockClient2, ReplaceNamespacedLease).WillRepeatedly(testing::Return(errPromise.GetFuture()));
+    EXPECT_CALL(*mockClient3, ReplaceNamespacedLease).WillRepeatedly(testing::Return(MockKubeClient::CreateLease("proposal003")));
+    litebus::Spawn(candidateLeader1);
+    litebus::Spawn(candidateLeader2);
+    litebus::Spawn(candidateLeader3);
+    litebus::Async(candidateLeader1->GetAID(), &K8sLeaderActor::Elect);
+    litebus::Async(candidateLeader2->GetAID(), &K8sLeaderActor::Elect);
+    litebus::Async(candidateLeader3->GetAID(), &K8sLeaderActor::Elect);
+    ASSERT_AWAIT_TRUE([&]() -> bool { return candidateLeader1->GetObservedRecord() != nullptr && candidateLeader1->GetObservedRecord()->holderIdentity != ""; });
+    ASSERT_AWAIT_TRUE([&]() -> bool { return candidateLeader2->GetObservedRecord() != nullptr && candidateLeader2->GetObservedRecord()->holderIdentity != ""; });
+    ASSERT_AWAIT_TRUE([&]() -> bool { return candidateLeader3->GetObservedRecord() != nullptr && candidateLeader3->GetObservedRecord()->holderIdentity != ""; });
+    EXPECT_EQ("proposal003", candidateLeader1->GetObservedRecord()->holderIdentity);
+    EXPECT_EQ("proposal003", candidateLeader2->GetObservedRecord()->holderIdentity);
+    EXPECT_EQ("proposal003", candidateLeader3->GetObservedRecord()->holderIdentity);
+    litebus::Terminate(candidateLeader1->GetAID());
+    litebus::Await(candidateLeader1->GetAID());
+    litebus::Terminate(candidateLeader2->GetAID());
+    litebus::Await(candidateLeader2->GetAID());
+    litebus::Terminate(candidateLeader3->GetAID());
+    litebus::Await(candidateLeader3->GetAID());
+}
+
+/**
+ * Feature: K8s Election
+ * Description: elect without leader is overdue
+ * 1. create 3 candidate wait to elect
+ * 2. invoke elect
+ * Expectation: one become leader, other become candidate
+ */
+TEST_F(LeaderTest, K8sMultiElectWithLeaderOverdue)
+{
+    auto mockClient1 = std::make_shared<MockKubeClient>();
+    explorer::ElectionInfo electionInfo1{.identity = "proposal001", .mode = K8S_ELECTION_MODE, .electKeepAliveInterval = 1, .electLeaseTTL = 300, .electRenewInterval= 300, };
+    auto candidateLeader1 = std::make_shared<K8sLeaderActor>("function-master", electionInfo1, mockClient1, "default");
+    explorer::ElectionInfo electionInfo2{.identity = "proposal002", .mode = K8S_ELECTION_MODE, .electKeepAliveInterval = 1, .electLeaseTTL = 300, .electRenewInterval= 300,};
+    auto mockClient2 = std::make_shared<MockKubeClient>();
+    auto candidateLeader2 = std::make_shared<K8sLeaderActor>("function-master", electionInfo2, mockClient2, "default");
+    explorer::ElectionInfo electionInfo3{.identity = "proposal003", .mode = K8S_ELECTION_MODE, .electKeepAliveInterval = 1, .electLeaseTTL = 300, .electRenewInterval= 300,};
+    auto mockClient3 = std::make_shared<MockKubeClient>();
+    auto candidateLeader3 = std::make_shared<K8sLeaderActor>("function-master", electionInfo3, mockClient3, "default");
+    litebus::Promise<std::shared_ptr<V1Lease>> errPromise;
+    errPromise.SetFailed(400);
+    EXPECT_CALL(*mockClient1, ReadNamespacedLease).WillOnce(testing::Return(MockKubeClient::CreateLease("proposal004", "2000-01-01 00:00:00", "2000-01-01 00:00:00"))).WillRepeatedly(testing::Return(MockKubeClient::CreateLease("proposal003")));
+    EXPECT_CALL(*mockClient2, ReadNamespacedLease).WillOnce(testing::Return(MockKubeClient::CreateLease("proposal004", "2000-01-01 00:00:00", "2000-01-01 00:00:00"))).WillRepeatedly(testing::Return(MockKubeClient::CreateLease("proposal003")));
+    EXPECT_CALL(*mockClient3, ReadNamespacedLease).WillOnce(testing::Return(MockKubeClient::CreateLease("proposal004", "2000-01-01 00:00:00", "2000-01-01 00:00:00"))).WillRepeatedly(testing::Return(MockKubeClient::CreateLease("proposal003")));
+    EXPECT_CALL(*mockClient1, ReplaceNamespacedLease).WillRepeatedly(testing::Return(errPromise.GetFuture()));
+    EXPECT_CALL(*mockClient2, ReplaceNamespacedLease).WillRepeatedly(testing::Return(errPromise.GetFuture()));
+    EXPECT_CALL(*mockClient3, ReplaceNamespacedLease).WillRepeatedly(testing::Return(MockKubeClient::CreateLease("proposal003")));
+    litebus::Spawn(candidateLeader1);
+    litebus::Spawn(candidateLeader2);
+    litebus::Spawn(candidateLeader3);
+    litebus::Async(candidateLeader1->GetAID(), &K8sLeaderActor::Elect);
+    litebus::Async(candidateLeader2->GetAID(), &K8sLeaderActor::Elect);
+    litebus::Async(candidateLeader3->GetAID(), &K8sLeaderActor::Elect);
+    ASSERT_AWAIT_TRUE([&]() -> bool { return candidateLeader1->GetObservedRecord() != nullptr && candidateLeader1->GetObservedRecord()->holderIdentity != "proposal004"; });
+    ASSERT_AWAIT_TRUE([&]() -> bool { return candidateLeader2->GetObservedRecord() != nullptr && candidateLeader2->GetObservedRecord()->holderIdentity != "proposal004"; });
+    ASSERT_AWAIT_TRUE([&]() -> bool { return candidateLeader3->GetObservedRecord() != nullptr && candidateLeader3->GetObservedRecord()->holderIdentity != "proposal004"; });
+    EXPECT_EQ("proposal003", candidateLeader1->GetObservedRecord()->holderIdentity);
+    EXPECT_EQ("proposal003", candidateLeader2->GetObservedRecord()->holderIdentity);
+    EXPECT_EQ("proposal003", candidateLeader3->GetObservedRecord()->holderIdentity);
+    litebus::Terminate(candidateLeader1->GetAID());
+    litebus::Await(candidateLeader1->GetAID());
+    litebus::Terminate(candidateLeader2->GetAID());
+    litebus::Await(candidateLeader2->GetAID());
+    litebus::Terminate(candidateLeader3->GetAID());
+    litebus::Await(candidateLeader3->GetAID());
+}
+
+/**
+ * Feature: K8s Election
+ * Description: elect when other leader is valid
+ * 1. create 1 candidate wait to elect
+ * 2. invoke elect
+ * Expectation: elect failed
+ */
+TEST_F(LeaderTest, K8sElectCandidateFail)
+{
+    auto mockClient1 = std::make_shared<MockKubeClient>();
+    explorer::ElectionInfo electionInfo1{.identity = "proposal001", .mode = K8S_ELECTION_MODE, .electKeepAliveInterval = 1, .electLeaseTTL = 300,  };
+    auto candidateLeader1 = std::make_shared<K8sLeaderActor>("function-master", electionInfo1, mockClient1, "default");
+    litebus::Promise<std::shared_ptr<V1Lease>> promise;
+    promise.SetValue(MockKubeClient::CreateLease("proposal003"));
+    EXPECT_CALL(*mockClient1, ReadNamespacedLease).WillRepeatedly(testing::Return(promise.GetFuture()));
+    litebus::Spawn(candidateLeader1);
+    litebus::Async(candidateLeader1->GetAID(), &K8sLeaderActor::Elect);
+    ASSERT_AWAIT_TRUE([&]() -> bool { return candidateLeader1->GetObservedRecord() != nullptr; });
+    EXPECT_EQ("proposal003", candidateLeader1->GetObservedRecord()->holderIdentity);
+    litebus::Terminate(candidateLeader1->GetAID());
+    litebus::Await(candidateLeader1->GetAID());
+}
+
+/**
+ * Feature: K8s Election
+ * Description: elect renew lease
+ * 1. create 3 candidate wait to elect
+ * 2. invoke elect
+ * Expectation: one become leader, other become candidate
+ */
+TEST_F(LeaderTest, K8sElectRenewLease)
+{
+    auto mockClient1 = std::make_shared<MockKubeClient>();
+    explorer::ElectionInfo electionInfo1{.identity = "proposal001", .mode = K8S_ELECTION_MODE, .electKeepAliveInterval = 1, .electLeaseTTL = 300, .electRenewInterval = 1 };
+    auto candidateLeader1 = std::make_shared<K8sLeaderActor>("function-master", electionInfo1, mockClient1, "default");
+    litebus::Promise<std::shared_ptr<V1Lease>> promise;
+    promise.SetValue(MockKubeClient::CreateLease("proposal001"));
+    EXPECT_CALL(*mockClient1, ReadNamespacedLease).WillRepeatedly(testing::Return(promise.GetFuture()));
+    litebus::Future<std::shared_ptr<V1Lease>> body1;
+    EXPECT_CALL(*mockClient1, ReplaceNamespacedLease)
+        .WillOnce(testing::DoAll(test::FutureArg<2>(&body1), testing::Return(MockKubeClient::CreateLease("proposal001"))))
+        .WillRepeatedly(testing::Return(MockKubeClient::CreateLease("proposal001")));
+    litebus::Spawn(candidateLeader1);
+    litebus::Async(candidateLeader1->GetAID(), &K8sLeaderActor::Elect);
+    ASSERT_AWAIT_READY(body1);
+    litebus::Terminate(candidateLeader1->GetAID());
+    litebus::Await(candidateLeader1->GetAID());
+}
+
 }  // namespace functionsystem::test

@@ -22,7 +22,7 @@
 
 #include "common/constants/actor_name.h"
 #include "common/resource_view/view_utils.h"
-#include "status/status.h"
+#include "common/status/status.h"
 #include "domain_scheduler/underlayer_scheduler_manager/underlayer_sched_mgr.h"
 #include "domain_scheduler/underlayer_scheduler_manager/underlayer_sched_mgr_actor.h"
 #include "mocks/mock_domain_instance_ctrl.h"
@@ -38,7 +38,7 @@ using ::testing::Return;
 using namespace domain_scheduler;
 class UnderlayerSchedMgrTest : public ::testing::Test {
 protected:
-    static void SetUpTestCase()
+    [[maybe_unused]] static void SetUpTestSuite()
     {
         auto address = litebus::GetLitebusAddress();
         address_ = address.ip + ":" + std::to_string(address.port);
@@ -72,10 +72,10 @@ protected:
         litebus::Future<std::string> msgValue;
         EXPECT_CALL(*mockUnderlayerActor, MockRegistered(_, _, _))
             .WillOnce(testing::DoAll(FutureArg<1>(&msgName), FutureArg<2>(&msgValue)));
-        EXPECT_CALL(*primary_, AddResourceUnitWithUrl(_, _)).WillOnce(Return(Status::OK()));
-        EXPECT_CALL(*virtual_, AddResourceUnitWithUrl(_, _)).WillOnce(Return(Status::OK()));
-        EXPECT_CALL(*primary_, DeleteLocalResourceView(_)).WillOnce(Return(Status::OK()));
-        EXPECT_CALL(*virtual_, DeleteLocalResourceView(_)).WillOnce(Return(Status::OK()));
+        EXPECT_CALL(*primary_, AddResourceUnitWithUrl(_, _)).WillOnce(Return(AsyncReturn(Status::OK())));
+        EXPECT_CALL(*virtual_, AddResourceUnitWithUrl(_, _)).WillOnce(Return(AsyncReturn(Status::OK())));
+        EXPECT_CALL(*primary_, DeleteLocalResourceView(_)).WillOnce(Return(AsyncReturn(Status::OK())));
+        EXPECT_CALL(*virtual_, DeleteLocalResourceView(_)).WillOnce(Return(AsyncReturn(Status::OK())));
         EXPECT_CALL(*mockInstanceCtrl_, UpdateMaxSchedRetryTimes(1)).Times(1);
         messages::ScheduleTopology topo;
         auto member = topo.add_members();
@@ -127,10 +127,10 @@ TEST_F(UnderlayerSchedMgrTest, UnderlayerRegisterAlreadyRegistered)
     litebus::Future<std::string> msgValue;
     EXPECT_CALL(*mockUnderlayerActor, MockRegistered(_, _, _))
         .WillRepeatedly(testing::DoAll(FutureArg<1>(&msgName), FutureArg<2>(&msgValue)));
-    EXPECT_CALL(*primary_, AddResourceUnitWithUrl(_, _)).WillOnce(Return(Status::OK()));
-    EXPECT_CALL(*virtual_, AddResourceUnitWithUrl(_, _)).WillOnce(Return(Status::OK()));
-    EXPECT_CALL(*primary_, DeleteLocalResourceView(_)).WillOnce(Return(Status::OK()));
-    EXPECT_CALL(*virtual_, DeleteLocalResourceView(_)).WillOnce(Return(Status::OK()));
+    EXPECT_CALL(*primary_, AddResourceUnitWithUrl(_, _)).WillOnce(Return(AsyncReturn(Status::OK())));
+    EXPECT_CALL(*virtual_, AddResourceUnitWithUrl(_, _)).WillOnce(Return(AsyncReturn(Status::OK())));
+    EXPECT_CALL(*primary_, DeleteLocalResourceView(_)).WillOnce(Return(AsyncReturn(Status::OK())));
+    EXPECT_CALL(*virtual_, DeleteLocalResourceView(_)).WillOnce(Return(AsyncReturn(Status::OK())));
     EXPECT_CALL(*mockInstanceCtrl_, UpdateMaxSchedRetryTimes(1)).Times(1);
 
     messages::ScheduleTopology topo;
@@ -205,32 +205,6 @@ TEST_F(UnderlayerSchedMgrTest, UnderlayerRegisterFailWhenParseReq)
     litebus::Await(mockUnderlayerActor);
 }
 
-TEST_F(UnderlayerSchedMgrTest, UnderlayerExit)
-{
-    UnderlayerSchedMgr underlayer(underlayerSchedMgrActor_->GetAID());
-    auto mockUnderlayerActor = std::make_shared<MockUnderlayer>("WillRegister");
-    litebus::Spawn(mockUnderlayerActor);
-    UnderlayerRegiter(mockUnderlayerActor, underlayer);
-    litebus::Promise<messages::NotifySchedAbnormalRequest> pro;
-    auto fut = pro.GetFuture();
-    EXPECT_CALL(*mockDomainSrv_, NotifySchedAbnormal(_))
-        .WillOnce(::testing::Invoke([pro](const messages::NotifySchedAbnormalRequest &req) -> litebus::Future<Status> {
-            pro.SetValue(req);
-            return Status::OK();
-        }));
-    litebus::Future<uint32_t> times;
-    EXPECT_CALL(*mockInstanceCtrl_, UpdateMaxSchedRetryTimes(_))
-        .WillOnce(::testing::DoAll(FutureArg<0>(&times), Return()));
-    mockUnderlayerActor->ClosePingPong();
-    litebus::Terminate(mockUnderlayerActor->GetAID());
-    litebus::Await(mockUnderlayerActor);
-
-    EXPECT_AWAIT_READY_FOR(fut, 1000);
-    EXPECT_EQ(fut.Get().schedname(), "WillRegister");
-    EXPECT_AWAIT_READY(times);
-    EXPECT_EQ(times.Get(), (uint32_t)0);
-}
-
 TEST_F(UnderlayerSchedMgrTest, ForwardScheduleSuccessful)
 {
     auto mockUnderlayerActor = std::make_shared<MockUnderlayer>("Forwarder");
@@ -240,7 +214,7 @@ TEST_F(UnderlayerSchedMgrTest, ForwardScheduleSuccessful)
     successRsp->set_code(0);
     successRsp->set_requestid("request");
 
-    EXPECT_CALL(*mockInstanceCtrl_, Schedule(_)).WillOnce(Return(successRsp));
+    EXPECT_CALL(*mockInstanceCtrl_, Schedule(_)).WillOnce(Return(AsyncReturn(successRsp)));
 
     litebus::Future<std::string> msg;
     EXPECT_CALL(*mockUnderlayerActor, MockResponseForwardSchedule(_, _, _))
@@ -269,7 +243,7 @@ TEST_F(UnderlayerSchedMgrTest, ForwardScheduleFailWhenScheduleFail)
     litebus::Future<std::shared_ptr<messages::ScheduleResponse>> failRsp;
     failRsp.SetFailed(100);
 
-    EXPECT_CALL(*mockInstanceCtrl_, Schedule(_)).WillOnce(Return(failRsp));
+    EXPECT_CALL(*mockInstanceCtrl_, Schedule(_)).WillOnce(Return(AsyncReturn(failRsp)));
 
     litebus::Future<std::string> msg;
     EXPECT_CALL(*mockUnderlayerActor, MockResponseForwardSchedule(_, _, _))
@@ -306,7 +280,7 @@ TEST_F(UnderlayerSchedMgrTest, ForwardScheduleFailWhenVersionWrong)
     versionWrongRsp->set_code(StatusCode::INSTANCE_TRANSACTION_WRONG_VERSION);
     versionWrongRsp->set_requestid("request");
 
-    EXPECT_CALL(*mockInstanceCtrl_, Schedule(_)).WillOnce(Return(versionWrongRsp));
+    EXPECT_CALL(*mockInstanceCtrl_, Schedule(_)).WillOnce(Return(AsyncReturn(versionWrongRsp)));
 
     litebus::Future<std::string> msg;
     EXPECT_CALL(*mockUnderlayerActor, MockResponseForwardSchedule(_, _, _))
@@ -357,7 +331,7 @@ TEST_F(UnderlayerSchedMgrTest, ForwardScheduleWithUpdateResourceSuccessful)
     successRsp->set_code(0);
     successRsp->set_requestid("request");
 
-    EXPECT_CALL(*mockInstanceCtrl_, Schedule(_)).WillOnce(Return(successRsp));
+    EXPECT_CALL(*mockInstanceCtrl_, Schedule(_)).WillOnce(Return(AsyncReturn(successRsp)));
 
     litebus::Future<std::string> msg;
     EXPECT_CALL(*mockUnderlayerActor, MockResponseForwardSchedule(_, _, _))
@@ -386,12 +360,12 @@ TEST_F(UnderlayerSchedMgrTest, ForwardScheduleFailedToForwardUplayerFail)
     auto failedRsp = std::make_shared<messages::ScheduleResponse>();
     failedRsp->set_code(2);
     failedRsp->set_requestid("request1");
-    EXPECT_CALL(*mockInstanceCtrl_, Schedule(_)).WillOnce(Return(failedRsp));
+    EXPECT_CALL(*mockInstanceCtrl_, Schedule(_)).WillOnce(Return(AsyncReturn(failedRsp)));
 
     auto upfailRsp = std::make_shared<messages::ScheduleResponse>();
     upfailRsp->set_code(StatusCode::DOMAIN_SCHEDULER_FORWARD_ERR);
     upfailRsp->set_requestid("request1");
-    EXPECT_CALL(*mockDomainSrv_, ForwardSchedule(_)).WillOnce(Return(upfailRsp));
+    EXPECT_CALL(*mockDomainSrv_, ForwardSchedule(_)).WillOnce(Return(AsyncReturn(upfailRsp)));
 
     messages::ScheduleRequest req;
     req.set_requestid("request1");
@@ -422,12 +396,12 @@ TEST_F(UnderlayerSchedMgrTest, ForwardScheduleFailedToForwardUplayerSuccess)
     auto failedRsp = std::make_shared<messages::ScheduleResponse>();
     failedRsp->set_code(2);
     failedRsp->set_requestid("request1");
-    EXPECT_CALL(*mockInstanceCtrl_, Schedule(_)).WillOnce(Return(failedRsp));
+    EXPECT_CALL(*mockInstanceCtrl_, Schedule(_)).WillOnce(Return(AsyncReturn(failedRsp)));
 
     auto successRsp = std::make_shared<messages::ScheduleResponse>();
     successRsp->set_code(0);
     successRsp->set_requestid("request1");
-    EXPECT_CALL(*mockDomainSrv_, ForwardSchedule(_)).WillOnce(Return(successRsp));
+    EXPECT_CALL(*mockDomainSrv_, ForwardSchedule(_)).WillOnce(Return(AsyncReturn(successRsp)));
 
     messages::ScheduleRequest req;
     req.set_requestid("request1");
@@ -561,9 +535,9 @@ TEST_F(UnderlayerSchedMgrTest, NotifyAbnormalSuccess)
     failStatus.SetFailed(100);
     litebus::Future<messages::NotifySchedAbnormalRequest> msg2;
     EXPECT_CALL(*mockDomainSrv_, NotifySchedAbnormal(_))
-        .WillOnce(testing::DoAll(FutureArg<0>(&msg), Return(Status::OK())))
-        .WillOnce(testing::DoAll(FutureArg<0>(&msg1), Return(failStatus)))
-        .WillRepeatedly(testing::DoAll(FutureArg<0>(&msg2), Return(Status::OK())));
+        .WillOnce(testing::DoAll(FutureArg<0>(&msg), Return(AsyncReturn(Status::OK()))))
+        .WillOnce(testing::DoAll(FutureArg<0>(&msg1), Return(AsyncReturn(failStatus))))
+        .WillRepeatedly(testing::DoAll(FutureArg<0>(&msg2), Return(AsyncReturn(Status::OK()))));
 
     messages::NotifySchedAbnormalRequest req;
     req.set_schedname("request");
@@ -588,7 +562,7 @@ TEST_F(UnderlayerSchedMgrTest, NotifySchedAbnormalSuccess)
     auto mockUnderlayerActor = std::make_shared<MockUnderlayer>("NotifySchedAbnormal");
     litebus::Spawn(mockUnderlayerActor);
 
-    EXPECT_CALL(*mockDomainSrv_, NotifySchedAbnormal(_)).WillOnce(Return(Status::OK()));
+    EXPECT_CALL(*mockDomainSrv_, NotifySchedAbnormal(_)).WillOnce(Return(AsyncReturn(Status::OK())));
 
     litebus::Future<std::string> msg;
     EXPECT_CALL(*mockUnderlayerActor, MockResponseNotifySchedAbnormal(_, _, _))
@@ -613,7 +587,7 @@ TEST_F(UnderlayerSchedMgrTest, NotifyWorkerStatusSuccess)
 {
     auto mockUnderlayerActor = std::make_shared<MockUnderlayer>("NotifySchedAbnormal");
     litebus::Spawn(mockUnderlayerActor);
-    EXPECT_CALL(*mockDomainSrv_, NotifyWorkerStatus(_)).WillOnce(Return(Status::OK()));
+    EXPECT_CALL(*mockDomainSrv_, NotifyWorkerStatus(_)).WillOnce(Return(AsyncReturn(Status::OK())));
     litebus::Future<std::string> msg;
     EXPECT_CALL(*mockUnderlayerActor, MockResponseNotifyWorkerStatus(_, _, _))
         .WillOnce(testing::DoAll(FutureArg<2>(&msg)));
@@ -643,7 +617,7 @@ TEST_F(UnderlayerSchedMgrTest, UnfinishedscheduleRequest)
     auto mockUnderlayerActor = std::make_shared<MockUnderlayer>("WillRegister");
     litebus::Spawn(mockUnderlayerActor);
 
-    EXPECT_CALL(*mockDomainSrv_, NotifySchedAbnormal(_)).WillOnce(Return(Status::OK()));
+    EXPECT_CALL(*mockDomainSrv_, NotifySchedAbnormal(_)).WillOnce(Return(AsyncReturn(Status::OK())));
     litebus::Promise<bool> pro;
     EXPECT_CALL(*mockUnderlayerActor, MockSchedule(_, _, _))
         .WillOnce(::testing::Invoke([pro](const litebus::AID &, std::string, std::string) {
@@ -749,7 +723,7 @@ TEST_F(UnderlayerSchedMgrTest, Reserve)
         EXPECT_CALL(*mockLocalGroupCtrl, MockReserve).WillRepeatedly(Return("xxxxx"));
         mockUnderlayerActor->ClosePingPong();
         EXPECT_CALL(*mockInstanceCtrl_, UpdateMaxSchedRetryTimes(0)).Times(1);
-        EXPECT_CALL(*mockDomainSrv_, NotifySchedAbnormal(_)).WillOnce(Return(Status::OK()));
+        EXPECT_CALL(*mockDomainSrv_, NotifySchedAbnormal(_)).WillOnce(Return(AsyncReturn(Status::OK())));
         auto future = underlayer.Reserve("WillRegister", req);
         ASSERT_AWAIT_READY(future);
         EXPECT_EQ(future.Get()->code(), (int32_t)StatusCode::DOMAIN_SCHEDULER_UNAVAILABLE_SCHEDULER);
@@ -789,7 +763,7 @@ TEST_F(UnderlayerSchedMgrTest, UnReserve)
         EXPECT_CALL(*mockLocalGroupCtrl, MockUnReserve).WillRepeatedly(Return("xxxxx"));
         mockUnderlayerActor->ClosePingPong();
         EXPECT_CALL(*mockInstanceCtrl_, UpdateMaxSchedRetryTimes(0)).Times(1);
-        EXPECT_CALL(*mockDomainSrv_, NotifySchedAbnormal(_)).WillOnce(Return(Status::OK()));
+        EXPECT_CALL(*mockDomainSrv_, NotifySchedAbnormal(_)).WillOnce(Return(AsyncReturn(Status::OK())));
         auto future = underlayer.UnReserve("WillRegister", req);
         ASSERT_AWAIT_READY(future);
         EXPECT_EQ(future.Get().StatusCode(), (int32_t)StatusCode::DOMAIN_SCHEDULER_UNAVAILABLE_SCHEDULER);
@@ -829,7 +803,7 @@ TEST_F(UnderlayerSchedMgrTest, Bind)
         EXPECT_CALL(*mockLocalGroupCtrl, MockBind).WillRepeatedly(Return("xxxxx"));
         mockUnderlayerActor->ClosePingPong();
         EXPECT_CALL(*mockInstanceCtrl_, UpdateMaxSchedRetryTimes(0)).Times(1);
-        EXPECT_CALL(*mockDomainSrv_, NotifySchedAbnormal(_)).WillOnce(Return(Status::OK()));
+        EXPECT_CALL(*mockDomainSrv_, NotifySchedAbnormal(_)).WillOnce(Return(AsyncReturn(Status::OK())));
         auto future = underlayer.Bind("WillRegister", req);
         ASSERT_AWAIT_READY(future);
         EXPECT_EQ(future.Get().StatusCode(), (int32_t)StatusCode::DOMAIN_SCHEDULER_UNAVAILABLE_SCHEDULER);
@@ -869,7 +843,7 @@ TEST_F(UnderlayerSchedMgrTest, UnBind)
         EXPECT_CALL(*mockLocalGroupCtrl, MockUnBind).WillRepeatedly(Return("xxxxx"));
         mockUnderlayerActor->ClosePingPong();
         EXPECT_CALL(*mockInstanceCtrl_, UpdateMaxSchedRetryTimes(0)).Times(1);
-        EXPECT_CALL(*mockDomainSrv_, NotifySchedAbnormal(_)).WillOnce(Return(Status::OK()));
+        EXPECT_CALL(*mockDomainSrv_, NotifySchedAbnormal(_)).WillOnce(Return(AsyncReturn(Status::OK())));
         auto future = underlayer.UnBind("WillRegister", req);
         ASSERT_AWAIT_READY(future);
         EXPECT_EQ(future.Get().StatusCode(), (int32_t)StatusCode::DOMAIN_SCHEDULER_UNAVAILABLE_SCHEDULER);

@@ -19,7 +19,7 @@
 #include <thread>
 
 #include "async/async.hpp"
-#include "logs/logging.h"
+#include "common/logs/logging.h"
 #include "grpcpp/server_builder.h"
 #include "stubs/etcd_service/etcd_kv_service.h"
 #include "stubs/etcd_service/etcd_lease_service.h"
@@ -69,7 +69,7 @@ void EtcdServiceDriver::StartServer(const std::string &address)
 void EtcdServiceDriver::StopServer()
 {
     if (server_ != nullptr) {
-        server_->Shutdown();
+        server_->Shutdown(std::chrono::system_clock::now());
         server_ = nullptr;
     }
 

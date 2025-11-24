@@ -24,7 +24,7 @@ namespace functionsystem::test {
 
 class MetaStoreMonitorTest : public ::testing::Test {
 protected:
-    [[maybe_unused]] static void SetUpTestCase()
+    [[maybe_unused]] static void SetUpTestSuite()
     {
         int metaStoreServerPort = functionsystem::test::FindAvailablePort();
         metaStoreServerHost_ = "127.0.0.1:" + std::to_string(metaStoreServerPort);

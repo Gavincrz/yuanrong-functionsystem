@@ -17,7 +17,7 @@
 #ifndef TEST_UNIT_MOCKS_MOCK_MODULE_DRIVER_H
 #define TEST_UNIT_MOCKS_MOCK_MODULE_DRIVER_H
 
-#include "module_driver.h"
+#include "common/utils/module_driver.h"
 
 namespace functionsystem::test {
 class MockModuleDriver : public ModuleDriver {

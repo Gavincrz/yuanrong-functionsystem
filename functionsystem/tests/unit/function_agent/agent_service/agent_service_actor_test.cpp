@@ -23,20 +23,23 @@
 
 #include "agent_service_test_actor.h"
 #include "common/constants/actor_name.h"
-#include "logs/logging.h"
-#include "metadata/metadata.h"
+#include "common/logs/logging.h"
+#include "common/metadata/metadata.h"
 #define private public  // only for test
-#include "metrics/metrics_adapter.h"
+#include "common/metrics/metrics_adapter.h"
 #undef private  // reset
+#include "common/types/instance_state.h"
 #include "common/utils/exec_utils.h"
 #include "common/utils/hash_util.h"
-#include "hex/hex.h"
+#include "common/hex/hex.h"
 #include "common/utils/struct_transfer.h"
 #include "function_agent/code_deployer/copy_deployer.h"
 #include "function_agent/code_deployer/local_deployer.h"
 #include "function_agent/code_deployer/working_dir_deployer.h"
+#include "function_agent/code_deployer/shared_dir_deployer.h"
 #include "function_agent/common/constants.h"
 #include "mocks/mock_agent_s3_deployer.h"
+#include "mocks/mock_test_agent_s3_deployer.h"
 #include "mocks/mock_exec_utils.h"
 #include "utils/future_test_helper.h"
 
@@ -62,6 +65,11 @@ namespace {
     const std::string TEST_LAYER_OBJECT_ID = "testObjectID-layer";
     const std::string TEST_LAYER_OBJECT_ID_2 = "testObjectID-layer2";
     const std::string LOCAL_DEPLOY_DIR = "/home/local/test";
+    const std::string TEST_WRONG_FIREWALL_CONFIG = R"([{"firewallConfig": {"chain": "OUTPUT", "table": "", "operation": "add", "target": "127.0.0.1", "args": "-j ACCEPT"}}])";
+    const std::string TEST_WRONG_TUNNEL_CONFIG = R"([{"tunnelConfig": {"tunnelName": "", "remoteIP": "127.0.0.1", "mode": "ipip"}}])";
+    const std::string TEST_WRONG_ROUTE_CONFIG = R"([{"routeConfig": {"gateway": "127.0.0.1", "cidr": ""}}])";
+    const std::string TEST_WRONG_PROBER_CONFIG = R"([{"protocol": "ICMP", "address": "127.0.0.1", "interval": 1, "timeout": 1, "failureThreshold": 1}])";
+    const std::string TEST_PROBER_CONFIG = R"([{"protocol": "ICMP", "address": "127.0.0.1", "interval": 1, "timeout": 1, "failureThreshold": 1}])";
     const std::string TEST_PODIP_IPSET_NAME = "test-podip-whitelist"; // length cannot exceed 31
     const std::string TEST_TENANT_ID = "tenant001";
 
@@ -88,6 +96,7 @@ public:
     {
         auto deployer = std::make_shared<function_agent::LocalDeployer>();
         auto workingDirDeployer = std::make_shared<function_agent::WorkingDirDeployer>();
+        auto sharedDirDeployer = std::make_shared<function_agent::SharedDirDeployer>();
         auto s3Config = std::make_shared<S3Config>();
         messages::CodePackageThresholds codePackageThresholds;
         auto mockDeployer = std::make_shared<MockAgentS3Deployer>(s3Config, codePackageThresholds);
@@ -100,9 +109,11 @@ public:
         dstActor_->SetDeployers(function_agent::S3_STORAGE_TYPE, mockDeployer);
         dstActor_->SetDeployers(function_agent::LOCAL_STORAGE_TYPE, deployer);
         dstActor_->SetDeployers(function_agent::WORKING_DIR_STORAGE_TYPE, workingDirDeployer);
+        dstActor_->SetDeployers(SHARED_DIR_STORAGE_TYPE, sharedDirDeployer);
         dstActor_->isRegisterCompleted_ = true;
         dstActor_->isUnitTestSituation_ = true;
         dstActor_->SetIpsetName(TEST_PODIP_IPSET_NAME);
+        dstActor_->SetPingTimeoutMs(1000);
         std::shared_ptr<IpsetIpv4NetworkIsolation> isolation = std::make_shared<IpsetIpv4NetworkIsolation>(dstActor_->GetIpsetName());
         commandRunner_ = std::make_shared<MockCommandRunner>();
         isolation->SetCommandRunner(commandRunner_);
@@ -118,6 +129,7 @@ public:
         testFuncAgentMgrActor_->actorMessageList_.emplace("UpdateCred");
         testFuncAgentMgrActor_->actorMessageList_.emplace("SetNetworkIsolationRequest");
         testFuncAgentMgrActor_->actorMessageList_.emplace("QueryDebugInstanceInfos");
+        testFuncAgentMgrActor_->actorMessageList_.emplace("NotifyFunctionStatusChange");
         litebus::Spawn(testFuncAgentMgrActor_, true);
 
         testMetricsActor_ = std::make_shared<function_agent::test::MockMetricsActor>("testMetricsActor");
@@ -370,6 +382,62 @@ TEST_F(AgentServiceActorTest, DeployInstanceErrorRequest)
     EXPECT_EQ(testFuncAgentMgrActor_->GetDeployInstanceResponse()->code(),
               StatusCode::ERR_USER_CODE_LOAD);
 
+}
+
+/**
+ * Feature: AgentServiceActor--DeployInstanceSetNetworkFailed
+ * Description: deploy instance fail with error network configuration
+ * Steps:
+ * 1. Create wrong networkConfig json value and set createoptions in DeployInstanceRequest and then send request
+ * 2. Create empty networkConfig json value and wrong proberConfig json value and set createoptions in DeployInstanceRequest
+ * and then send request
+ * 3. Create empty networkConfig json value and set createoptions in DeployInstanceRequest and then send request
+ * and simulate RuntimeManager to send err StartInstanceResponse
+ * Expectation:
+ * 1. Cause set network err, gentServiceActor will send DeployInstanceResponse with errcode FUNC_AGENT_SET_NETWORK_ERROR
+ * back to FunctionAgentMgrActor but not send StartInstance request to RuntimeManager
+ * 2. Cause set network err, gentServiceActor will send DeployInstanceResponse with errcode FUNC_AGENT_NETWORK_WORK_ERROR
+ * back to FunctionAgentMgrActor but not send StartInstance request to RuntimeManager
+ * 3. RuntimeManager will receive StartInstance request from AgentServiceActor, but FunctionAgentMgrActor won't receive DeployInstanceResponse
+ */
+TEST_F(AgentServiceActorTest, DeployInstanceSetNetworkFailed)
+{
+    messages::DeployInstanceRequest deployInstance;
+    deployInstance.set_requestid(TEST_REQUEST_ID);
+    deployInstance.set_instanceid(TEST_INSTANCE_ID);
+    deployInstance.mutable_funcdeployspec()->set_storagetype(function_agent::LOCAL_STORAGE_TYPE);
+    EXPECT_CALL(*testRuntimeManager_, MockStartInstanceResponse).WillRepeatedly(Return("invalid msg")); // send err response
+    auto deployer = std::make_shared<function_agent::LocalDeployer>();
+    dstActor_->SetDeployers(function_agent::LOCAL_STORAGE_TYPE, deployer);
+    // error network config --> SetFireWall Failed
+    deployInstance.mutable_createoptions()->operator[]("networkConfig") = TEST_WRONG_FIREWALL_CONFIG;
+    testFuncAgentMgrActor_->SendRequestToAgentServiceActor(dstActor_->GetAID(),
+                                                           "DeployInstance",
+                                                           std::move(deployInstance.SerializeAsString()));
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    EXPECT_EQ(testFuncAgentMgrActor_->GetDeployInstanceResponse()->requestid(), TEST_REQUEST_ID);
+    EXPECT_EQ(testFuncAgentMgrActor_->GetDeployInstanceResponse()->code(), StatusCode::FUNC_AGENT_SET_NETWORK_ERROR);
+    testFuncAgentMgrActor_->ResetDeployInstanceResponse();
+    EXPECT_EQ(testRuntimeManager_->GetReceivedStartInstanceRequest(), false);
+    // error prober config
+    deployInstance.mutable_createoptions()->operator[]("networkConfig") = "";
+    deployInstance.mutable_createoptions()->operator[]("proberConfig") = "invalid config $$";
+    testFuncAgentMgrActor_->SendRequestToAgentServiceActor(dstActor_->GetAID(),
+                                                           "DeployInstance",
+                                                           std::move(deployInstance.SerializeAsString()));
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    EXPECT_EQ(testFuncAgentMgrActor_->GetDeployInstanceResponse()->requestid(), TEST_REQUEST_ID);
+    EXPECT_EQ(testFuncAgentMgrActor_->GetDeployInstanceResponse()->code(), StatusCode::FUNC_AGENT_NETWORK_WORK_ERROR);
+    testFuncAgentMgrActor_->ResetDeployInstanceResponse();
+    EXPECT_EQ(testRuntimeManager_->GetReceivedStartInstanceRequest(), false);
+    // success
+    deployInstance.mutable_createoptions()->erase("proberConfig");
+    testFuncAgentMgrActor_->SendRequestToAgentServiceActor(dstActor_->GetAID(),
+                                                           "DeployInstance",
+                                                           std::move(deployInstance.SerializeAsString()));
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    EXPECT_EQ(testFuncAgentMgrActor_->GetDeployInstanceResponse()->requestid(), "");
+    EXPECT_EQ(testRuntimeManager_->GetReceivedStartInstanceRequest(), true);
 }
 
 /**
@@ -698,6 +766,20 @@ TEST_F(AgentServiceActorTest, RepeatedlyDeployInstanceWithOneLayersAndDelegateVi
     EXPECT_TRUE(litebus::os::Rmdir(delegateDestination).IsNone());
 }
 
+std::string DELEGATE_LAYER_DESTINATION = "/home/test/layer/testUserLibCodeBucketID/testUserLibCodeObjectID";
+std::string DELEGATE_DESTINATION = "/home/test/layer/func/testUserCodeBucketID/testUserCodeObjectID";
+std::string DESTINATION = "/home/layer/func/" + TEST_BUCKET_ID + "/" + TEST_OBJECT_ID;
+
+void BuildCreateOptions(const std::unique_ptr<messages::DeployInstanceRequest> &request, const std::string &code,
+                        const std::string &layer)
+{
+    request->mutable_createoptions()->erase("DELEGATE_DOWNLOAD");
+    request->mutable_createoptions()->erase("DELEGATE_LAYER_DOWNLOAD");
+    // add delegate code
+    request->mutable_createoptions()->insert({ "DELEGATE_DOWNLOAD", code });
+    request->mutable_createoptions()->insert({ "DELEGATE_LAYER_DOWNLOAD", layer });
+}
+
 /**
  * Feature: AgentServiceActor--DeployInstanceWithDelegateCode
  * Description: Deploy instance with user delegate code and lib
@@ -706,13 +788,15 @@ TEST_F(AgentServiceActorTest, RepeatedlyDeployInstanceWithOneLayersAndDelegateVi
  * 2. set DELEGATE_DOWNLOAD, DELEGATE_LAYER_DOWNLOAD and S3_DEPLOY_DIR
  * 3. Mock FunctionAgentMgrActor to send DeployInstance, mock RuntimeManager to return StartInstanceReponse, and mock
  * S3Deployer to download code packages and create dir.
- * 4. First send, DELEGATE_DOWNLOAD and DELEGATE_LAYER_DOWNLOAD both have hostName, token, temporayAccessKey and temporarySecretKey
- * 5. Second send, DELEGATE_DOWNLOAD and DELEGATE_LAYER_DOWNLOAD both have token, temporayAccessKey and temporarySecretKey, without hostName
+ * 4. First send, DELEGATE_DOWNLOAD and DELEGATE_LAYER_DOWNLOAD both have hostName, token, temporayAccessKey and
+ * temporarySecretKey
+ * 5. Second send, DELEGATE_DOWNLOAD and DELEGATE_LAYER_DOWNLOAD both have token, temporayAccessKey and
+ * temporarySecretKey, without hostName
  * 6. Third send, DELEGATE_DOWNLOAD and DELEGATE_LAYER_DOWNLOAD both just have hostName
  * 7. Forth send, DELEGATE_DOWNLOAD with local file
  * Expectation:
- * 1. First deploy, runtime code, delegate lib code and delegate code should create dir respectively, each one has one code refer,
- * FunctionAgentMgrActor will receive DeployInstanceResponse
+ * 1. First deploy, runtime code, delegate lib code and delegate code should create dir respectively, each one has one
+ * code refer, FunctionAgentMgrActor will receive DeployInstanceResponse
  * 2. Second deploy, runtime code, delegate lib code and delegate code have two code refer respectively,
  * FunctionAgentMgrActor will receive DeployInstanceResponse again
  * 4. Third deploy, runtime code, delegate lib code and delegate code have three code refer respectively,
@@ -730,110 +814,87 @@ TEST_F(AgentServiceActorTest, DeployInstanceWithDelegateCode)
     spec->set_deploydir("/home");
     spec->set_bucketid(TEST_BUCKET_ID);
     spec->set_objectid(TEST_OBJECT_ID);
-    // add delegate code
-    deployInstanceReq->mutable_createoptions()->insert(
-        { "DELEGATE_DOWNLOAD",
-          R"({"appId":"userCode", "bucketId":"testUserCodeBucketID", "objectId":"testUserCodeObjectID", "hostName":"xx", "securityToken":"xxx", "temporayAccessKey":"xxx", "temporarySecretKey":"xxx","sha256":"","sha512":"aaaaaaaa"})" });
-    deployInstanceReq->mutable_createoptions()->insert(
-        { "DELEGATE_LAYER_DOWNLOAD",
-          R"([{"appId":"userCode-layer", "bucketId":"testUserLibCodeBucketID", "objectId":"testUserLibCodeObjectID", "hostName":"xx", "securityToken":"xxx", "temporayAccessKey":"xxx", "temporarySecretKey":"xxx","sha256":"","sha512":"aaaaaaaa"}])" });
-    // set extractly layer deploy dir
-    deployInstanceReq->mutable_createoptions()->insert(
-        { "S3_DEPLOY_DIR",
-          "/home/test" });
-    std::string destination = "/home/layer/func/" + TEST_BUCKET_ID + "/" + TEST_OBJECT_ID;
-    std::string delegateLayerDestination = "/home/test/layer/testUserLibCodeBucketID/testUserLibCodeObjectID";
-    std::string delegateDestination = "/home/test/layer/func/testUserCodeBucketID/testUserCodeObjectID";
-    litebus::os::Rmdir(destination);
-    litebus::os::Rmdir(delegateLayerDestination);
-    litebus::os::Rmdir(delegateDestination);
+
+    BuildCreateOptions(
+        deployInstanceReq,
+        R"({"appId":"userCode", "bucketId":"testUserCodeBucketID", "objectId":"testUserCodeObjectID", "hostName":"xx", "securityToken":"xxx", "temporayAccessKey":"xxx", "temporarySecretKey":"xxx","sha256":"","sha512":"aaaaaaaa"})",
+        R"([{"appId":"userCode-layer", "bucketId":"testUserLibCodeBucketID", "objectId":"testUserLibCodeObjectID", "hostName":"xx", "securityToken":"xxx", "temporayAccessKey":"xxx", "temporarySecretKey":"xxx","sha256":"","sha512":"aaaaaaaa"}])");
+    deployInstanceReq->mutable_createoptions()->insert({ "S3_DEPLOY_DIR", "/home/test" });
+    litebus::os::Rmdir(DESTINATION);
+    litebus::os::Rmdir(DELEGATE_LAYER_DESTINATION);
+    litebus::os::Rmdir(DELEGATE_DESTINATION);
 
     messages::StartInstanceResponse startInstanceResponse;
     startInstanceResponse.set_requestid(TEST_REQUEST_ID);
     EXPECT_CALL(*testRuntimeManager_, MockStartInstanceResponse)
         .WillOnce(Return(startInstanceResponse.SerializeAsString()));
 
-    testFuncAgentMgrActor_->SendRequestToAgentServiceActor(dstActor_->GetAID(),
-                                                           "DeployInstance",
+    testFuncAgentMgrActor_->SendRequestToAgentServiceActor(dstActor_->GetAID(), "DeployInstance",
                                                            std::move(deployInstanceReq->SerializeAsString()));
-    ASSERT_AWAIT_TRUE([&]() -> bool { return litebus::os::ExistPath(destination); });
-    ASSERT_AWAIT_TRUE([&]() -> bool { return litebus::os::ExistPath(delegateLayerDestination); });
-    ASSERT_AWAIT_TRUE([&]() -> bool { return litebus::os::ExistPath(delegateDestination); });
+    ASSERT_AWAIT_TRUE([&]() -> bool { return litebus::os::ExistPath(DESTINATION); });
+    ASSERT_AWAIT_TRUE([&]() -> bool { return litebus::os::ExistPath(DELEGATE_LAYER_DESTINATION); });
+    ASSERT_AWAIT_TRUE([&]() -> bool { return litebus::os::ExistPath(DELEGATE_DESTINATION); });
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    EXPECT_EQ(JudgeCodeReferNum(dstActor_->GetCodeReferManager(), destination), static_cast<uint32_t>(1));
-    EXPECT_EQ(JudgeCodeReferNum(dstActor_->GetCodeReferManager(), delegateLayerDestination), static_cast<uint32_t>(1));
-    EXPECT_EQ(JudgeCodeReferNum(dstActor_->GetCodeReferManager(), delegateDestination), static_cast<uint32_t>(1));
+    EXPECT_EQ(JudgeCodeReferNum(dstActor_->GetCodeReferManager(), DESTINATION), static_cast<uint32_t>(1));
+    EXPECT_EQ(JudgeCodeReferNum(dstActor_->GetCodeReferManager(), DELEGATE_LAYER_DESTINATION), static_cast<uint32_t>(1));
+    EXPECT_EQ(JudgeCodeReferNum(dstActor_->GetCodeReferManager(), DELEGATE_DESTINATION), static_cast<uint32_t>(1));
     EXPECT_EQ(testFuncAgentMgrActor_->GetDeployInstanceResponse()->requestid(), TEST_REQUEST_ID);
     testFuncAgentMgrActor_->ResetDeployInstanceResponse();
     // set DELEGATE_DOWNLOAD and DELEGATE_LAYER_DOWNLOAD with empty hostName
-    deployInstanceReq->mutable_createoptions()->erase("DELEGATE_DOWNLOAD");
-    deployInstanceReq->mutable_createoptions()->erase("DELEGATE_LAYER_DOWNLOAD");
-    deployInstanceReq->mutable_createoptions()->insert(
-        { "DELEGATE_DOWNLOAD",
-          R"({"appId":"userCode", "bucketId":"testUserCodeBucketID", "objectId":"testUserCodeObjectID", "securityToken":"xxx", "temporayAccessKey":"xxx", "temporarySecretKey":"xxx"})" });
-    deployInstanceReq->mutable_createoptions()->insert(
-        { "DELEGATE_LAYER_DOWNLOAD",
-          R"([{"appId":"userCode-layer", "bucketId":"testUserLibCodeBucketID", "objectId":"testUserLibCodeObjectID", "securityToken":"xxx", "temporayAccessKey":"xxx", "temporarySecretKey":"xxx"}])" });
+    BuildCreateOptions(
+        deployInstanceReq,
+        R"({"appId":"userCode", "bucketId":"testUserCodeBucketID", "objectId":"testUserCodeObjectID", "securityToken":"xxx", "temporayAccessKey":"xxx", "temporarySecretKey":"xxx"})",
+        R"([{"appId":"userCode-layer", "bucketId":"testUserLibCodeBucketID", "objectId":"testUserLibCodeObjectID", "securityToken":"xxx", "temporayAccessKey":"xxx", "temporarySecretKey":"xxx"}])");
     startInstanceResponse.set_requestid(TEST_REQUEST_ID_2);
     EXPECT_CALL(*testRuntimeManager_, MockStartInstanceResponse)
         .WillOnce(Return(startInstanceResponse.SerializeAsString()));
     deployInstanceReq->set_requestid(TEST_REQUEST_ID_2);
     deployInstanceReq->set_instanceid(TEST_INSTANCE_ID_2);
-    testFuncAgentMgrActor_->SendRequestToAgentServiceActor(dstActor_->GetAID(),
-                                                           "DeployInstance",
+    testFuncAgentMgrActor_->SendRequestToAgentServiceActor(dstActor_->GetAID(), "DeployInstance",
                                                            std::move(deployInstanceReq->SerializeAsString()));
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    EXPECT_EQ(JudgeCodeReferNum(dstActor_->GetCodeReferManager(), destination), static_cast<uint32_t>(2));
-    EXPECT_EQ(JudgeCodeReferNum(dstActor_->GetCodeReferManager(), delegateLayerDestination), static_cast<uint32_t>(2));
-    EXPECT_EQ(JudgeCodeReferNum(dstActor_->GetCodeReferManager(), delegateDestination), static_cast<uint32_t>(2));
+    EXPECT_EQ(JudgeCodeReferNum(dstActor_->GetCodeReferManager(), DESTINATION), static_cast<uint32_t>(2));
+    EXPECT_EQ(JudgeCodeReferNum(dstActor_->GetCodeReferManager(), DELEGATE_LAYER_DESTINATION), static_cast<uint32_t>(2));
+    EXPECT_EQ(JudgeCodeReferNum(dstActor_->GetCodeReferManager(), DELEGATE_DESTINATION), static_cast<uint32_t>(2));
     EXPECT_EQ(testFuncAgentMgrActor_->GetDeployInstanceResponse()->requestid(), TEST_REQUEST_ID_2);
     testFuncAgentMgrActor_->ResetDeployInstanceResponse();
     // set DELEGATE_DOWNLOAD and DELEGATE_LAYER_DOWNLOAD with just hostName
-    deployInstanceReq->mutable_createoptions()->erase("DELEGATE_DOWNLOAD");
-    deployInstanceReq->mutable_createoptions()->erase("DELEGATE_LAYER_DOWNLOAD");
-    deployInstanceReq->mutable_createoptions()->insert(
-        { "DELEGATE_DOWNLOAD",
-          R"({"appId":"userCode", "bucketId":"testUserCodeBucketID", "objectId":"testUserCodeObjectID", "hostName":"xx"})" });
-    deployInstanceReq->mutable_createoptions()->insert(
-        { "DELEGATE_LAYER_DOWNLOAD",
-          R"([{"appId":"userCode-layer", "bucketId":"testUserLibCodeBucketID", "objectId":"testUserLibCodeObjectID", "hostName":"xx"}])" });
+    BuildCreateOptions(
+        deployInstanceReq,
+        R"({"appId":"userCode", "bucketId":"testUserCodeBucketID", "objectId":"testUserCodeObjectID", "hostName":"xx"})",
+        R"([{"appId":"userCode-layer", "bucketId":"testUserLibCodeBucketID", "objectId":"testUserLibCodeObjectID", "hostName":"xx"}])");
     startInstanceResponse.set_requestid(TEST_REQUEST_ID_3);
     EXPECT_CALL(*testRuntimeManager_, MockStartInstanceResponse)
         .WillOnce(Return(startInstanceResponse.SerializeAsString()));
     deployInstanceReq->set_requestid(TEST_REQUEST_ID_3);
     deployInstanceReq->set_instanceid(TEST_INSTANCE_ID_3);
-    testFuncAgentMgrActor_->SendRequestToAgentServiceActor(dstActor_->GetAID(),
-                                                           "DeployInstance",
+    testFuncAgentMgrActor_->SendRequestToAgentServiceActor(dstActor_->GetAID(), "DeployInstance",
                                                            std::move(deployInstanceReq->SerializeAsString()));
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    EXPECT_EQ(JudgeCodeReferNum(dstActor_->GetCodeReferManager(), destination), static_cast<uint32_t>(3));
-    EXPECT_EQ(JudgeCodeReferNum(dstActor_->GetCodeReferManager(), delegateLayerDestination), static_cast<uint32_t>(3));
-    EXPECT_EQ(JudgeCodeReferNum(dstActor_->GetCodeReferManager(), delegateDestination), static_cast<uint32_t>(3));
+    EXPECT_EQ(JudgeCodeReferNum(dstActor_->GetCodeReferManager(), DESTINATION), static_cast<uint32_t>(3));
+    EXPECT_EQ(JudgeCodeReferNum(dstActor_->GetCodeReferManager(), DELEGATE_LAYER_DESTINATION), static_cast<uint32_t>(3));
+    EXPECT_EQ(JudgeCodeReferNum(dstActor_->GetCodeReferManager(), DELEGATE_DESTINATION), static_cast<uint32_t>(3));
     EXPECT_EQ(testFuncAgentMgrActor_->GetDeployInstanceResponse()->requestid(), TEST_REQUEST_ID_3);
-
     // set DELEGATE_DOWNLOAD with local file
-    deployInstanceReq->mutable_createoptions()->erase("DELEGATE_DOWNLOAD");
-    deployInstanceReq->mutable_createoptions()->erase("DELEGATE_LAYER_DOWNLOAD");
-    deployInstanceReq->mutable_createoptions()->insert(
-        { "DELEGATE_DOWNLOAD",
-          R"({"appId":"", "bucketId":"", "objectId":"", "hostName":"xx", "storage_type": "local", "code_path": "/home/test/function-packages"})" });
-    deployInstanceReq->mutable_createoptions()->insert(
-        { "DELEGATE_LAYER_DOWNLOAD",
-          R"([{"appId":"userCode-layer", "bucketId":"testUserLibCodeBucketID", "objectId":"testUserLibCodeObjectID", "hostName":"xx"}])" });
+    BuildCreateOptions(
+        deployInstanceReq,
+        R"({"appId":"", "bucketId":"", "objectId":"", "hostName":"xx", "storage_type": "local", "code_path": "/home/test/function-packages"})",
+        R"([{"appId":"userCode-layer", "bucketId":"testUserLibCodeBucketID", "objectId":"testUserLibCodeObjectID", "hostName":"xx"}])");
     startInstanceResponse.set_requestid("testRequestID4");
     EXPECT_CALL(*testRuntimeManager_, MockStartInstanceResponse)
         .WillOnce(Return(startInstanceResponse.SerializeAsString()));
     deployInstanceReq->set_requestid("testRequestID4");
     deployInstanceReq->set_instanceid("testInstanceID4");
-    testFuncAgentMgrActor_->SendRequestToAgentServiceActor(dstActor_->GetAID(),
-                                                           "DeployInstance",
+    testFuncAgentMgrActor_->SendRequestToAgentServiceActor(dstActor_->GetAID(), "DeployInstance",
                                                            std::move(deployInstanceReq->SerializeAsString()));
-    ASSERT_AWAIT_TRUE([&]() -> bool { return testFuncAgentMgrActor_->GetDeployInstanceResponse()->requestid() == "testRequestID4"; });
-    EXPECT_EQ(JudgeCodeReferNum(dstActor_->GetCodeReferManager(), "/home/test/function-packages"), static_cast<uint32_t>(1));
+    ASSERT_AWAIT_TRUE(
+        [&]() -> bool { return testFuncAgentMgrActor_->GetDeployInstanceResponse()->requestid() == "testRequestID4"; });
+    EXPECT_EQ(JudgeCodeReferNum(dstActor_->GetCodeReferManager(), "/home/test/function-packages"),
+              static_cast<uint32_t>(1));
 
-    EXPECT_TRUE(litebus::os::Rmdir(destination).IsNone());
-    EXPECT_TRUE(litebus::os::Rmdir(delegateLayerDestination).IsNone());
-    EXPECT_TRUE(litebus::os::Rmdir(delegateDestination).IsNone());
+    EXPECT_TRUE(litebus::os::Rmdir(DESTINATION).IsNone());
+    EXPECT_TRUE(litebus::os::Rmdir(DELEGATE_LAYER_DESTINATION).IsNone());
+    EXPECT_TRUE(litebus::os::Rmdir(DELEGATE_DESTINATION).IsNone());
 }
 
 /**
@@ -987,6 +1048,36 @@ TEST_F(AgentServiceActorTest, KillInstanceWithRespose)
     EXPECT_EQ(testFuncAgentMgrActor_->GetKillInstanceResponse()->requestid(), TEST_REQUEST_ID);
     EXPECT_EQ(testFuncAgentMgrActor_->GetKillInstanceResponse()->code(), StatusCode::SUCCESS);
     EXPECT_EQ(dstActor_->monopolyUsed_, true);
+}
+
+TEST_F(AgentServiceActorTest, KillInstanceWithResposeCancelHeartbeat)
+{
+    auto killInstanceReq = std::make_unique<messages::KillInstanceRequest>();
+    killInstanceReq->set_requestid(TEST_REQUEST_ID);
+    killInstanceReq->set_storagetype(function_agent::LOCAL_STORAGE_TYPE);
+    killInstanceReq->set_ismonopoly(true);
+    dstActor_->SetDeployers(function_agent::LOCAL_STORAGE_TYPE, std::make_shared<function_agent::LocalDeployer>());
+    dstActor_->enableRestartForReuse_ = true;
+    messages::Registered registered;
+    dstActor_->StartPingPong(registered);
+    auto status = dstActor_->pingPongDriver_->GetStatus();
+    ASSERT_AWAIT_READY(status);
+    EXPECT_TRUE(status.Get().IsOk());
+
+    messages::StopInstanceResponse stopInstanceResponse;
+    stopInstanceResponse.set_code(StatusCode::SUCCESS);
+    stopInstanceResponse.set_requestid(TEST_REQUEST_ID);
+    EXPECT_CALL(*testRuntimeManager_, MockStopInstanceResponse)
+        .WillOnce(Return(stopInstanceResponse.SerializeAsString()));
+
+    testFuncAgentMgrActor_->SendRequestToAgentServiceActor(dstActor_->GetAID(), "KillInstance",
+                                                           std::move(killInstanceReq->SerializeAsString()));
+    ASSERT_AWAIT_TRUE([&]() { return testRuntimeManager_->GetReceivedStopInstanceRequest(); });
+    EXPECT_EQ(dstActor_->monopolyUsed_, true);
+    status = dstActor_->pingPongDriver_->GetStatus();
+    ASSERT_AWAIT_READY(status);
+    EXPECT_EQ(status.Get().StatusCode(), StatusCode::FAILED);
+    EXPECT_THAT(status.Get().ToString(), testing::HasSubstr("HeartbeatClient is stopped"));
 }
 
 TEST_F(AgentServiceActorTest, KillInstanceWithoutRuntimeMgrRegistration)
@@ -1653,6 +1744,36 @@ TEST_F(AgentServiceActorTest, UpdateTokenTest)
 }
 
 /**
+ * Feature: AgentServiceActor--ProtectedSetNetworkTest
+ * Description: Config network, including firewall, tunnel and route
+ * Steps:
+ * 1. Construct wrong firewall config and set network
+ * 2. Construct wrong tunnel config and set network
+ * 2. Construct wrong route config and set network
+ * 2. Construct empty network config and set network
+ * Expectation:
+ * 1. Set firewall cause err, return false
+ * 1. Set tunnel cause err, return false
+ * 1. Set route cause err, return false
+ * 1. Skip set network, return true
+ */
+TEST_F(AgentServiceActorTest, ProtectedSetNetworkTest)
+{
+    bool state = false;
+    if (getenv("POD_IP") == nullptr) {
+        setenv("POD_IP", "127.0.0.1", 0);
+        state = true;
+    }
+    EXPECT_EQ(dstActor_->ProtectedSetNetwork(NetworkTool::ParseNetworkConfig(TEST_WRONG_FIREWALL_CONFIG)), false);
+    EXPECT_EQ(dstActor_->ProtectedSetNetwork(NetworkTool::ParseNetworkConfig(TEST_WRONG_TUNNEL_CONFIG)), false);
+    EXPECT_EQ(dstActor_->ProtectedSetNetwork(NetworkTool::ParseNetworkConfig(TEST_WRONG_ROUTE_CONFIG)), false);
+    EXPECT_EQ(dstActor_->ProtectedSetNetwork(NetworkTool::ParseNetworkConfig("")), true);
+    if (state) {
+        unsetenv("POD_IP");
+    }
+}
+
+/**
  * Feature: AgentServiceActor--StartPingPongSuccess
  * Description: When AgentServiceActor registered, start pingpong to receive heartbeat from FunctionAgentMgrActor
  * Steps:
@@ -1683,13 +1804,13 @@ TEST_F(AgentServiceActorTest, TimeOutEventTest)
     RegisterInfo registerInfo;
     registerInfo.registeredPromise = litebus::Promise<messages::Registered>();
     dstActor_->SetRegisterInfo(registerInfo);
-    dstActor_->TimeOutEvent(HeartbeatConnection::LOST);
+    dstActor_->TimeOutEvent();
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     messages::Registered registered;
     auto registerResponseFuture = dstActor_->StartPingPong(registered);
     registerInfo.registeredPromise.SetFailed(static_cast<int32_t>(StatusCode::FUNC_AGENT_PING_PONG_IS_NULL));
     dstActor_->SetRegisterInfo(registerInfo);
-    dstActor_->TimeOutEvent(HeartbeatConnection::LOST);
+    dstActor_->TimeOutEvent();
     EXPECT_TRUE(dstActor_->GetPingPongDriver() != nullptr);
 }
 
@@ -2172,9 +2293,16 @@ TEST_F(AgentServiceActorTest, RegisterAgentFailedTest)
 
 TEST_F(AgentServiceActorTest, GracefulShutdown)
 {
+    testFuncAgentMgrActor_->ResetReceivedUpdateAgentStatus();
     auto fut = litebus::Async(dstActor_->GetAID(), &AgentServiceActor::GracefulShutdown);
     testRuntimeManager_->SendRequestToAgentServiceActor(dstActor_->GetAID(),
                                                         "GracefulShutdownFinish", "");
+    EXPECT_AWAIT_TRUE([&]() -> bool { return testFuncAgentMgrActor_->GetReceivedUpdateAgentStatus(); });
+    messages::UpdateAgentStatusResponse updateAgentStatusRsp;
+    updateAgentStatusRsp.set_requestid(testFuncAgentMgrActor_->GetUpdateAgentStatusRequest()->requestid());
+    EXPECT_CALL(*testFuncAgentMgrActor_, MockUpdateAgentStatusResponse)
+        .WillOnce(Return(updateAgentStatusRsp.SerializeAsString()));
+    dstActor_->TimeOutEvent();
     EXPECT_TRUE(fut.Get());
 }
 
@@ -2182,7 +2310,7 @@ TEST_F(AgentServiceActorTest, RestartForReuse)
 {
     dstActor_->monopolyUsed_ = true;
     dstActor_->enableRestartForReuse_ = true;
-    litebus::Async(dstActor_->GetAID(), &AgentServiceActor::TimeOutEvent, HeartbeatConnection::LOST);
+    litebus::Async(dstActor_->GetAID(), &AgentServiceActor::TimeOutEvent);
     EXPECT_TRUE(dstActor_->runtimeManagerGracefulShutdown_.GetFuture().Get());
 }
 
@@ -2197,6 +2325,12 @@ TEST_F(AgentServiceActorTest, SetNetworkIsolationPodIpSuccessAddDelete)
     CommandExecResult result5;
     result5.output = "Name: test-podip-whitelist\nMembers:\n192.168.1.1";
     result5.error = "";
+    EXPECT_CALL(*commandRunner_, ExecuteCommandWrapper(_))
+        .WillOnce(Return(result))    // ipset list result #1
+        .WillOnce(Return(result3))   // #3
+        .WillOnce(Return(result5));  // #5
+
+    EXPECT_CALL(*commandRunner_, CheckAndRunCommandWrapper(_)).WillRepeatedly(Return(true));  // #2, #4
 
     // add more
     messages::SetNetworkIsolationRequest req;
@@ -2206,7 +2340,7 @@ TEST_F(AgentServiceActorTest, SetNetworkIsolationPodIpSuccessAddDelete)
     (*req.mutable_rules()->Add()) = "192.168.2.1";
 
     auto response = testFuncAgentMgrActor_->GetSetNetworkIsolationResponse();
-    response->set_code(StatusCode::SUCCESS);  // must do reset
+    response->set_code(StatusCode::FAILED);  // must do reset
     response->set_requestid("");             // must do reset
     testFuncAgentMgrActor_->SendRequestToAgentServiceActor(dstActor_->GetAID(),
                                                            "SetNetworkIsolationRequest",  // #1, #2
@@ -2214,7 +2348,7 @@ TEST_F(AgentServiceActorTest, SetNetworkIsolationPodIpSuccessAddDelete)
     EXPECT_AWAIT_TRUE([&]() -> bool {
         return response->requestid() == TEST_REQUEST_ID;
     });
-    EXPECT_EQ(response->code(), StatusCode::FAILED);
+    EXPECT_EQ(response->code(), StatusCode::SUCCESS);
 
     // delete
     messages::SetNetworkIsolationRequest req2;
@@ -2222,16 +2356,72 @@ TEST_F(AgentServiceActorTest, SetNetworkIsolationPodIpSuccessAddDelete)
     req2.set_ruletype(messages::RuleType::IPSET_DELETE);
     (*req2.mutable_rules()->Add()) = "192.168.2.1";
 
-    response->set_code(StatusCode::SUCCESS);  // must do reset
+    response->set_code(StatusCode::FAILED);  // must do reset
     response->set_requestid("");             // must do reset
     testFuncAgentMgrActor_->SendRequestToAgentServiceActor(dstActor_->GetAID(),
                                                            "SetNetworkIsolationRequest",  // #3, #4
                                                            req2.SerializeAsString());
     EXPECT_AWAIT_TRUE([&]() -> bool {
-        return response->code() == StatusCode::FAILED;
+        return response->code() == StatusCode::SUCCESS;
     });
+
+    auto ipsetIsolation = dstActor_->GetIpsetIpv4NetworkIsolation();
+    EXPECT_EQ(ipsetIsolation->GetAllRules().size(), static_cast<size_t>(1));  // #5
 }
 
+TEST_F(AgentServiceActorTest, SetNetworkIsolationRuleFlush)
+{
+    CommandExecResult result;
+    result.output = "Name: test-podip-whitelist\nMembers:\n";
+    result.error = "";
+    CommandExecResult result3;
+    result3.output = "Name: test-podip-whitelist\nMembers:\n192.168.1.1";
+    result3.error = "";
+    EXPECT_CALL(*commandRunner_, ExecuteCommandWrapper(_))
+        .WillOnce(Return(result))   // #1
+        .WillOnce(Return(result3))  // #3
+        .WillOnce(Return(result));  // #5
+
+    EXPECT_CALL(*commandRunner_, CheckAndRunCommandWrapper(_))
+        .WillOnce(Return(true))   // #2
+        .WillOnce(Return(true));  // #4
+
+    // add one
+    messages::SetNetworkIsolationRequest req;
+    req.set_requestid(TEST_REQUEST_ID);
+    req.set_ruletype(messages::RuleType::IPSET_ADD);
+    (*req.mutable_rules()->Add()) = "192.168.1.1";
+
+    const auto response = testFuncAgentMgrActor_->GetSetNetworkIsolationResponse();
+    response->set_code(StatusCode::FAILED);  // must do reset
+    response->set_requestid("");             // must do reset
+    testFuncAgentMgrActor_->SendRequestToAgentServiceActor(dstActor_->GetAID(),
+                                                           "SetNetworkIsolationRequest",  // #1, #2
+                                                           req.SerializeAsString());
+    EXPECT_AWAIT_TRUE([&]() -> bool {
+        return response->requestid() == TEST_REQUEST_ID;
+    });
+    EXPECT_AWAIT_TRUE([&]() -> bool {
+        return response->code() == StatusCode::SUCCESS;
+    });
+
+    // flush
+    messages::SetNetworkIsolationRequest req2;
+    req2.set_requestid(TEST_REQUEST_ID_3);
+    req2.set_ruletype(messages::RuleType::IPSET_FLUSH);
+
+    response->set_code(StatusCode::FAILED);  // must do reset
+    response->set_requestid("");             // must do reset
+    testFuncAgentMgrActor_->SendRequestToAgentServiceActor(dstActor_->GetAID(),
+                                                           "SetNetworkIsolationRequest",  // #3, #4
+                                                           req2.SerializeAsString());
+    EXPECT_AWAIT_TRUE([&]() -> bool {
+        return response->code() == StatusCode::SUCCESS;
+    });
+
+    const auto ipsetIsolation = dstActor_->GetIpsetIpv4NetworkIsolation();
+    EXPECT_EQ(ipsetIsolation->GetAllRules().size(), static_cast<long unsigned int>(0));  // #5
+}
 
 TEST_F(AgentServiceActorTest, RegisteredEvictedTest)
 {
@@ -2320,7 +2510,7 @@ TEST_F(AgentServiceActorTest, PythonRuntime_Support_WorkingDirFileZip_WithOut_En
 {
     PrepareWorkingDir("/tmp/working_dir-tmp");
     auto deployInstanceReq = std::make_unique<messages::DeployInstanceRequest>();
-    deployInstanceReq->set_requestid(TEST_REQUEST_ID); // as appID
+    deployInstanceReq->set_requestid(TEST_REQUEST_ID);  // as appID
     deployInstanceReq->set_instanceid(TEST_INSTANCE_ID);
     deployInstanceReq->set_language("/usr/bin/python3.9");
     auto spec = deployInstanceReq->mutable_funcdeployspec();
@@ -2330,16 +2520,17 @@ TEST_F(AgentServiceActorTest, PythonRuntime_Support_WorkingDirFileZip_WithOut_En
     auto destination = "/home/sn/function/package/xxxz/app/working_dir/" + CalculateFileMD5(workingDirFile.substr(7));
     (void)litebus::os::Rmdir(deployDir);
     spec->set_deploydir(deployDir);
-    std::string optionDetail = "{\"appId\":\"userWorkingDirCode001\", \"storage_type\":\"working_dir\", \"code_path\":\"";
+    std::string optionDetail =
+        "{\"appId\":\"userWorkingDirCode001\", \"storage_type\":\"working_dir\", \"code_path\":\"";
     optionDetail += workingDirFile;
     optionDetail += "\"}";
-    deployInstanceReq->mutable_createoptions()->insert({"DELEGATE_DOWNLOAD", optionDetail});
-    deployInstanceReq->mutable_createoptions()->insert({CONDA_CONFIG, "{'test_conda_config': 'confit_content'}"});
-    deployInstanceReq->mutable_createoptions()->insert({CONDA_COMMAND, "conda create -n test_env python=3.11"});
+    deployInstanceReq->mutable_createoptions()->insert({ "DELEGATE_DOWNLOAD", optionDetail });
+    deployInstanceReq->mutable_createoptions()->insert({ CONDA_CONFIG, "{'test_conda_config': 'confit_content'}" });
+    deployInstanceReq->mutable_createoptions()->insert({ CONDA_COMMAND, "conda create -n test_env python=3.11" });
     std::string testCondaPrefix = "/tmp/conda";
     std::string testCondaDefaultEnv = "env_name_copy";
-    deployInstanceReq->mutable_createoptions()->insert({CONDA_PREFIX, testCondaPrefix});
-    deployInstanceReq->mutable_createoptions()->insert({CONDA_DEFAULT_ENV, testCondaDefaultEnv});
+    deployInstanceReq->mutable_createoptions()->insert({ CONDA_PREFIX, testCondaPrefix });
+    deployInstanceReq->mutable_createoptions()->insert({ CONDA_DEFAULT_ENV, testCondaDefaultEnv });
     deployInstanceReq->set_tenantid(TEST_TENANT_ID);
     messages::StartInstanceResponse startInstanceResponse;
     startInstanceResponse.set_code(StatusCode::SUCCESS);
@@ -2349,19 +2540,20 @@ TEST_F(AgentServiceActorTest, PythonRuntime_Support_WorkingDirFileZip_WithOut_En
         .WillOnce(Return(startInstanceResponse.SerializeAsString()));
 
     testFuncAgentMgrActor_->ResetDeployInstanceResponse();
-    testFuncAgentMgrActor_->SendRequestToAgentServiceActor(dstActor_->GetAID(),
-                                                           "DeployInstance",
+    testFuncAgentMgrActor_->SendRequestToAgentServiceActor(dstActor_->GetAID(), "DeployInstance",
                                                            std::move(deployInstanceReq->SerializeAsString()));
-    ASSERT_AWAIT_TRUE([&]() -> bool { return testFuncAgentMgrActor_->GetDeployInstanceResponse()->requestid() == TEST_REQUEST_ID; });
-    EXPECT_TRUE(litebus::os::ExistPath(destination)); // app deployed
+    ASSERT_AWAIT_TRUE(
+        [&]() -> bool { return testFuncAgentMgrActor_->GetDeployInstanceResponse()->requestid() == TEST_REQUEST_ID; });
+    EXPECT_TRUE(litebus::os::ExistPath(destination));  // app deployed
 
     auto startInstanceRequest = std::make_shared<messages::StartInstanceRequest>();
     startInstanceRequest->ParseFromString(testRuntimeManager_->promiseOfStartInstanceRequest.GetFuture().Get());
     YRLOG_DEBUG(startInstanceRequest->ShortDebugString());
-    EXPECT_EQ(startInstanceRequest->runtimeinstanceinfo().runtimeconfig().posixenvs().find(UNZIPPED_WORKING_DIR)->second,
-        destination); // startInstance param posixenvs should contains UNZIPPED_WORKING_DIR
+    EXPECT_EQ(
+        startInstanceRequest->runtimeinstanceinfo().runtimeconfig().posixenvs().find(UNZIPPED_WORKING_DIR)->second,
+        destination);  // startInstance param posixenvs should contain UNZIPPED_WORKING_DIR
     EXPECT_EQ(startInstanceRequest->runtimeinstanceinfo().runtimeconfig().posixenvs().find(YR_WORKING_DIR)->second,
-        workingDirFile); // startInstance param posixenvs should contains YR_WORKING_DIR
+              workingDirFile);  // startInstance param posixenvs should contain YR_WORKING_DIR
     EXPECT_EQ(startInstanceRequest->runtimeinstanceinfo().runtimeconfig().posixenvs().find(YR_TENANT_ID)->second,
               TEST_TENANT_ID);
     auto iter = startInstanceRequest->runtimeinstanceinfo().deploymentconfig().deployoptions().end();
@@ -2450,12 +2642,7 @@ TEST_F(AgentServiceActorTest, AppDriver_Support_DeployInstanceWithWorkingDirDepl
         return testRuntimeManager_->GetReceivedStopInstanceRequest() &&
                testFuncAgentMgrActor_->GetKillInstanceResponse()->code() == StatusCode::SUCCESS;
     });
-
-    messages::CleanStatusRequest cleanStatusRequest;
-    cleanStatusRequest.set_name(TEST_AGENT_ID);
-    testFuncAgentMgrActor_->SendRequestToAgentServiceActor(dstActor_->GetAID(),
-                                                           "CleanStatus",
-                                                           std::move(cleanStatusRequest.SerializeAsString()));
+    dstActor_->RemoveCodePackageAsync();
     ASSERT_AWAIT_TRUE([&]() -> bool { return !litebus::os::ExistPath(destination); }); // clean after app killed
     DestroyWorkingDir("/tmp/working_dir-tmp");
 }
@@ -2654,7 +2841,40 @@ TEST_F(AgentServiceActorTest, DeployInstanceWithWorkingDirDeployer_Ray_Serve_Wit
         workingDirFile); // startInstance param posixenvs should contains YR_WORKING_DIR
     EXPECT_EQ(startInstanceRequest->runtimeinstanceinfo().runtimeconfig().posixenvs().find(YR_APP_MODE)->second,
               "false");
+    DestroyWorkingDir("/tmp/working_dir-tmp");
+}
 
+TEST_F(AgentServiceActorTest, DeployInstanceWithWorkingDir_ErrorInputFile_Createoption_WorkingDirFile)
+{
+    PrepareWorkingDir("/tmp/working_dir-tmp");
+    auto deployInstanceReq = std::make_unique<messages::DeployInstanceRequest>();
+    deployInstanceReq->set_requestid(TEST_REQUEST_ID);  // as appID
+    deployInstanceReq->set_instanceid(TEST_INSTANCE_ID);
+    deployInstanceReq->set_language("posix-custom-runtime");
+    auto appEntryPoint = "python script.py";
+    deployInstanceReq->set_entryfile(appEntryPoint);  // app entrypoint set from proxy
+    auto spec = deployInstanceReq->mutable_funcdeployspec();
+    spec->set_storagetype(function_agent::WORKING_DIR_STORAGE_TYPE);
+    auto deployDir = "/home/sn/function/package/xxxz";
+    auto destination = "/home/sn/function/package/xxxz/app/working_dir/" + TEST_INSTANCE_ID;
+    (void)litebus::os::Rmdir(deployDir);
+    EXPECT_TRUE(!litebus::os::ExistPath(destination));
+    spec->set_deploydir(deployDir);
+    deployInstanceReq->mutable_createoptions()->insert({ APP_ENTRYPOINT, appEntryPoint });
+    // file is not zip file , it is dir
+    deployInstanceReq->mutable_createoptions()->insert(
+        { "DELEGATE_DOWNLOAD",
+          R"({"appId":"userWorkingDirCode001", "storage_type":"working_dir", "code_path":"file:///tmp/working_dir-tmp/"})" });
+    EXPECT_CALL(*testRuntimeManager_, MockStartInstanceResponse).Times(0);
+    testFuncAgentMgrActor_->ResetDeployInstanceResponse();
+    testFuncAgentMgrActor_->SendRequestToAgentServiceActor(dstActor_->GetAID(), "DeployInstance",
+                                                           std::move(deployInstanceReq->SerializeAsString()));
+    ASSERT_AWAIT_TRUE([&]() -> bool {
+        return (testFuncAgentMgrActor_->GetDeployInstanceResponse()->requestid() == TEST_REQUEST_ID
+                && testFuncAgentMgrActor_->GetDeployInstanceResponse()->code()
+                       == StatusCode::FUNC_AGENT_INVALID_WORKING_DIR_FILE);
+    });
+    EXPECT_TRUE(!litebus::os::ExistPath(destination));
     DestroyWorkingDir("/tmp/working_dir-tmp");
 }
 
@@ -2672,6 +2892,7 @@ TEST_F(AgentServiceActorTest, DeployInstanceWithWorkingDir_ErrorInput_Createopti
     auto deployDir = "/home/sn/function/package/xxxz";
     auto destination = "/home/sn/function/package/xxxz/app/working_dir/" + TEST_INSTANCE_ID;
     (void)litebus::os::Rmdir(deployDir);
+    EXPECT_TRUE(!litebus::os::ExistPath(destination));
     spec->set_deploydir(deployDir);
     deployInstanceReq->mutable_createoptions()->insert({ APP_ENTRYPOINT, appEntryPoint });
     deployInstanceReq->mutable_createoptions()->insert(
@@ -2692,58 +2913,78 @@ TEST_F(AgentServiceActorTest, DeployInstanceWithWorkingDir_ErrorInput_Createopti
                                                            "CleanStatus",
                                                            std::move(cleanStatusRequest.SerializeAsString()));
     ASSERT_AWAIT_TRUE([&]() -> bool { return !litebus::os::ExistPath(destination); }); // app deploy error
+    EXPECT_TRUE(!litebus::os::ExistPath(destination));
     DestroyWorkingDir("/tmp/working_dir-tmp");
 }
 
-TEST_F(AgentServiceActorTest, ParallelDeployInstanceWithS3Deployer)
-{
-    auto deployInstanceReq1 = GetDeployInstanceRequest("req-11111", "instance1-150000","testBucketID11",  "testObjectID11");
-    auto deployInstanceReq2 = GetDeployInstanceRequest("req-11112", "instance2-150000","testBucketID12",  "testObjectID12");
-    auto deployInstanceReq3 = GetDeployInstanceRequest("req-11113", "instance3-150000","testBucketID13",  "testObjectID13");
-    std::string destination1 = "/home/layer/func/testBucketID11/testObjectID11";
-    std::string destination2 = "/home/layer/func/testBucketID12/testObjectID12";
-    std::string destination3 = "/home/layer/func/testBucketID13/testObjectID13";
-    litebus::os::Rmdir(destination1);
-    litebus::os::Rmdir(destination2);
-    litebus::os::Rmdir(destination3);
 
-    messages::StartInstanceResponse startInstanceResponse1;
-    startInstanceResponse1.set_code(StatusCode::SUCCESS);
-    startInstanceResponse1.set_requestid("req-11111");
-    startInstanceResponse1.mutable_startruntimeinstanceresponse()->set_runtimeid("test-runtime-111");
-    messages::StartInstanceResponse startInstanceResponse2;
-    startInstanceResponse2.set_code(StatusCode::SUCCESS);
-    startInstanceResponse2.set_requestid("req-11112");
-    startInstanceResponse2.mutable_startruntimeinstanceresponse()->set_runtimeid("test-runtime-112");
-    messages::StartInstanceResponse startInstanceResponse3;
-    startInstanceResponse3.set_code(StatusCode::SUCCESS);
-    startInstanceResponse3.set_requestid("req-11113");
-    startInstanceResponse3.mutable_startruntimeinstanceresponse()->set_runtimeid("test-runtime-113");
+TEST_F(AgentServiceActorTest, DeployInstanceWithWorkingDirCpp)
+{
+    PrepareWorkingDir("/tmp/working_dir-tmp");
+    auto deployInstanceReq = std::make_unique<messages::DeployInstanceRequest>();
+    deployInstanceReq->set_requestid(TEST_REQUEST_ID);  // as appID
+    deployInstanceReq->set_instanceid(TEST_INSTANCE_ID);
+    deployInstanceReq->set_language("cpp11");
+
+    auto spec = deployInstanceReq->mutable_funcdeployspec();
+    spec->set_storagetype(function_agent::WORKING_DIR_STORAGE_TYPE);
+    auto deployDir = "/home/sn/function/package/xxxz";
+    auto destination = "/tmp/working_dir-tmp/";
+    (void)litebus::os::Rmdir(deployDir);
+    EXPECT_TRUE(litebus::os::ExistPath(destination));
+    spec->set_deploydir(deployDir);
+
+    // path
+    deployInstanceReq->mutable_createoptions()->insert(
+        { "DELEGATE_DOWNLOAD",
+          R"({"appId":"userWorkingDirCode001", "storage_type":"working_dir", "code_path":"/tmp/working_dir-tmp/"})" });
+    messages::StartInstanceResponse startInstanceResponse;
+    startInstanceResponse.set_code(StatusCode::SUCCESS);
+    startInstanceResponse.set_requestid(TEST_REQUEST_ID);
+    startInstanceResponse.mutable_startruntimeinstanceresponse()->set_runtimeid(TEST_RUNTIME_ID);
     EXPECT_CALL(*testRuntimeManager_, MockStartInstanceResponse)
-        .WillOnce(Return(startInstanceResponse1.SerializeAsString()))
-        .WillOnce(Return(startInstanceResponse2.SerializeAsString()))
-        .WillOnce(Return(startInstanceResponse3.SerializeAsString()));
+        .WillOnce(Return(startInstanceResponse.SerializeAsString()));
+
     testFuncAgentMgrActor_->ResetDeployInstanceResponse();
-    auto start = std::chrono::steady_clock::now();
     testFuncAgentMgrActor_->SendRequestToAgentServiceActor(dstActor_->GetAID(),
                                                            "DeployInstance",
-                                                           std::move(deployInstanceReq1->SerializeAsString()));
-    testFuncAgentMgrActor_->SendRequestToAgentServiceActor(dstActor_->GetAID(),
-                                                           "DeployInstance",
-                                                           std::move(deployInstanceReq2->SerializeAsString()));
-    testFuncAgentMgrActor_->SendRequestToAgentServiceActor(dstActor_->GetAID(),
-                                                           "DeployInstance",
-                                                           std::move(deployInstanceReq3->SerializeAsString()));
-    ASSERT_AWAIT_TRUE([&]() -> bool { return testFuncAgentMgrActor_->GetDeployInstanceResponseMap().size() == 3; });
-    EXPECT_TRUE(litebus::os::ExistPath(destination1));
-    EXPECT_TRUE(litebus::os::ExistPath(destination2));
-    EXPECT_TRUE(litebus::os::ExistPath(destination3));
-    auto end = std::chrono::steady_clock::now();
-    EXPECT_TRUE(std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() <= 200);
-    litebus::os::Rmdir(destination1);
-    litebus::os::Rmdir(destination2);
-    litebus::os::Rmdir(destination3);
+                                                           std::move(deployInstanceReq->SerializeAsString()));
+    ASSERT_AWAIT_TRUE(
+        [&]() -> bool { return testFuncAgentMgrActor_->GetDeployInstanceResponse()->requestid() == TEST_REQUEST_ID; });
+    EXPECT_TRUE(litebus::os::ExistPath(destination));  // app deployed
+
+    auto startInstanceRequest = std::make_shared<messages::StartInstanceRequest>();
+    startInstanceRequest->ParseFromString(testRuntimeManager_->promiseOfStartInstanceRequest.GetFuture().Get());
+    YRLOG_DEBUG(startInstanceRequest->ShortDebugString());
+    EXPECT_EQ(
+        startInstanceRequest->runtimeinstanceinfo().runtimeconfig().posixenvs().find(UNZIPPED_WORKING_DIR)->second,
+        destination);  // startInstance param posixenvs should contain UNZIPPED_WORKING_DIR
+    EXPECT_EQ(startInstanceRequest->runtimeinstanceinfo().runtimeconfig().posixenvs().find(YR_WORKING_DIR)->second,
+              destination);  // startInstance param posixenvs should contain YR_WORKING_DIR
+    DestroyWorkingDir("/tmp/working_dir-tmp");
 }
+
+TEST_F(AgentServiceActorTest, SendS3Alarm)
+{
+    metrics::MetricsAdapter::GetInstance().enabledInstruments_.insert(metrics::YRInstrument::YR_S3_ALARM);
+
+    auto request = std::make_shared<messages::DeployRequest>();
+    auto promise = std::make_shared<litebus::Promise<DeployResult>>();
+
+    auto s3Config = std::make_shared<S3Config>();
+    messages::CodePackageThresholds codePackageThresholds;
+    auto mockTestDeployer = std::make_shared<MockTestAgentS3Deployer>(s3Config, codePackageThresholds);
+    dstActor_->SetDeployers(function_agent::S3_STORAGE_TYPE, mockTestDeployer);
+    dstActor_->retryDownloadInterval_ = 50;
+    EXPECT_CALL(*mockTestDeployer, Deploy).WillRepeatedly(Return(DeployResult{.status = Status(StatusCode::FUNC_AGENT_OBS_ERROR_NEED_RETRY)}));
+    dstActor_->DownloadCode(request, mockTestDeployer, promise, 1);
+    ASSERT_AWAIT_TRUE([&]() -> bool {
+        promise->GetFuture().Get();
+        auto alarmMap = metrics::MetricsAdapter::GetInstance().GetAlarmHandler().GetAlarmMap();
+        return alarmMap.find(metrics::S3_ALARM) != alarmMap.end();
+    });
+}
+
 
 TEST_F(AgentServiceActorTest, ConfigCodeAgingTimeTest)
 {
@@ -2763,47 +3004,152 @@ TEST_F(AgentServiceActorTest, ConfigCodeAgingTimeTest)
     EXPECT_TRUE(dstActor_->codeReferInfos_->find("/tmp/test3") == dstActor_->codeReferInfos_->end());
 }
 
-TEST_F(AgentServiceActorTest, DeployInstanceWithWorkingDirCpp)
+const std::string STATIC_FUNCTION_META_JSON = R"delim({"funcMetaData":{"layers":[],"name":"0@functest@functest","description":"empty function","functionUrn":"sn:cn:yrk:12345678901234561234567890123456:function:0@functest@functest","reversedConcurrency":0,"tenantId":"12345678901234561234567890123456","tags":null,"functionUpdateTime":"","functionVersionUrn":"sn:cn:yrk:12345678901234561234567890123456:function:0@functest@functest:latest","revisionId":"20250410134701376","codeSize":2911,"codeSha512":"9508f59eb7231bb7577ecc123c5c27317e6563a434dd83d33501f55dfe76b80b58228da0d8f6e37f6cf6d54ccd6dba0eb506bdc10a6acc2ee43e7aa83028b8e3","handler":"handler.my_handler","runtime":"python3.9","timeout":900,"version":"latest","versionDescription":"latest","deadLetterConfig":"","businessId":"yrk","functionType":"","func_id":"","func_name":"functest","domain_id":"","project_name":"","service":"functest","dependencies":"","enable_cloud_debug":"","isStatefulFunction":false,"isBridgeFunction":false,"isStreamEnable":false,"type":"","created":"2025-04-09 08:58:48.655 UTC","enable_auth_in_header":false,"dns_domain_cfg":null,"vpcTriggerImage":""},"codeMetaData":{"codeUploadType":"s3","sha512":"9508f59eb7231bb7577ecc123c5c27317e6563a434dd83d33501f55dfe76b80b58228da0d8f6e37f6cf6d54ccd6dba0eb506bdc10a6acc2ee43e7aa83028b8e3","storage_type":"s3","code_path":"","appId":"61022","bucketId":"bucket-test-log1","objectId":"0@functest@functest-1744292821408","bucketUrl":"http://bucket-test-log1.hwcloudtest.cn:18085","code_type":"","code_url":"","code_filename":"","func_code":{"file":"","link":""}},"envMetaData":{"envKey":"abca007b01f5b1f1fc2e9b3a:86c55b48dc81cac2813f080bd214ea83bf8d79430892c54fdbcd353b29daf165d342943a45411b4b83b01cce27b3a0a51a22d09b6fee1fd729872e5e46893640d5bd870e1051eeb7c90e7e31df5af1ee","environment":"757be5c1d3725bedf25692ea:e4a8c7eeb322fcc5397a498ca9bd83f45597","encrypted_user_data":"","cryptoAlgorithm":"GCM"},"resourceMetaData":{"cpu":600,"memory":512,"gpu_memory":0,"enable_dynamic_memory":false,"customResources":"","enable_tmp_expansion":false,"ephemeral_storage":0},"instanceMetaData":{"maxInstance":100,"minInstance":0,"concurrentNum":100,"instanceType":"","idleMode":false,"poolLabel":"","poolId":"","scalePolicy":"staticFunction"},"extendedMetaData":{"image_name":"","role":{"xrole":"","app_xrole":""},"func_vpc":null,"endpoint_tenant_vpc":null,"mount_config":null,"strategy_config":{"concurrency":0},"extend_config":"","initializer":{"initializer_handler":"handler.init","initializer_timeout":30},"pre_stop":{"pre_stop_handler":"","pre_stop_timeout":0},"heartbeat":{"heartbeat_handler":""},"enterprise_project_id":"","log_tank_service":{"logGroupId":"","logStreamId":""},"tracing_config":{"tracing_ak":"","tracing_sk":"","project_name":""},"custom_container_config":{"control_path":"","image":"","command":null,"args":null,"working_dir":"","uid":0,"gid":0},"async_config_loaded":false,"restore_hook":{},"network_controller":{"disable_public_network":false,"trigger_access_vpcs":null},"user_agency":{"accessKey":"","secretKey":"","token":""}}})delim";
+
+TEST_F(AgentServiceActorTest, CreateStaticFunctionInstanceTest)
 {
-    PrepareWorkingDir("/tmp/working_dir-tmp");
+    const std::string user_dir = "/home/static-function-test";
+
+    auto res = dstActor_->CreateStaticFunctionInstance();
+    EXPECT_EQ(res.Get().StatusCode(), -1);  // env not exist
+
+    litebus::os::SetEnv("SF_CONFIG_PATH", user_dir + "/functionMeta.json");
+
+    litebus::os::SetEnv("SF_SCHEDULE_TIMEOUT_MS", "300");
+    litebus::os::SetEnv("SF_INSTANCE_TYPE_NOTE", "reserved");
+    litebus::os::SetEnv("SF_DELEGATE_DIRECTORY_INFO", "/tmp");
+    litebus::os::SetEnv("SF_INVOKE_LABELS", "");
+    litebus::os::SetEnv("SF_FUNCTION_SIGNATURE", "20250822095005");
+
+    litebus::os::SetEnv("POD_DEPLOYMENT_NAME", "pod-deployment-name");
+    litebus::os::SetEnv("POD_NAMESPACE", "pod-namespace");
+    litebus::os::SetEnv("POD_NAME", "pod-name");
+
+    (void)litebus::os::Rmdir(user_dir);
+
+    res = dstActor_->CreateStaticFunctionInstance();
+    EXPECT_EQ(res.Get().StatusCode(), -1);  // function meta file not exist
+
+    (void)litebus::os::Mkdir(user_dir);  // why /home/test/config/ ?
+
+    Write(user_dir + "/functionMeta.json", "");
+    res = dstActor_->CreateStaticFunctionInstance();
+    EXPECT_EQ(res.Get().StatusCode(), -1);  // function meta file is empty
+
+
+    Write(user_dir + "/functionMeta.json", STATIC_FUNCTION_META_JSON);
+    bool isFinished = false;
+    EXPECT_CALL(*testFuncAgentMgrActor_, MockStaticFunctionScheduleResponse)
+        .WillOnce(testing::DoAll(testing::Assign(&isFinished, true), testing::Return("")));
+    dstActor_->retryScheduleInterval_ = 50;
+
+    res = dstActor_->CreateStaticFunctionInstance();
+    EXPECT_EQ(res.IsOK(), true);
+
+    ASSERT_AWAIT_TRUE([&]() -> bool { return testFuncAgentMgrActor_->GetReceivedScheduleRequest(); });
+    ASSERT_AWAIT_TRUE([&]() -> bool { return isFinished; });
+    auto req = testFuncAgentMgrActor_->GetScheduleRequest();
+    ASSERT_NE(req, nullptr);
+    EXPECT_NE(req->instance().scheduleoption().resourceselector().find(RESOURCE_OWNER_KEY),
+              req->instance().scheduleoption().resourceselector().end());
+    EXPECT_EQ(req->instance().scheduleoption().resourceselector().find(RESOURCE_OWNER_KEY)->second, TEST_AGENT_ID);
+
+    testFuncAgentMgrActor_->ResetReceivedScheduleRequest();
+    ::messages::ScheduleResponse response;
+    response.set_code(static_cast<int32_t>(StatusCode::SUCCESS));
+    response.set_requestid(testFuncAgentMgrActor_->GetScheduleRequest()->requestid());
+    response.set_instanceid("instance1");
+    EXPECT_CALL(*testFuncAgentMgrActor_, MockStaticFunctionScheduleResponse)
+        .WillRepeatedly(Return(response.SerializeAsString()));
+    ASSERT_AWAIT_TRUE([&]() -> bool { return testFuncAgentMgrActor_->GetReceivedScheduleRequest(); });
+    ASSERT_AWAIT_TRUE([&]() -> bool { return dstActor_->scheduleResponsePromise_->GetFuture().IsOK(); });
+
+    litebus::os::Rmdir(user_dir);
+}
+
+TEST_F(AgentServiceActorTest, NotifyFunctionStatusTest)
+{
+    auto staticFunctionChangeRequest = std::make_shared<messages::StaticFunctionChangeRequest>();
+    std::string instanceID = "Test-InstanceID";
+    staticFunctionChangeRequest->set_instanceid(instanceID);
+    staticFunctionChangeRequest->set_status(static_cast<int32_t>(InstanceState::RUNNING));
+
+    testFuncAgentMgrActor_->SendRequestToAgentServiceActor(dstActor_->GetAID(), "NotifyFunctionStatusChange",
+                                                           staticFunctionChangeRequest->SerializeAsString());
+
+    ASSERT_AWAIT_TRUE([&]() -> bool {
+        return dstActor_->instanceHealthyMap_.find(instanceID) != dstActor_->instanceHealthyMap_.end();
+    });
+    EXPECT_TRUE(dstActor_->instanceHealthyMap_[instanceID] == static_cast<int32_t>(InstanceState::RUNNING));
+
+    staticFunctionChangeRequest->set_status(static_cast<int32_t>(InstanceState::EXITING));
+    testFuncAgentMgrActor_->SendRequestToAgentServiceActor(dstActor_->GetAID(), "NotifyFunctionStatusChange",
+                                                           staticFunctionChangeRequest->SerializeAsString());
+    ASSERT_AWAIT_TRUE([&]() -> bool {
+        return dstActor_->instanceHealthyMap_.find(instanceID) == dstActor_->instanceHealthyMap_.end();
+    });
+
+    staticFunctionChangeRequest->set_status(static_cast<int32_t>(InstanceState::FATAL));
+    testFuncAgentMgrActor_->SendRequestToAgentServiceActor(dstActor_->GetAID(), "NotifyFunctionStatusChange",
+                                                           staticFunctionChangeRequest->SerializeAsString());
+    ASSERT_AWAIT_TRUE([&]() -> bool {
+        return dstActor_->instanceHealthyMap_.find(instanceID) == dstActor_->instanceHealthyMap_.end();
+    });
+}
+
+TEST_F(AgentServiceActorTest, CheckReadinessTest)
+{
+    EXPECT_TRUE(dstActor_->IsAgentReadiness().IsError());
+
+    dstActor_->instanceHealthyMap_["xx"] = static_cast<int32_t>(InstanceState::CREATING);
+    EXPECT_TRUE(dstActor_->IsAgentReadiness().IsError());
+
+    dstActor_->instanceHealthyMap_["xx"] = static_cast<int32_t>(InstanceState::RUNNING);
+    const auto future = dstActor_->IsAgentReadiness();  // SetValue
+    EXPECT_TRUE(future.IsOK() && future.Get().IsOk());
+}
+
+TEST_F(AgentServiceActorTest, DeployInstanceWithSharedDir)
+{
+    std::string sharedDir = "test_abc";
+    std::string dest = "/dcache/shared/" + sharedDir;
     auto deployInstanceReq = std::make_unique<messages::DeployInstanceRequest>();
-    deployInstanceReq->set_requestid(TEST_REQUEST_ID);  // as appID
+    deployInstanceReq->set_requestid(TEST_REQUEST_ID);
     deployInstanceReq->set_instanceid(TEST_INSTANCE_ID);
-    deployInstanceReq->set_language("cpp11");
-
     auto spec = deployInstanceReq->mutable_funcdeployspec();
-    spec->set_storagetype(function_agent::WORKING_DIR_STORAGE_TYPE);
-    auto deployDir = "/home/sn/function/package/xxxz";
-    std::string destination = "/tmp/working_dir-tmp/file.zip";
-    (void)litebus::os::Rmdir(deployDir);
-    EXPECT_TRUE(litebus::os::ExistPath(destination));
-    spec->set_deploydir(deployDir);
-
-    deployInstanceReq->mutable_createoptions()->insert(
-        { "DELEGATE_DOWNLOAD",
-          R"({"appId":"userWorkingDirCode001", "storage_type":"working_dir", "code_path":"/tmp/working_dir-tmp/"})" });
+    spec->set_storagetype(function_agent::LOCAL_STORAGE_TYPE);
+    deployInstanceReq->mutable_createoptions()->insert({ "DELEGATE_SHARED_DIRECTORY", sharedDir });
+    deployInstanceReq->mutable_createoptions()->insert({ "DELEGATE_SHARED_DIRECTORY_TTL", "9223372036854775808" });
+    litebus::os::Rmdir(dest);
     messages::StartInstanceResponse startInstanceResponse;
-    startInstanceResponse.set_code(StatusCode::SUCCESS);
     startInstanceResponse.set_requestid(TEST_REQUEST_ID);
-    startInstanceResponse.mutable_startruntimeinstanceresponse()->set_runtimeid(TEST_RUNTIME_ID);
     EXPECT_CALL(*testRuntimeManager_, MockStartInstanceResponse)
         .WillOnce(Return(startInstanceResponse.SerializeAsString()));
-
-    testFuncAgentMgrActor_->ResetDeployInstanceResponse();
     testFuncAgentMgrActor_->SendRequestToAgentServiceActor(dstActor_->GetAID(), "DeployInstance",
                                                            std::move(deployInstanceReq->SerializeAsString()));
-    ASSERT_AWAIT_TRUE(
-        [&]() -> bool { return testFuncAgentMgrActor_->GetDeployInstanceResponse()->requestid() == TEST_REQUEST_ID; });
-    EXPECT_TRUE(litebus::os::ExistPath(destination));  // app deployed
+    ASSERT_AWAIT_TRUE_FOR([&]() -> bool { return litebus::os::ExistPath(dest); }, 5000);
+    EXPECT_EQ(dstActor_->deployers_[SHARED_DIR_STORAGE_TYPE]->GetTTL(dest), std::numeric_limits<int>::max());
+    EXPECT_EQ(JudgeCodeReferNum(dstActor_->GetCodeReferManager(), dest), static_cast<uint32_t>(1));
+    EXPECT_EQ(testFuncAgentMgrActor_->GetDeployInstanceResponse()->requestid(), TEST_REQUEST_ID);
+    testFuncAgentMgrActor_->ResetDeployInstanceResponse();
+    EXPECT_TRUE(litebus::os::Rmdir(dest).IsNone());
+}
 
-    auto startInstanceRequest = std::make_shared<messages::StartInstanceRequest>();
-    startInstanceRequest->ParseFromString(testRuntimeManager_->promiseOfStartInstanceRequest.GetFuture().Get());
-    YRLOG_DEBUG(startInstanceRequest->ShortDebugString());
-    EXPECT_EQ(
-        startInstanceRequest->runtimeinstanceinfo().runtimeconfig().posixenvs().find(UNZIPPED_WORKING_DIR)->second,
-        destination);  // startInstance param posixenvs should contain UNZIPPED_WORKING_DIR
-    EXPECT_EQ(startInstanceRequest->runtimeinstanceinfo().runtimeconfig().posixenvs().find(YR_WORKING_DIR)->second,
-              destination);  // startInstance param posixenvs should contain YR_WORKING_DIR
-    DestroyWorkingDir("/tmp/working_dir-tmp");
+TEST_F(AgentServiceActorTest, DeployInstanceWithSharedDirAndInvalidTTL)
+{
+    std::string sharedDir = "test_abc";
+    std::string dest = "/dcache/shared/" + sharedDir;
+    auto deployInstanceReq = std::make_unique<messages::DeployInstanceRequest>();
+    deployInstanceReq->set_requestid(TEST_REQUEST_ID);
+    deployInstanceReq->set_instanceid(TEST_INSTANCE_ID);
+    auto spec = deployInstanceReq->mutable_funcdeployspec();
+    spec->set_storagetype(function_agent::LOCAL_STORAGE_TYPE);
+    deployInstanceReq->mutable_createoptions()->insert({ "DELEGATE_SHARED_DIRECTORY", sharedDir });
+    deployInstanceReq->mutable_createoptions()->insert({ "DELEGATE_SHARED_DIRECTORY_TTL", "abc" });
+    messages::StartInstanceResponse startInstanceResponse;
+    startInstanceResponse.set_requestid(TEST_REQUEST_ID);
+    testFuncAgentMgrActor_->SendRequestToAgentServiceActor(dstActor_->GetAID(), "DeployInstance",
+                                                           std::move(deployInstanceReq->SerializeAsString()));
+    ASSERT_AWAIT_TRUE([&]() -> bool { return testFuncAgentMgrActor_->GetDeployInstanceResponse()->code() == 70052; });
 }
 }  // namespace functionsystem::test

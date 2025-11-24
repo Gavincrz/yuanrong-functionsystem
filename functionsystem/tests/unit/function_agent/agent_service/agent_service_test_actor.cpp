@@ -16,7 +16,7 @@
 
 #include "agent_service_test_actor.h"
 
-#include "logs/logging.h"
+#include "common/logs/logging.h"
 
 namespace functionsystem::function_agent::test {
 void MockActor::SendRequestToAgentServiceActor(const litebus::AID &to, std::string &&name, std::string &&msg)
@@ -153,6 +153,8 @@ void MockFunctionAgentMgrActor::Init()
     ActorBase::Receive("UpdateCredResponse", &MockFunctionAgentMgrActor::UpdateCredResponse);
     ActorBase::Receive("SetNetworkIsolationResponse", &MockFunctionAgentMgrActor::SetNetworkIsolationResponse);
     ActorBase::Receive("QueryDebugInstanceInfosResponse", &MockFunctionAgentMgrActor::QueryDebugInstanceInfosResponse);
+    ActorBase::Receive("StaticFunctionScheduleRequest", &MockFunctionAgentMgrActor::StaticFunctionScheduleRequest);
+    ActorBase::Receive("NotifyFunctionStatusChangeResp", &MockFunctionAgentMgrActor::NotifyFunctionStatusChangeResp);
 }
 
 void MockFunctionAgentMgrActor::DeployInstanceResponse(const litebus::AID &from, std::string &&, std::string &&msg)
@@ -247,5 +249,25 @@ void MockFunctionAgentMgrActor::SetNetworkIsolationResponse(const litebus::AID &
 {
     (void)setNetworkIsolationResponse_->ParseFromString(msg);
     YRLOG_DEBUG("received SetNetworkIsolationResponse(requestid:{}) from {}", setNetworkIsolationResponse_->requestid(), std::string(from));
+}
+
+void MockFunctionAgentMgrActor::StaticFunctionScheduleRequest(const litebus::AID &from, std::string &&, std::string &&msg)
+{
+    YRLOG_INFO("set receivedScheduleRequest to true");
+    receivedScheduleRequest_ = true;
+    scheduleRequest_->ParseFromString(msg);
+    YRLOG_DEBUG("{}|received static function schedule message from {}", scheduleRequest_->requestid(), std::string(from));
+    Send(from, "StaticFunctionScheduleResponse", MockStaticFunctionScheduleResponse());
+}
+
+void MockFunctionAgentMgrActor::NotifyFunctionStatusChangeResp(const litebus::AID &from, std::string &&, std::string &&msg)
+{
+    messages::StaticFunctionChangeResponse resp;
+    if (msg.empty() || !resp.ParseFromString(msg)) {
+        YRLOG_WARN("invalid request body, failed to get response of notify instance healthy change from {}.",
+                   from.HashString());
+        return;
+    }
+    YRLOG_INFO("{}|notify instance status change instance({}) successfully ", resp.requestid(), resp.instanceid());
 }
 }  // namespace functionsystem::function_agent::test

@@ -21,5 +21,6 @@ add_subdirectory(state_handler)
 add_subdirectory(state_machine)
 add_subdirectory(rate_limiter)
 add_subdirectory(common_driver)
+add_subdirectory(iam)
 
 target_include_directories(${UNIT_TEST_MODULE} PRIVATE ${SRC_BUSPROXY_INCLUDE_DIR})

@@ -17,7 +17,7 @@
 #include "function_master/global_scheduler/scheduler_manager/domain_sched_mgr_actor.h"
 
 #include "common/constants/actor_name.h"
-#include "heartbeat/ping_pong_driver.h"
+#include "common/heartbeat/heartbeat_client.h"
 #include "common/utils/generate_message.h"
 #include "domain_scheduler/domain_scheduler_service/uplayer_stub.h"
 #include "gmock/gmock.h"
@@ -27,6 +27,7 @@
 #include "utils/generate_info.h"
 
 namespace functionsystem::test {
+const long long HEARTBEAT_TIMEOUT = 30000;
 
 using namespace functionsystem::global_scheduler;
 
@@ -43,7 +44,8 @@ protected:
 public:
     static void DomainSchedulerRegister(std::string &&name, std::string &&responseMsg, std::string &&registerMsg)
     {
-        auto actor = std::make_shared<functionsystem::global_scheduler::DomainSchedMgrActor>("TestDomainSchedMgrActor");
+        auto actor = std::make_shared<functionsystem::global_scheduler::DomainSchedMgrActor>("TestDomainSchedMgrActor",
+                                                                                             HEARTBEAT_TIMEOUT);
         litebus::Spawn(actor);
 
         litebus::Async(actor->GetAID(), &DomainSchedMgrActor::UpdateLeaderInfo, GetLeaderInfo(actor->GetAID()));
@@ -135,7 +137,8 @@ TEST_F(DomainSchedMgrActorTest, DomainSchedulerRegisterWithValidRequest)
     };
 
     // got
-    auto actor = std::make_shared<functionsystem::global_scheduler::DomainSchedMgrActor>("TestDomainSchedMgrActor");
+    auto actor = std::make_shared<functionsystem::global_scheduler::DomainSchedMgrActor>("TestDomainSchedMgrActor",
+                                                                                         HEARTBEAT_TIMEOUT);
     auto scheduler = std::make_shared<MockDomainSchedSrvActor>("MockDomainScheduler");
     for (uint32_t i = 0; i < sizeof(givens) / sizeof(std::string); i++) {
         auto wantName = wants[i][0];
@@ -192,7 +195,7 @@ TEST_F(DomainSchedMgrActorTest, NotifySchedAbnormal)
 
     // got
     for (uint32_t i = 0; i < sizeof(wants) / sizeof(std::string); i++) {
-        auto actor = std::make_shared<global_scheduler::DomainSchedMgrActor>("TestDomainSchedActor");
+        auto actor = std::make_shared<global_scheduler::DomainSchedMgrActor>("TestDomainSchedActor", HEARTBEAT_TIMEOUT);
         auto scheduler = std::make_shared<MockDomainSchedSrvActor>("MockDomainScheduler");
         litebus::Spawn(actor);
         litebus::Spawn(scheduler);
@@ -226,7 +229,7 @@ TEST_F(DomainSchedMgrActorTest, NotifySchedAbnormal)
 // test Notify worker status from other scheduler
 TEST_F(DomainSchedMgrActorTest, NotifyWorkerStatus)
 {
-    auto actor = std::make_shared<global_scheduler::DomainSchedMgrActor>("TestDomainSchedActor");
+    auto actor = std::make_shared<global_scheduler::DomainSchedMgrActor>("TestDomainSchedActor", HEARTBEAT_TIMEOUT);
     auto scheduler = std::make_shared<MockDomainSchedSrvActor>("MockDomainScheduler");
     litebus::Spawn(actor);
     litebus::Spawn(scheduler);
@@ -258,7 +261,7 @@ TEST_F(DomainSchedMgrActorTest, NotifyWorkerStatus)
  */
 TEST_F(DomainSchedMgrActorTest, QueryAgentInfo)
 {
-    auto actor = std::make_shared<global_scheduler::DomainSchedMgrActor>("TestDomainSchedActor");
+    auto actor = std::make_shared<global_scheduler::DomainSchedMgrActor>("TestDomainSchedActor", HEARTBEAT_TIMEOUT);
     auto scheduler =
         std::make_shared<MockDomainSchedSrvActor>("MockDomainScheduler" + DOMAIN_SCHEDULER_SRV_ACTOR_NAME_POSTFIX);
     litebus::Spawn(actor);
@@ -284,7 +287,7 @@ TEST_F(DomainSchedMgrActorTest, QueryAgentInfo)
 
 TEST_F(DomainSchedMgrActorTest, GetSchedulingQueue)
 {
-    auto actor = std::make_shared<global_scheduler::DomainSchedMgrActor>("TestDomainSchedActor");
+    auto actor = std::make_shared<global_scheduler::DomainSchedMgrActor>("TestDomainSchedActor", HEARTBEAT_TIMEOUT);
     auto scheduler =
         std::make_shared<MockDomainSchedSrvActor>("MockDomainScheduler" + DOMAIN_SCHEDULER_SRV_ACTOR_NAME_POSTFIX);
     litebus::Spawn(actor);
@@ -312,7 +315,8 @@ TEST_F(DomainSchedMgrActorTest, GetSchedulingQueue)
 
 TEST_F(DomainSchedMgrActorTest, QueryResourcesInfo)
 {
-    auto actor = std::make_shared<functionsystem::global_scheduler::DomainSchedMgrActor>("TestDomainSchedMgrActor");
+    auto actor = std::make_shared<functionsystem::global_scheduler::DomainSchedMgrActor>("TestDomainSchedMgrActor",
+                                                                                         HEARTBEAT_TIMEOUT);
     litebus::Spawn(actor);
 
     auto scheduler =
@@ -345,7 +349,8 @@ TEST_F(DomainSchedMgrActorTest, QueryResourcesInfo)
  */
 TEST_F(DomainSchedMgrActorTest, ResponseScheduleWithInvalidResponse)
 {
-    auto actor = std::make_shared<functionsystem::global_scheduler::DomainSchedMgrActor>("TestDomainSchedMgrActor");
+    auto actor = std::make_shared<functionsystem::global_scheduler::DomainSchedMgrActor>("TestDomainSchedMgrActor",
+                                                                                         HEARTBEAT_TIMEOUT);
     actor->Init();
     actor->ResponseSchedule("domainSchedA", "ResponseSchedule", "");
     messages::ScheduleResponse response;
@@ -363,7 +368,8 @@ TEST_F(DomainSchedMgrActorTest, ResponseScheduleWithInvalidResponse)
  */
 TEST_F(DomainSchedMgrActorTest, ConnectFail)
 {
-    auto actor = std::make_shared<functionsystem::global_scheduler::DomainSchedMgrActor>("TestDomainSchedMgrActor");
+    auto actor = std::make_shared<functionsystem::global_scheduler::DomainSchedMgrActor>("TestDomainSchedMgrActor",
+                                                                                         HEARTBEAT_TIMEOUT);
     actor->DelDomainSchedCallback([](const std::string &name, const std::string &ip) { EXPECT_TRUE(name == "test"); });
     litebus::Spawn(actor);
 
@@ -385,12 +391,14 @@ TEST_F(DomainSchedMgrActorTest, ConnectFail)
  */
 TEST_F(DomainSchedMgrActorTest, ReConnect)
 {
-    auto actor = std::make_shared<functionsystem::global_scheduler::DomainSchedMgrActor>("TestDomainSchedMgrActor");
+    auto actor = std::make_shared<functionsystem::global_scheduler::DomainSchedMgrActor>("TestDomainSchedMgrActor",
+                                                                                         HEARTBEAT_TIMEOUT);
     actor->DelDomainSchedCallback([](const std::string &name, const std::string &ip) { EXPECT_TRUE(name == "test"); });
     litebus::Spawn(actor);
 
     litebus::Async(actor->GetAID(), &DomainSchedMgrActor::UpdateLeaderInfo, GetLeaderInfo(actor->GetAID()));
-    PingPongDriver pingpong("pinged", 1000, [](const litebus::AID &aid, HeartbeatConnection type) {});
+    HeartbeatClientDriver pingpong("pinged", [](const litebus::AID &aid) {});
+    pingpong.Start(actor->GetAID());
     litebus::Async(actor->GetAID(), &DomainSchedMgrActor::Connect, "pinged",
                    pingpong.GetActorAID().GetIp() + ":" + std::to_string(pingpong.GetActorAID().GetPort()))
         .Get();
@@ -400,4 +408,5 @@ TEST_F(DomainSchedMgrActorTest, ReConnect)
     litebus::Terminate(actor->GetAID());
     litebus::Await(actor->GetAID());
 }
+
 }  // namespace functionsystem::test

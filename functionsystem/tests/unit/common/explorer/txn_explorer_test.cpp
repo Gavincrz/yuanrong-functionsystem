@@ -21,7 +21,7 @@
 #include "common/constants/actor_name.h"
 #include "common/etcd_service/etcd_service_driver.h"
 #include "common/explorer/txn_explorer_actor.h"
-#include "metadata/metadata.h"
+#include "common/metadata/metadata.h"
 #include "utils/future_test_helper.h"
 #include "utils/port_helper.h"
 
@@ -32,14 +32,14 @@ class TxnExplorerTest : public ::testing::Test {
 public:
     void SetUp() override
     {
-        EXPECT_AWAIT_READY(metaStoreClient_->Delete("/", { .prevKv = false, .prefix = true }));
+        EXPECT_AWAIT_READY(metaStoreClient_->Delete("/", { .prefix = true }));
     }
 
     void TearDown() override
     {
     }
 
-    static void SetUpTestCase()
+    [[maybe_unused]] static void SetUpTestSuite()
     {
         etcdSrvDriver_ = std::make_unique<meta_store::test::EtcdServiceDriver>();
         int metaStoreServerPort = functionsystem::test::FindAvailablePort();
@@ -48,7 +48,7 @@ public:
             MetaStoreClient::Create({ .etcdAddress = "127.0.0.1:" + std::to_string(metaStoreServerPort) }, {}, {});
     }
 
-    static void TearDownTestCase()
+    [[maybe_unused]] static void TearDownTestSuite()
     {
         metaStoreClient_ = nullptr;
 
@@ -89,7 +89,9 @@ TEST_F(TxnExplorerTest, TxnElectionTest)
     EXPECT_AWAIT_READY(metaStoreClient_->Put(DEFAULT_MASTER_ELECTION_KEY, "127.0.0.1:81", {}));
     EXPECT_TRUE(actor->cachedLeaderInfo_.address == "127.0.0.1:80");
 
-    auto result = litebus::Async(aid, &TxnExplorerActor::Sync);
+    auto getResponse = metaStoreClient_->Get(DEFAULT_MASTER_ELECTION_KEY, {});
+    ASSERT_AWAIT_READY(getResponse);
+    auto result = litebus::Async(aid, &TxnExplorerActor::Sync, getResponse.Get());
     ASSERT_AWAIT_READY(result);
     EXPECT_TRUE(result.Get().status.IsOk());
 

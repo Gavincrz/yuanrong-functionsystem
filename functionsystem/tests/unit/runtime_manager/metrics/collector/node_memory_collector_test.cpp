@@ -47,7 +47,7 @@ TEST_F(NodeMemoryCollectorTest, GenFilter)
  * Steps:
  * Expectation:
  */
-TEST_F(NodeMemoryCollectorTest, GetLimit)
+TEST_F(NodeMemoryCollectorTest, GetLimitAndGetUsage)
 {
     auto tools = std::make_shared<MockProcFSTools>();
     EXPECT_CALL(*tools.get(), Read)
@@ -107,6 +107,8 @@ DirectMap1G:    84934656 kB)"
     EXPECT_LT(limit.value.Get(), 190042.3);
     EXPECT_GT(limit.value.Get(), 190042.2);
     EXPECT_EQ(limit.instanceID.IsNone(), true);
+    auto usage = collector->GetUsage();
+    EXPECT_LT(usage.Get().value.Get(), 61020.9);
+    EXPECT_GT(usage.Get().value.Get(), 61020.1);
 }
-
 }

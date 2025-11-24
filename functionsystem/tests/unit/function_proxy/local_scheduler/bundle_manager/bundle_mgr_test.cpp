@@ -161,7 +161,7 @@ public:
         clientManager_ = std::make_shared<MockSharedClientManagerProxy>();
         mockScheduler_ = std::make_shared<MockScheduler>();
         mockLocalSchedSrv_ = std::make_shared<MockLocalSchedSrv>();
-        mockInstanceCtrl_ = std::make_shared<MockInstanceCtrl>(nullptr);
+        mockInstanceCtrl_ = std::make_shared<MockInstanceCtrl>();
         EXPECT_CALL(*mockInstanceCtrl_, RegisterClearGroupInstanceCallBack).WillRepeatedly(Return());
         mockMetaStoreClient_ = std::make_shared<MockMetaStoreClient>("");
         auto resourceViewMgr = std::make_shared<resource_view::ResourceViewMgr>();
@@ -373,7 +373,7 @@ TEST_F(BundleMgrTest, ReserveAndUnReserveSuccessful)
     }
 
     EXPECT_CALL(*mockScheduler_, ScheduleDecision(_))
-        .WillOnce(Return(schedule_decision::ScheduleResult{ "agent", 0, {}, {}, "", {}, allocatedPromise }))
+        .WillOnce(Return(schedule_decision::ScheduleResult{ "agent", 0, {}, {}, "", {}, {}, allocatedPromise }))
         .WillOnce(Return(scheduleResult));
     auto changes = std::make_shared<resource_view::ResourceUnitChanges>();
     EXPECT_CALL(*primary_, GetResourceViewChanges()).WillRepeatedly(Return(changes));
@@ -721,7 +721,6 @@ TEST_F(BundleMgrTest, SyncFailedBundlesTest)
     EXPECT_EQ(bundleMgrActor_->bundles_.size(), static_cast<uint32_t>(3));
 
     explorer::LeaderInfo leaderInfo{
-        .name = "",
         .address = mockResourceGroupActor->GetAID().UnfixUrl(),
     };
     bundleMgrActor_->UpdateMasterInfo(leaderInfo);
@@ -786,7 +785,6 @@ TEST_F(BundleMgrTest, NotifyFailedAgentTest)
     litebus::Spawn(mockResourceGroupActor);
 
     explorer::LeaderInfo leaderInfo{
-        .name = "",
         .address = mockResourceGroupActor->GetAID().UnfixUrl(),
     };
     bundleMgrActor_->UpdateMasterInfo(leaderInfo);

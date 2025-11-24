@@ -19,7 +19,7 @@
 
 #include <gmock/gmock.h>
 
-#include "files.h"
+#include "common/utils/files.h"
 #include "function_agent/code_deployer/deployer.h"
 #include "function_agent/code_deployer/s3_deployer.h"
 

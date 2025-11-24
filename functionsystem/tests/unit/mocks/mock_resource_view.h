@@ -23,6 +23,7 @@
 
 #include "common/resource_view/resource_view.h"
 #include "common/resource_view/resource_view_actor.h"
+#include "common/resource_view/resource_type.h"
 
 namespace functionsystem::test {
 
@@ -86,6 +87,8 @@ public:
     MOCK_METHOD(litebus::Future<resource_view::ResourceViewInfo>, GetResourceInfo, (), (override));
     MOCK_METHOD(litebus::Future<Status>, UpdateUnitStatus,
                 (const std::string &unitID, resource_view::UnitStatus status), (override));
+
+    MOCK_METHOD(litebus::Future<resource_view::PullResourceRequest>, GetUnitSnapshotInfo, (const std::string &id), (override));
 };
 }  // namespace functionsystem::test
 

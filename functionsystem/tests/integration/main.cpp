@@ -19,8 +19,8 @@
 #include <litebus.hpp>
 #include <utils/os_utils.hpp>
 
-#include "logs/logging.h"
-#include "status/status.h"
+#include "common/logs/logging.h"
+#include "common/status/status.h"
 #include "logs/sdk/log_param_parser.h"
 #include "utils/port_helper.h"
 
@@ -60,10 +60,7 @@ int main(int argc, char **argv)
 
     int port = functionsystem::test::FindAvailablePort();
     litebus::os::SetEnv("LITEBUS_PORT", std::to_string(port));
-    std::cout << "port: " << port << std::endl;
-    int metaStoreServerPort = functionsystem::test::FindAvailablePort();
-    litebus::os::SetEnv("META_STORE_SERVER_PORT", std::to_string(metaStoreServerPort));
-    std::cout << "metaStoreServerPort: " << metaStoreServerPort << std::endl;
+    std::cout << "Start LITEBUS on net port: " << port << std::endl;
     auto res = litebus::Initialize("tcp://127.0.0.1:" + std::to_string(port), "",
                                    "udp://127.0.0.1:" + std::to_string(port), "");
     if (res != BUS_OK) {

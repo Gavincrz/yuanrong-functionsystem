@@ -21,6 +21,7 @@
 #include <gtest/gtest.h>
 
 #include "async/future.hpp"
+#include "common/utils/actor_worker.h"
 
 namespace functionsystem::test {
 
@@ -109,6 +110,26 @@ PromiseArgActionP<index, std::shared_ptr<litebus::Promise<T>>> FutureArg(litebus
     auto promise = std::make_shared<litebus::Promise<T>>();
     *future = promise->GetFuture();
     return PromiseArg<index>(promise);
+}
+
+template <typename T>
+litebus::Future<T> AsyncReturn(T val)
+{
+    auto promise = std::make_shared<litebus::Promise<T>>();
+    auto actor = std::make_shared<ActorWorker>();
+    (void)actor->AsyncWork([promise, val]() { promise->SetValue(val); })
+        .OnComplete([actor](const litebus::Future<Status> &) { actor->Terminate(); });
+    return promise->GetFuture();
+}
+
+template <typename T>
+litebus::Future<T> AsyncReturn(litebus::Future<T> val)
+{
+    auto promise = std::make_shared<litebus::Promise<T>>();
+    auto actor = std::make_shared<ActorWorker>();
+    (void)actor->AsyncWork([promise, val]() { promise->SetValue(val); })
+        .OnComplete([actor](const litebus::Future<Status> &) { actor->Terminate(); });
+    return promise->GetFuture();
 }
 
 }  // namespace functionsystem::test

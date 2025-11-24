@@ -23,10 +23,10 @@
 #define protected public
 #include "common/constants/signal.h"
 #include "common/etcd_service/etcd_service_driver.h"
-#include "metadata/metadata.h"
+#include "common/metadata/metadata.h"
 #include "common/types/instance_state.h"
 #include "common/utils/generate_message.h"
-#include "meta_store_kv_operation.h"
+#include "common/utils/meta_store_kv_operation.h"
 #include "common/utils/struct_transfer.h"
 #include "function_master/instance_manager/group_manager.h"
 #include "function_master/instance_manager/instance_manager_actor.h"
@@ -127,7 +127,7 @@ protected:
 
     std::shared_ptr<MockInstanceCtrlActor> mockInstCtrlActorNode01_;
 
-    [[maybe_unused]] static void SetUpTestCase()
+    [[maybe_unused]] static void SetUpTestSuite()
     {
         etcdSrvDriver_ = std::make_unique<meta_store::test::EtcdServiceDriver>();
         int metaStoreServerPort = functionsystem::test::FindAvailablePort();
@@ -137,7 +137,7 @@ protected:
         localAddress_ = "127.0.0.1:" + std::to_string(port);
     }
 
-    [[maybe_unused]] static void TearDownTestCase()
+    [[maybe_unused]] static void TearDownTestSuite()
     {
         etcdSrvDriver_->StopServer();
     }
@@ -271,6 +271,19 @@ protected:
         return instanceMgrActor->member_;
     }
 
+    static void WaitSyncFuncMeta(const std::shared_ptr<MockMetaStoreClient> mockMetaStoreClient,
+                                 const std::shared_ptr<InstanceManagerActor> instanceMgrActor)
+    {
+        instanceMgrActor->SetInstancesReady();
+        std::shared_ptr<GetResponse> emptyResp = std::make_shared<GetResponse>();
+        emptyResp->status = Status::OK();
+        bool isMetaSynced = false;
+        EXPECT_CALL(*mockMetaStoreClient, Get(FUNC_META_PATH_PREFIX, testing::_))
+            .WillOnce(testing::DoAll(testing::Assign(&isMetaSynced, true), testing::Return(emptyResp)));
+        litebus::Async(instanceMgrActor->GetAID(), &InstanceManagerActor::UpdateLeaderInfo,
+                       GetLeaderInfo(instanceMgrActor->GetAID()));
+        EXPECT_AWAIT_TRUE([&isMetaSynced]() -> bool { return isMetaSynced; });
+    }
 };
 
 TEST_F(InstanceManagerTest, SyncInstance)  // NOLINT
@@ -307,6 +320,33 @@ TEST_F(InstanceManagerTest, SyncInstance)  // NOLINT
     instanceMgrDriver->Await();
 }
 
+TEST_F(InstanceManagerTest, StartSyncFail)
+{
+    auto scheduler = std::make_shared<MockGlobalSched>();
+    auto mockMetaStoreClient = std::make_shared<MockMetaStoreClient>(metaStoreServerHost_);
+    auto groupMgrActor = std::make_shared<MockGroupManagerActor>(mockMetaStoreClient, scheduler);
+    groupMgrActor->isSuicide_ = true;
+    auto groupMgr = std::make_shared<MockGroupManager>(groupMgrActor);
+    std::shared_ptr<GetResponse> rep = std::make_shared<GetResponse>();
+    rep->status = Status(StatusCode::FAILED, "");
+    std::shared_ptr<GetResponse> rep1 = std::make_shared<GetResponse>();
+    rep1->status = Status::OK();
+    rep1->header.revision = INT64_MAX;
+    EXPECT_CALL(*mockMetaStoreClient,
+                GetAndWatchWithHandler(testing::_, testing::_, testing::_, testing::_, testing::_))
+        .WillRepeatedly(testing::Return(litebus::Future<std::shared_ptr<Watcher>>()));
+    auto instanceMgrActor = std::make_shared<InstanceManagerActor>(
+        mockMetaStoreClient, scheduler, groupMgr,
+        InstanceManagerStartParam{ .runtimeRecoverEnable = false });
+    instanceMgrActor->isSuicide_ = true;
+    auto instanceMgrDriver = std::make_shared<InstanceManagerDriver>(instanceMgrActor, groupMgrActor);
+    instanceMgrDriver->Start();
+    EXPECT_TRUE(instanceMgrActor->CheckSyncResponse(rep).Get().IsError());
+    EXPECT_TRUE(instanceMgrActor->CheckSyncResponse(rep1).Get().IsError());
+    instanceMgrDriver->Stop();
+    instanceMgrDriver->Await();
+}
+
 TEST_F(InstanceManagerTest, SchedulerWatchTest)  // NOLINT
 {
     auto scheduler = std::make_shared<MockGlobalSched>();
@@ -332,6 +372,42 @@ TEST_F(InstanceManagerTest, SchedulerWatchTest)  // NOLINT
 
     litebus::Terminate(aid);
     litebus::Await(aid);
+}
+
+TEST_F(InstanceManagerTest, ReplayFailedDeleteOperationTest)  // NOLINT
+{
+    auto scheduler = std::make_shared<MockGlobalSched>();
+
+    auto client = MetaStoreClient::Create(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_ });
+    auto groupMgrActor = std::make_shared<MockGroupManagerActor>(client, scheduler);
+    auto groupMgr = std::make_shared<MockGroupManager>(groupMgrActor);
+
+    const auto actor = std::make_shared<InstanceManagerActor>(
+        client, scheduler, groupMgr, InstanceManagerStartParam{ .runtimeRecoverEnable = false });
+    auto instanceMgrDriver = std::make_shared<InstanceManagerDriver>(actor, groupMgrActor);
+    instanceMgrDriver->Start();
+    litebus::Async(actor->GetAID(), &InstanceManagerActor::UpdateLeaderInfo, GetLeaderInfo(actor->GetAID()));
+
+    auto mockInstanceOpt = std::make_shared<MockInstanceOperator>();
+    actor->member_->instanceOpt = mockInstanceOpt;
+
+    std::list<litebus::Future<Status>> futures;
+    auto eraseDelKeys = std::make_shared<std::set<std::string>>();
+    actor->member_->operateCacher->AddDeleteEvent(
+        INSTANCE_PATH_PREFIX,
+        "/sn/instance/business/yrk/tenant/0/function/0-system-faasscheduler/version/$latest/defaultaz/"
+        "38bb25d0ccc79faa00/e19cf1ed-2455-43eb-a8a0-6c6083cdee2b");
+    litebus::Future<StoreInfo> future;
+    EXPECT_CALL(*mockInstanceOpt, ForceDelete)
+        .WillOnce(testing::DoAll(
+            testing::Invoke([&future](std::shared_ptr<StoreInfo>, std::shared_ptr<StoreInfo> routeInfo,
+                                      std::shared_ptr<StoreInfo>, bool) { future.SetValue(*routeInfo); }),
+            testing::Return(OperateResult{ Status::OK(), "", 3 })));
+    actor->ReplayFailedDeleteOperation(futures, eraseDelKeys);
+    ASSERT_AWAIT_READY(future);
+    EXPECT_EQ(future.Get().key, "/yr/route/business/yrk/e19cf1ed-2455-43eb-a8a0-6c6083cdee2b");
+    instanceMgrDriver->Stop();
+    instanceMgrDriver->Await();
 }
 
 TEST_F(InstanceManagerTest, SyncAbnormalScheduler)  // NOLINT
@@ -412,7 +488,6 @@ TEST_F(InstanceManagerTest, PutAndDeleteInstance)  // NOLINT
     client.Init();
     // eg. /sn/instance/business/yrk/tenant/0/function/0-test-0/version/..
     ASSERT_TRUE(client.Put(instance003.instanceid(), jsonString, {}).Get()->status.IsOk());
-
     functionsystem::instance_manager::InstanceManagerMap map;
     ASSERT_AWAIT_TRUE([&]() -> bool {
         map.clear();  // [notice] clear and then Get
@@ -578,9 +653,11 @@ TEST_F(InstanceManagerTest, OnLocalSchedulerFaultRecover)  // NOLINT
         return response->kvs.size() == 1;
     });
 
-    map.clear();  // [notice] clear and then Get
-    litebus::Async(instanceMgrActor->GetAID(), &InstanceManagerActor::Get, INSTANCE_MANAGER_OWNER, &map).Get();
-    EXPECT_EQ(map.size(), 2u);
+    EXPECT_AWAIT_TRUE([&]() -> bool {
+        map.clear();  // [notice] clear and then Get
+        litebus::Async(instanceMgrActor->GetAID(), &InstanceManagerActor::Get, INSTANCE_MANAGER_OWNER, &map).Get();
+        return map.size() == 2;
+    });
     for (const auto &iterator : map) {
         EXPECT_TRUE(iterator.second->instancestatus().code() == static_cast<int32_t>(InstanceState::SCHEDULING));
     }
@@ -825,8 +902,16 @@ TEST_F(InstanceManagerTest, OnChange)  // NOLINT
     ASSERT_TRUE(TransToJsonFromInstanceInfo(jsonString003, instance003));
     ASSERT_TRUE(client.Put(instance003.instanceid(), jsonString003, {}).Get()->status.IsOk());
 
+    std::string jsonString004;
+    resource_view::InstanceInfo instance004 = CreateInstance(INSTANCE_PATH_PREFIX + "/004", true);
+    instance004.set_functionproxyid("fake_node");
+    instance004.set_parentid("frontendParent");
+    (*instance004.mutable_extensions())["source"] = "frontend";
+    ASSERT_TRUE(TransToJsonFromInstanceInfo(jsonString004, instance004));
+    ASSERT_TRUE(client.Put(instance004.instanceid(), jsonString004, {}).Get()->status.IsOk());
+
     ASSERT_AWAIT_TRUE(
-        [&]() -> bool { return client.Get(INSTANCE_PATH_PREFIX, { .prefix = true }).Get()->kvs.size() == 3; });
+        [&]() -> bool { return client.Get(INSTANCE_PATH_PREFIX, { .prefix = true }).Get()->kvs.size() == 4; });
 
     ASSERT_TRUE(client.Put(KEY_ABNORMAL_SCHEDULER_PREFIX + NODE_ID_1, NODE_ID_1, {}).Get()->status.IsOk());
     ASSERT_AWAIT_TRUE([&]() -> bool {
@@ -977,15 +1062,19 @@ TEST_F(InstanceManagerTest, FamilyManagement_OnParentMissingInstancePut)  // NOL
 
     // When : put an instance with an non-existing instance
     auto instA = MakeInstanceInfo("A", "", "X", NODE_ID_1, InstanceState::RUNNING);
+    instA->set_detached(true);
+    auto instB = MakeInstanceInfo("B", "", "X", NODE_ID_1, InstanceState::RUNNING);
     litebus::Async(instanceMgrActor->GetAID(), &InstanceManagerActor::OnInstancePut,
                    INSTANCE_PATH_PREFIX + "/" + instA->instanceid(), instA);
+    litebus::Async(instanceMgrActor->GetAID(), &InstanceManagerActor::OnInstancePut,
+                   INSTANCE_PATH_PREFIX + "/" + instB->instanceid(), instB);
 
     // Then : expect instance C is killed
     ASSERT_AWAIT_READY(sigArg);
     internal::ForwardKillRequest killReq;
     ASSERT_TRUE(killReq.ParseFromString(sigArg.Get()));
     ASSERT_EQ(killReq.req().signal(), SHUT_DOWN_SIGNAL);
-    ASSERT_EQ(killReq.req().instanceid(), instA->instanceid());
+    ASSERT_EQ(killReq.req().instanceid(), instB->instanceid());
 
     // Then : expect group manager get the message
     ASSERT_AWAIT_READY(putGroupArg);
@@ -1439,7 +1528,7 @@ TEST_F(InstanceManagerTest, JobKillTest)  // NOLINT
     instanceMgrDriver->Await();
 }
 
-TEST_F(InstanceManagerTest, putProxyAbnormalFailed)  // NOLINT
+TEST_F(InstanceManagerTest, PutProxyAbnormalFailed)  // NOLINT
 {
     auto scheduler = std::make_shared<MockGlobalSched>();
     EXPECT_CALL(*scheduler, QueryNodes).WillOnce(::testing::Return(NODES));
@@ -1458,8 +1547,9 @@ TEST_F(InstanceManagerTest, putProxyAbnormalFailed)  // NOLINT
                    GetLeaderInfo(instanceMgrActor->GetAID()));
 
     std::shared_ptr<PutResponse> rep = std::make_shared<PutResponse>();
-    rep->status = Status(StatusCode::FAILED, "");;
-    EXPECT_CALL(*mockMetaStoreClient, Put).WillRepeatedly(testing::Return(litebus::Future<std::shared_ptr<PutResponse>>(rep)));
+    rep->status = Status(StatusCode::FAILED, "");
+    EXPECT_CALL(*mockMetaStoreClient, Put)
+        .WillRepeatedly(testing::Return(litebus::Future<std::shared_ptr<PutResponse>>(rep)));
 
     auto future = litebus::Async(instanceMgrActor->GetAID(), &InstanceManagerActor::OnLocalSchedFault, NODE_ID_1);
     ASSERT_AWAIT_READY(future);
@@ -1488,25 +1578,19 @@ TEST_F(InstanceManagerTest, ProxyAbnormalSyncerTest)  // NOLINT
                    GetLeaderInfo(instanceMgrActor->GetAID()));
 
     {   // for get failed
-        litebus::Future<std::shared_ptr<GetResponse>> getResponseFuture;
         std::shared_ptr<GetResponse> rep = std::make_shared<GetResponse>();
         rep->status = Status(StatusCode::FAILED, "");
-        getResponseFuture.SetValue(rep);
-        EXPECT_CALL(*mockMetaStoreClient, Get).WillOnce(testing::Return(getResponseFuture));
 
-        auto future = instanceMgrActor->ProxyAbnormalSyncer();
+        auto future = instanceMgrActor->ProxyAbnormalSyncer(rep);
         ASSERT_AWAIT_READY(future);
         ASSERT_FALSE(future.Get().status.IsOk());
     }
 
     {   // for get response is empty
-        litebus::Future<std::shared_ptr<GetResponse>> getResponseFuture;
         std::shared_ptr<GetResponse> rep = std::make_shared<GetResponse>();
         rep->status = Status::OK();
-        getResponseFuture.SetValue(rep);
-        EXPECT_CALL(*mockMetaStoreClient, Get).WillOnce(testing::Return(getResponseFuture));
 
-        auto future = instanceMgrActor->ProxyAbnormalSyncer();
+        auto future = instanceMgrActor->ProxyAbnormalSyncer(rep);
         ASSERT_AWAIT_READY(future);
         ASSERT_TRUE(future.Get().status.IsOk());
     }
@@ -1516,14 +1600,11 @@ TEST_F(InstanceManagerTest, ProxyAbnormalSyncerTest)  // NOLINT
         getKeyValue.set_key(KEY_ABNORMAL_SCHEDULER_PREFIX+"Node1") ;
         getKeyValue.set_value("Node1");
 
-        litebus::Future<std::shared_ptr<GetResponse>> getResponseFuture;
         std::shared_ptr<GetResponse> rep = std::make_shared<GetResponse>();
         rep->status = Status::OK();
         rep->kvs.emplace_back(getKeyValue);
-        getResponseFuture.SetValue(rep);
-        EXPECT_CALL(*mockMetaStoreClient, Get).WillOnce(testing::Return(getResponseFuture));
 
-        auto future = instanceMgrActor->ProxyAbnormalSyncer();
+        auto future = instanceMgrActor->ProxyAbnormalSyncer(rep);
         ASSERT_AWAIT_READY(future);
         ASSERT_TRUE(future.Get().status.IsOk());
     }
@@ -1548,8 +1629,7 @@ TEST_F(InstanceManagerTest, FunctionMetaSyncerTest)  // NOLINT
     auto instanceMgrDriver = std::make_shared<InstanceManagerDriver>(instanceMgrActor, groupMgrActor);
     instanceMgrDriver->Start();
 
-    litebus::Async(instanceMgrActor->GetAID(), &InstanceManagerActor::UpdateLeaderInfo,
-                   GetLeaderInfo(instanceMgrActor->GetAID()));
+    WaitSyncFuncMeta(mockMetaStoreClient, instanceMgrActor);
 
     {   // for get failed
         litebus::Future<std::shared_ptr<GetResponse>> getResponseFuture;
@@ -1601,21 +1681,27 @@ TEST_F(InstanceManagerTest, FunctionMetaSyncerTest)  // NOLINT
         instanceInfoA.set_jobid("job-1");
         auto keyA = GenInstanceKey("123/helloworldA/$latest", instanceIDA, instanceIDA).Get();
         std::string instanceIDB = "instanceB";
-        auto instanceInfoB = GenInstanceInfo(instanceIDB, "funcAgent", "12345678901234561234567890123456/0-defaultservice-default/$latest", instanceStatusA);
+        auto instanceInfoB =
+            GenInstanceInfo(instanceIDB, "funcAgent",
+                            "12345678901234561234567890123456/0-defaultservice-default/$latest", instanceStatusA);
         instanceInfoB.set_functionproxyid(NODE_ID_1);
         instanceInfoB.set_jobid("job-1");
-        auto keyB = GenInstanceKey("12345678901234561234567890123456/0-defaultservice-default/$latest", instanceIDA, instanceIDA).Get();
+        auto keyB = GenInstanceKey("12345678901234561234567890123456/0-defaultservice-default/$latest", instanceIDA,
+                                   instanceIDA)
+                        .Get();
         instanceMgrActor->OnInstancePut(keyA, std::make_shared<resource_view::InstanceInfo>(instanceInfoA));
         instanceMgrActor->OnInstancePut(keyB, std::make_shared<resource_view::InstanceInfo>(instanceInfoB));
 
         ASSERT_AWAIT_TRUE([&]() { return instanceMgrActor->member_->jobID2InstanceIDs["job-1"].size() == 2; });
-        ASSERT_AWAIT_TRUE([&]() { return instanceMgrActor->member_->funcMeta2InstanceIDs["123/helloworldA/$latest"].size() == 1; });
+        ASSERT_AWAIT_TRUE(
+            [&]() { return instanceMgrActor->member_->funcMeta2InstanceIDs["123/helloworldA/$latest"].size() == 1; });
 
         litebus::Future<std::string> sigArg1;
         EXPECT_CALL(*mockInstCtrlActorNode01_, MockForwardCustomSignalRequest)
-            .WillOnce(testing::DoAll(FutureArg<2>(&sigArg1),
-                                     testing::Return(std::make_pair(
-                                         true, GenForwardKillResponse("requestID0", common::ErrorCode::ERR_NONE, "ok")))));
+            .WillOnce(
+                testing::DoAll(FutureArg<2>(&sigArg1),
+                               testing::Return(std::make_pair(
+                                   true, GenForwardKillResponse("requestID0", common::ErrorCode::ERR_NONE, "ok")))));
         EXPECT_CALL(*scheduler, GetLocalAddress(NODE_ID_1))
             .WillOnce(testing::Return(litebus::Option<std::string>(localAddress_)));
 
@@ -1651,8 +1737,7 @@ TEST_F(InstanceManagerTest, InstanceInfoSyncerTest)  // NOLINT
     auto instanceMgrDriver = std::make_shared<InstanceManagerDriver>(instanceMgrActor, groupMgrActor);
     instanceMgrDriver->Start();
 
-    litebus::Async(instanceMgrActor->GetAID(), &InstanceManagerActor::UpdateLeaderInfo,
-                   GetLeaderInfo(instanceMgrActor->GetAID()));
+    WaitSyncFuncMeta(mockMetaStoreClient, instanceMgrActor);
 
     {   // for get failed
         litebus::Future<std::shared_ptr<GetResponse>> getResponseFuture;
@@ -1680,16 +1765,16 @@ TEST_F(InstanceManagerTest, InstanceInfoSyncerTest)  // NOLINT
 
     {
         auto instanceKey1 = R"(/sn/instance/business/yrk/tenant/12345678901234561234567890123456/function/0-system-faasExecutorPython3.9/version/$latest/defaultaz/d4f050f90ee2b90b00/609d910b-f65d-4efc-8000-000000000046)";
-        auto instanceInfoJson1 = R"({"instanceID":"609d910b-f65d-4efc-8000-000000000046","requestID":"d4f050f90ee2b90b00","runtimeID":"runtime-6de59705-0000-4000-8000-00abf61502f6","runtimeAddress":"127.0.0.1:22771","functionAgentID":"functionagent-pool1-776c6db574-nnmrn","functionProxyID":"siaphisprg00912","function":"12345678901234561234567890123456/0-system-faasExecutorPython3.9/$latest","scheduleTimes":1,"instanceStatus":{"code":1,"msg":"scheduling"},"jobID":"job-12345678","parentID":"4e7cd507-8645-4600-b33c-f045f13e4beb","deployTimes":1,"version":"1"})";
+        auto instanceInfoJson1 = R"({"instanceID":"609d910b-f65d-4efc-8000-000000000046","requestID":"d4f050f90ee2b90b00","runtimeID":"runtime-6de59705-0000-4000-8000-00abf61502f6","runtimeAddress":"10.42.2.100:22771","functionAgentID":"functionagent-pool1-776c6db574-nnmrn","functionProxyID":"siaphisprg00912","function":"12345678901234561234567890123456/0-system-faasExecutorPython3.9/$latest","scheduleTimes":1,"instanceStatus":{"code":1,"msg":"scheduling"},"jobID":"job-12345678","parentID":"4e7cd507-8645-4600-b33c-f045f13e4beb","deployTimes":1,"version":"1"})";
         auto instance1 = std::make_shared<resource_view::InstanceInfo>();
         ASSERT_TRUE(TransToInstanceInfoFromJson(*instance1, instanceInfoJson1));
 
         auto instanceKey2 = R"(/sn/instance/business/yrk/tenant/12345678901234561234567890123456/function/0-system-faasExecutorPython3.9/version/$latest/defaultaz/xxxxxxxx999/aaaaa88888)";
-        auto instanceInfoJson2 = R"({"instanceID":"aaaaa88888","requestID":"xxxxxxxx999","runtimeID":"runtime-6de59705-0000-4000-8000-00abf61502f6","runtimeAddress":"127.0.0.1:22771","functionAgentID":"functionagent-pool1-776c6db574-nnmrn","functionProxyID":"siaphisprg00912","function":"12345678901234561234567890123456/0-system-faasExecutorPython3.9/$latest","instanceStatus":{"code":1,"msg":"scheduling"},"jobID":"job-12345678","parentID":"4e7cd507-8645-4600-b33c-f045f13e4beb","deployTimes":1,"version":"1"})";
+        auto instanceInfoJson2 = R"({"instanceID":"aaaaa88888","requestID":"xxxxxxxx999","runtimeID":"runtime-6de59705-0000-4000-8000-00abf61502f6","runtimeAddress":"10.42.2.100:22771","functionAgentID":"functionagent-pool1-776c6db574-nnmrn","functionProxyID":"siaphisprg00912","function":"12345678901234561234567890123456/0-system-faasExecutorPython3.9/$latest","instanceStatus":{"code":1,"msg":"scheduling"},"jobID":"job-12345678","parentID":"4e7cd507-8645-4600-b33c-f045f13e4beb","deployTimes":1,"version":"1"})";
         InstanceInfo instance2;
         ASSERT_TRUE(TransToInstanceInfoFromJson(instance2, instanceInfoJson2));
 
-        auto instanceInfoJson2forRunning = R"({"instanceID":"aaaaa88888","requestID":"xxxxxxxx999","runtimeID":"runtime-6de59705-0000-4000-8000-00abf61502f6","runtimeAddress":"127.0.0.1:22771","functionAgentID":"functionagent-pool1-776c6db574-nnmrn","functionProxyID":"siaphisprg00912","function":"12345678901234561234567890123456/0-system-faasExecutorPython3.9/$latest","instanceStatus":{"code":3,"msg":"running"},"jobID":"job-12345678","parentID":"4e7cd507-8645-4600-b33c-f045f13e4beb","deployTimes":1,"version":"3"})";
+        auto instanceInfoJson2forRunning = R"({"instanceID":"aaaaa88888","requestID":"xxxxxxxx999","runtimeID":"runtime-6de59705-0000-4000-8000-00abf61502f6","runtimeAddress":"10.42.2.100:22771","functionAgentID":"functionagent-pool1-776c6db574-nnmrn","functionProxyID":"siaphisprg00912","function":"12345678901234561234567890123456/0-system-faasExecutorPython3.9/$latest","instanceStatus":{"code":3,"msg":"running"},"jobID":"job-12345678","parentID":"4e7cd507-8645-4600-b33c-f045f13e4beb","deployTimes":1,"version":"3"})";
         auto instanceRunning = std::make_shared<resource_view::InstanceInfo>();
         ASSERT_TRUE(TransToInstanceInfoFromJson(*instanceRunning, instanceInfoJson2forRunning));
 
@@ -1745,8 +1830,7 @@ TEST_F(InstanceManagerTest, InstanceInfoSyncerOperationReplayTest)  // NOLINT
     auto instanceMgrDriver = std::make_shared<InstanceManagerDriver>(instanceMgrActor, groupMgrActor);
     instanceMgrDriver->Start();
 
-    litebus::Async(instanceMgrActor->GetAID(), &InstanceManagerActor::UpdateLeaderInfo,
-                   GetLeaderInfo(instanceMgrActor->GetAID()));
+    WaitSyncFuncMeta(mockMetaStoreClient, instanceMgrActor);
 
     auto mockInstanceOpt = std::make_shared<MockInstanceOperator>();
     instanceMgrActor->member_->instanceOpt = mockInstanceOpt;
@@ -1769,7 +1853,7 @@ TEST_F(InstanceManagerTest, InstanceInfoSyncerOperationReplayTest)  // NOLINT
         auto instanceKey1 =
             R"(/sn/instance/business/yrk/tenant/12345678901234561234567890123456/function/0-system-faasExecutorPython3.9/version/$latest/defaultaz/d4f050f90ee2b90b00/609d910b-f65d-4efc-8000-000000000046)";
         auto instanceInfoJson1 =
-            R"({"instanceID":"609d910b-f65d-4efc-8000-000000000046","requestID":"d4f050f90ee2b90b00","runtimeID":"runtime-6de59705-0000-4000-8000-00abf61502f6","runtimeAddress":"127.0.0.1:22771","functionAgentID":"functionagent-pool1-776c6db574-nnmrn","functionProxyID":"siaphisprg00912","function":"12345678901234561234567890123456/0-system-faasExecutorPython3.9/$latest","scheduleTimes":1,"instanceStatus":{"code":1,"msg":"scheduling"},"jobID":"job-12345678","parentID":"4e7cd507-8645-4600-b33c-f045f13e4beb","deployTimes":1,"version":"1"})";
+            R"({"instanceID":"609d910b-f65d-4efc-8000-000000000046","requestID":"d4f050f90ee2b90b00","runtimeID":"runtime-6de59705-0000-4000-8000-00abf61502f6","runtimeAddress":"10.42.2.100:22771","functionAgentID":"functionagent-pool1-776c6db574-nnmrn","functionProxyID":"siaphisprg00912","function":"12345678901234561234567890123456/0-system-faasExecutorPython3.9/$latest","scheduleTimes":1,"instanceStatus":{"code":1,"msg":"scheduling"},"jobID":"job-12345678","parentID":"4e7cd507-8645-4600-b33c-f045f13e4beb","deployTimes":1,"version":"1"})";
         std::shared_ptr<resource_view::InstanceInfo> instance1 = std::make_shared<resource_view::InstanceInfo>();
         ASSERT_TRUE(TransToInstanceInfoFromJson(*instance1, instanceInfoJson1));
 
@@ -2018,7 +2102,7 @@ TEST_F(InstanceManagerTest, CompleteKillInstance)
     auto instanceKey1 =
         R"(/sn/instance/business/yrk/tenant/12345678901234561234567890123456/function/0-system-faasExecutorPython3.9/version/$latest/defaultaz/d4f050f90ee2b90b00/609d910b-f65d-4efc-8000-000000000046)";
     auto instanceInfoJson1 =
-        R"({"instanceID":"609d910b-f65d-4efc-8000-000000000046","requestID":"d4f050f90ee2b90b00","runtimeID":"runtime-6de59705-0000-4000-8000-00abf61502f6","runtimeAddress":"127.0.0.1:22771","functionAgentID":"functionagent-pool1-776c6db574-nnmrn","functionProxyID":"siaphisprg00912","function":"12345678901234561234567890123456/0-system-faasExecutorPython3.9/$latest","scheduleTimes":1,"instanceStatus":{"code":1,"msg":"scheduling"},"jobID":"job-12345678","parentID":"4e7cd507-8645-4600-b33c-f045f13e4beb","deployTimes":1,"version":"1"})";
+        R"({"instanceID":"609d910b-f65d-4efc-8000-000000000046","requestID":"d4f050f90ee2b90b00","runtimeID":"runtime-6de59705-0000-4000-8000-00abf61502f6","runtimeAddress":"10.42.2.100:22771","functionAgentID":"functionagent-pool1-776c6db574-nnmrn","functionProxyID":"siaphisprg00912","function":"12345678901234561234567890123456/0-system-faasExecutorPython3.9/$latest","scheduleTimes":1,"instanceStatus":{"code":1,"msg":"scheduling"},"jobID":"job-12345678","parentID":"4e7cd507-8645-4600-b33c-f045f13e4beb","deployTimes":1,"version":"1"})";
 
     std::shared_ptr<resource_view::InstanceInfo> instance1 = std::make_shared<resource_view::InstanceInfo>();
     ASSERT_TRUE(TransToInstanceInfoFromJson(*instance1, instanceInfoJson1));
@@ -2114,4 +2198,194 @@ TEST_F(InstanceManagerTest, NodesTest)
     instanceMgrDriver->Await();
 }
 
+TEST_F(InstanceManagerTest, ExecuteTest)
+{
+    auto scheduler = std::make_shared<MockGlobalSched>();
+    auto groupMgrActor = std::make_shared<MockGroupManagerActor>(
+        MetaStoreClient::Create(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_ }), scheduler);
+    auto groupMgr = std::make_shared<MockGroupManager>(groupMgrActor);
+
+    auto instanceMgrActor = std::make_shared<InstanceManagerActor>(
+        MetaStoreClient::Create(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_ }), scheduler, groupMgr,
+        InstanceManagerStartParam{ .runtimeRecoverEnable = true });
+    litebus::Spawn(instanceMgrActor);
+    auto count = std::make_shared<int>();
+    *count = 0;
+    auto fn = [count]() {
+        (*count)++;
+        return Status::OK();
+    };
+    auto future1 = litebus::Async(instanceMgrActor->GetAID(), &InstanceManagerActor::Execute, fn);
+    auto future2 = litebus::Async(instanceMgrActor->GetAID(), &InstanceManagerActor::Execute, fn);
+    EXPECT_AWAIT_READY(future1);
+    EXPECT_AWAIT_READY(future2);
+    EXPECT_EQ(*count, 2);
+    litebus::Terminate(instanceMgrActor->GetAID());
+    litebus::Await(instanceMgrActor->GetAID());
+}
+
+TEST_F(InstanceManagerTest, ForwardQueryDebugInstancesInfo)
+{
+    auto scheduler = std::make_shared<MockGlobalSched>();
+    auto groupMgrActor = std::make_shared<MockGroupManagerActor>(
+        MetaStoreClient::Create(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_ }), scheduler);
+    auto groupMgr = std::make_shared<MockGroupManager>(groupMgrActor);
+
+    auto instanceMgrActor = std::make_shared<InstanceManagerActor>(
+        MetaStoreClient::Create(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_ }), scheduler, groupMgr,
+        InstanceManagerStartParam{ .runtimeRecoverEnable = true });
+    auto instanceMgrDriver = std::make_shared<InstanceManagerDriver>(instanceMgrActor, groupMgrActor);
+    instanceMgrDriver->Start();
+    {
+        std::string empty = "";
+        std::string name = "ForwardQueryDebugInstancesInfoHandler";
+        instanceMgrActor->ForwardQueryDebugInstancesInfoHandler(litebus::AID(), std::move(name), std::move(empty));
+    }
+
+    {
+        messages::QueryDebugInstanceInfosRequest req;
+        std::string name = "ForwardQueryDebugInstancesInfoHandler";
+        instanceMgrActor->ForwardQueryDebugInstancesInfoHandler(litebus::AID(), std::move(name), req.SerializeAsString());
+    }
+    {
+        auto future = litebus::Future<messages::QueryDebugInstanceInfosResponse>();
+        future.SetFailed(StatusCode::FAILED);
+        instanceMgrActor->OnQueryDebugInstancesInfoFinished(litebus::AID(), future);
+    }
+
+    {
+        std::string empty = "";
+        std::string name = "ForwardQueryDebugInstancesInfoHandler";
+        instanceMgrActor->ForwardQueryDebugInstancesInfoResponseHandler(litebus::AID(), std::move(name), std::move(empty));
+    }
+    {
+        auto promise = std::make_shared<litebus::Promise<messages::QueryDebugInstanceInfosResponse>>();
+        instanceMgrActor->member_->queryDebugInstancesPromise = promise;
+        messages::QueryDebugInstanceInfosResponse rsp;
+        std::string name = "ForwardQueryDebugInstancesInfoHandler";
+        instanceMgrActor->ForwardQueryDebugInstancesInfoResponseHandler(litebus::AID(), std::move(name), rsp.SerializeAsString());
+        EXPECT_AWAIT_READY(promise->GetFuture());
+        EXPECT_EQ(instanceMgrActor->member_->queryDebugInstancesPromise, nullptr);
+    }
+    instanceMgrDriver->Stop();
+    instanceMgrDriver->Await();
+}
+
+TEST_F(InstanceManagerTest, ForwardQueryInstancesInfo)
+{
+    auto scheduler = std::make_shared<MockGlobalSched>();
+    auto groupMgrActor = std::make_shared<MockGroupManagerActor>(
+        MetaStoreClient::Create(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_ }), scheduler);
+    auto groupMgr = std::make_shared<MockGroupManager>(groupMgrActor);
+
+    auto instanceMgrActor = std::make_shared<InstanceManagerActor>(
+        MetaStoreClient::Create(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_ }), scheduler, groupMgr,
+        InstanceManagerStartParam{ .runtimeRecoverEnable = true });
+    auto instanceMgrDriver = std::make_shared<InstanceManagerDriver>(instanceMgrActor, groupMgrActor);
+    instanceMgrDriver->Start();
+    {
+        std::string empty = "";
+        std::string name = "ForwardQueryInstancesInfoHandler";
+        instanceMgrActor->ForwardQueryInstancesInfoHandler(litebus::AID(), std::move(name), std::move(empty));
+    }
+
+    {
+        messages::QueryInstancesInfoRequest req;
+        std::string name = "ForwardQueryInstancesInfoHandler";
+        instanceMgrActor->ForwardQueryInstancesInfoHandler(litebus::AID(), std::move(name), req.SerializeAsString());
+    }
+    {
+        auto future = litebus::Future<messages::QueryInstancesInfoResponse>();
+        future.SetFailed(StatusCode::FAILED);
+        instanceMgrActor->OnQueryInstancesInfoFinished(litebus::AID(), future);
+    }
+
+    {
+        std::string empty = "";
+        std::string name = "ForwardQueryDebugInstancesInfoHandler";
+        instanceMgrActor->ForwardQueryInstancesInfoResponseHandler(litebus::AID(), std::move(name), std::move(empty));
+    }
+    {
+        auto promise = std::make_shared<litebus::Promise<messages::QueryInstancesInfoResponse>>();
+        instanceMgrActor->member_->queryInstancesPromise = promise;
+        messages::QueryInstancesInfoResponse rsp;
+        std::string name = "ForwardQueryInstancesInfoResponseHandler";
+        instanceMgrActor->ForwardQueryInstancesInfoResponseHandler(litebus::AID(), std::move(name), rsp.SerializeAsString());
+        EXPECT_AWAIT_READY(promise->GetFuture());
+        EXPECT_EQ(instanceMgrActor->member_->queryInstancesPromise, nullptr);
+    }
+    instanceMgrDriver->Stop();
+    instanceMgrDriver->Await();
+}
+
+TEST_F(InstanceManagerTest, IsInstanceShouldBeKilledTest)
+{
+    auto member = std::make_shared<InstanceManagerActor::Member>();
+    auto instanceMgrActor = std::make_shared<InstanceManagerActor>(
+        nullptr, nullptr, nullptr, InstanceManagerStartParam{ .runtimeRecoverEnable = true });
+    auto masterBusiness = std::make_shared<InstanceManagerActor::MasterBusiness>(member, instanceMgrActor);
+    masterBusiness->member_->family = std::make_shared<InstanceFamilyCaches>();
+    std::string instanceIDA = "instanceA";
+    InstanceState instanceStatusA = InstanceState::RUNNING;
+    std::shared_ptr<resource_view::InstanceInfo> instanceInfoA = std::make_shared<resource_view::InstanceInfo>();
+    instanceInfoA->set_instanceid("instanceA");
+    instanceInfoA->mutable_instancestatus()->set_code(int32_t(InstanceState::RUNNING));
+    instanceInfoA->set_lowreliability(true);
+    instanceInfoA->set_parentid("123");
+    EXPECT_TRUE(masterBusiness->IsInstanceShouldBeKilled(instanceInfoA));
+    instanceInfoA->mutable_instancestatus()->set_code(int32_t(InstanceState::FATAL));
+    EXPECT_TRUE(masterBusiness->IsInstanceShouldBeKilled(instanceInfoA));
+    instanceInfoA->set_lowreliability(false);
+    instanceInfoA->set_detached(true);
+    EXPECT_FALSE(masterBusiness->IsInstanceShouldBeKilled(instanceInfoA));
+
+    instanceInfoA->mutable_instancestatus()->set_code(int32_t(InstanceState::RUNNING));
+    instanceInfoA->set_detached(false);
+    EXPECT_TRUE(masterBusiness->IsInstanceShouldBeKilled(instanceInfoA));
+    (*instanceInfoA->mutable_extensions())["source"] = "frontend";
+    EXPECT_FALSE(masterBusiness->IsInstanceShouldBeKilled(instanceInfoA));
+    (*instanceInfoA->mutable_extensions())["source"] = "";
+    (*instanceInfoA->mutable_createoptions())["resource.owner"] = "static_function";
+    EXPECT_FALSE(masterBusiness->IsInstanceShouldBeKilled(instanceInfoA));
+    masterBusiness->member_->exitingInstances.insert("123");
+    EXPECT_TRUE(masterBusiness->IsInstanceShouldBeKilled(instanceInfoA));
+}
+
+TEST_F(InstanceManagerTest, IsInstanceManagedByJobTest)
+{
+    auto member = std::make_shared<InstanceManagerActor::Member>();
+    auto instanceMgrActor = std::make_shared<InstanceManagerActor>(
+        nullptr, nullptr, nullptr, InstanceManagerStartParam{ .runtimeRecoverEnable = true });
+    instanceMgrActor->member_->family = std::make_shared<InstanceFamilyCaches>();
+    std::string instanceIDA = "instanceA";
+    InstanceState instanceStatusA = InstanceState::RUNNING;
+    std::shared_ptr<resource_view::InstanceInfo> instanceInfoA = std::make_shared<resource_view::InstanceInfo>();
+    instanceInfoA->set_instanceid("instanceA");
+    instanceInfoA->mutable_instancestatus()->set_code(int32_t(InstanceState::RUNNING));
+    EXPECT_FALSE(instanceMgrActor->IsInstanceManagedByJob(instanceInfoA));
+    instanceInfoA->set_jobid("job-123");
+    instanceInfoA->set_detached(true);
+    EXPECT_FALSE(instanceMgrActor->IsInstanceManagedByJob(instanceInfoA));
+    instanceInfoA->set_detached(false);
+    instanceInfoA->set_parentid("instanceB");
+    EXPECT_TRUE(instanceMgrActor->IsInstanceManagedByJob(instanceInfoA));
+    std::shared_ptr<resource_view::InstanceInfo> instanceInfoB = std::make_shared<resource_view::InstanceInfo>();
+    instanceInfoB->set_instanceid("instanceB");
+    instanceInfoB->set_function("0/0-system-faasfrontend/$latest");
+    instanceMgrActor->member_->family->AddInstance(instanceInfoB);
+    EXPECT_TRUE(instanceMgrActor->IsInstanceManagedByJob(instanceInfoA));
+    instanceInfoB->set_detached(true);
+    instanceInfoB->set_function("0/hello/$latest");
+    EXPECT_FALSE(instanceMgrActor->IsInstanceManagedByJob(instanceInfoA));
+    std::shared_ptr<resource_view::InstanceInfo> instanceInfoC = std::make_shared<resource_view::InstanceInfo>();
+    instanceInfoC->set_instanceid("instanceC");
+    instanceInfoC->set_function("0/hello$latest");
+    instanceInfoC->set_parentid("instanceB");
+    instanceMgrActor->member_->family->AddInstance(instanceInfoC);
+    instanceInfoB->set_detached(false);
+    instanceInfoA->set_parentid("instanceC");
+    EXPECT_TRUE(instanceMgrActor->IsInstanceManagedByJob(instanceInfoA));
+    instanceMgrActor->member_->jobID2InstanceIDs["job-123"] = {"instanceC"};
+    EXPECT_TRUE(instanceMgrActor->IsInstanceManagedByJob(instanceInfoA));
+}
 }  // namespace functionsystem::instance_manager::test

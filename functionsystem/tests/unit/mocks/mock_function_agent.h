@@ -19,10 +19,7 @@
 
 #include <gmock/gmock.h>
 
-#include <async/async.hpp>
-
-#include "heartbeat/ping_pong_driver.h"
-#include "logs/logging.h"
+#include "common/heartbeat/heartbeat_client.h"
 #include "function_agent/agent_service_actor.h"
 
 namespace functionsystem::test {
@@ -126,6 +123,26 @@ public:
     }
     MOCK_METHOD0(MockQueryDebugInstanceInfos, messages::QueryDebugInstanceInfosResponse());
 
+    void StaticFunctionScheduleRequest(const litebus::AID &server, const messages::ScheduleRequest &request)
+    {
+        Send(server, "StaticFunctionScheduleRequest", request.SerializeAsString());
+    }
+
+    void StaticFunctionScheduleResponse(const litebus::AID &from, std::string &&name, std::string &&msg)
+    {
+        MockStaticFunctionScheduleResponse(from, name, msg);
+    }
+    MOCK_METHOD3(MockStaticFunctionScheduleResponse, void(const litebus::AID, std::string, std::string));
+
+    void NotifyFunctionStatusChange(const litebus::AID &from, std::string &&name, std::string &&msg) override
+    {
+        std::pair<bool, std::string> ret = MockNotifyFunctionStatusChange(from, name, msg);
+        if (ret.first) {
+            Send(from, "NotifyFunctionStatusChangeResp", std::move(ret.second));
+        }
+    }
+    MOCK_METHOD3(MockNotifyFunctionStatusChange, std::pair<bool, std::string>(litebus::AID, std::string, std::string));
+
 protected:
     void Init() override
     {
@@ -137,6 +154,8 @@ protected:
         Receive("CleanStatus", &MockFunctionAgent::CleanStatus);
         Receive("UpdateCred", &MockFunctionAgent::UpdateCred);
         Receive("QueryDebugInstanceInfos", &MockFunctionAgent::QueryDebugInstanceInfos);
+        Receive("StaticFunctionScheduleResponse", &MockFunctionAgent::StaticFunctionScheduleResponse);
+        Receive("NotifyFunctionStatusChange", &MockFunctionAgent::NotifyFunctionStatusChange);
     }
 };
 

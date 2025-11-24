@@ -17,7 +17,7 @@
 #ifndef UNIT_FUNCTION_PROXY_LOCAL_SCHEDULER_LOCAL_SCHEDULER_SERVICE_CONSTANTS_H
 #define UNIT_FUNCTION_PROXY_LOCAL_SCHEDULER_LOCAL_SCHEDULER_SERVICE_CONSTANTS_H
 
-#include "status/status.h"
+#include "common/status/status.h"
 
 namespace functionsystem::test {
 const std::string REGISTERED_GLOBAL_SCHED_SUCCESS_MSG = "register global scheduler successful";

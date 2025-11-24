@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "rpc/client/grpc_client.h"
+#include "common/rpc/client/grpc_client.h"
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -23,10 +23,10 @@
 #include <memory>
 
 #include "async/future.hpp"
-#include "common_flags/common_flags.h"
-#include "logs/logging.h"
-#include "files.h"
-#include "hex/hex.h"
+#include "common/common_flags/common_flags.h"
+#include "common/logs/logging.h"
+#include "common/utils/files.h"
+#include "common/hex/hex.h"
 #include "etcd/api/etcdserverpb/rpc.grpc.pb.h"
 #include "etcd/server/etcdserver/api/v3election/v3electionpb/v3election.grpc.pb.h"
 #include "utils/port_helper.h"
@@ -35,7 +35,7 @@ using namespace etcdserverpb;
 
 namespace functionsystem::test {
 
-std::string GRPC_TEST_SERVER_ADDR = std::string("127.0.0.1:50001");
+std::string serverAddress_ = std::string("127.0.0.1:50001");
 constexpr uint64_t GRPC_TEST_RSP_HEADER_CLUSTER_ID = 123456;
 constexpr int GRPC_TEST_WATCH_ID = 1234567;
 
@@ -96,22 +96,7 @@ public:
     }
 };
 
-void RunServer(std::shared_ptr<litebus::Promise<bool>> p, grpc::Server **s)
-{
-    std::string serverAddr(GRPC_TEST_SERVER_ADDR);
-    TestEtcdKvService kvService;
-    TestEtcdWatchService watchService;
 
-    grpc::ServerBuilder builder;
-    builder.AddListeningPort(serverAddr, grpc::InsecureServerCredentials());
-    builder.RegisterService(&kvService);
-    builder.RegisterService(&watchService);
-    std::unique_ptr<grpc::Server> server(builder.BuildAndStart());
-    YRLOG_DEBUG("server listening on {}", serverAddr);
-    *s = server.get();
-    p->SetValue(true);
-    server->Wait();
-}
 
 static int MakeTmpDir(const std::string &path = "tmp")
 {
@@ -123,8 +108,11 @@ static int MakeTmpDir(const std::string &path = "tmp")
 grpc::Server *g_server = nullptr;
 class GrpcClientTest : public ::testing::Test {
 protected:
-    static void SetUpTestCase()
+    [[maybe_unused]] static void SetUpTestSuite()
     {
+        serverAddress_ = "127.0.0.1:" + std::to_string(FindAvailablePort());
+        YRLOG_INFO("Start GRPC Server on net port: {}", serverAddress_);
+
         auto p = std::make_shared<litebus::Promise<bool>>();
         YRLOG_DEBUG("start test grpc server {}", "test");
         auto t = std::thread(RunServer, p, &g_server);
@@ -132,7 +120,7 @@ protected:
         p->GetFuture().Get();
     }
 
-    static void TearDownTestCase()
+    [[maybe_unused]] static void TearDownTestSuite()
     {
         if (g_server != nullptr) {
             g_server->Shutdown();
@@ -140,13 +128,32 @@ protected:
         }
     }
 
-    void SetUp()
+    void SetUp() override
     {
     }
 
-    void TearDown()
+    void TearDown() override
     {
     }
+
+    static void RunServer(std::shared_ptr<litebus::Promise<bool>> p, grpc::Server **s)
+    {
+        std::string serverAddr(serverAddress_);
+        TestEtcdKvService kvService;
+        TestEtcdWatchService watchService;
+
+        grpc::ServerBuilder builder;
+        builder.AddListeningPort(serverAddr, grpc::InsecureServerCredentials());
+        builder.RegisterService(&kvService);
+        builder.RegisterService(&watchService);
+        std::unique_ptr<grpc::Server> server(builder.BuildAndStart());
+        YRLOG_DEBUG("server listening on {}", serverAddr);
+        *s = server.get();
+        p->SetValue(true);
+        server->Wait();
+    }
+    
+    inline static std::string serverAddress_;
 
 private:
 };
@@ -194,7 +201,7 @@ TEST_F(GrpcClientTest, GrpcEtcdKvPutSuccess)
     req.set_key("test_key");
 
     PutResponse rsp;
-    auto c = GrpcClient<KV>::CreateGrpcClient(GRPC_TEST_SERVER_ADDR);
+    auto c = GrpcClient<KV>::CreateGrpcClient(serverAddress_);
     ASSERT_TRUE(c);
 
     auto s = c->Call("Test::test etcd kv put ", req, rsp, &etcdserverpb::KV::Stub::Put, 10);
@@ -212,7 +219,7 @@ TEST_F(GrpcClientTest, GrpcEtcdKvPutSuccess2)
     req.set_key("test_key");
 
     PutResponse rsp;
-    auto c = GrpcClient<KV>::CreateGrpcClient(GRPC_TEST_SERVER_ADDR);
+    auto c = GrpcClient<KV>::CreateGrpcClient(serverAddress_);
     ASSERT_TRUE(c);
 
     auto s = c->CallAsync("Test::test etcd kv async put", req, rsp, &etcdserverpb::KV::Stub::AsyncPut, 10);
@@ -230,7 +237,7 @@ TEST_F(GrpcClientTest, GrpcEtcdKvPutSuccess3)
     req.set_key("test_key");
 
     PutResponse rsp;
-    auto c = GrpcClient<KV>::CreateGrpcClient(GRPC_TEST_SERVER_ADDR);
+    auto c = GrpcClient<KV>::CreateGrpcClient(serverAddress_);
     ASSERT_TRUE(c);
 
     litebus::Promise<Status> donePromise;
@@ -254,7 +261,7 @@ TEST_F(GrpcClientTest, GrpcEtcdKvPutSuccess3)
 
 TEST_F(GrpcClientTest, GrpcEtcdWatchCallFailed)
 {
-    auto c = GrpcClient<Watch>::CreateGrpcClient(GRPC_TEST_SERVER_ADDR);
+    auto c = GrpcClient<Watch>::CreateGrpcClient(serverAddress_);
     ASSERT_TRUE(c);
 
     using StubFunc =
@@ -270,7 +277,7 @@ TEST_F(GrpcClientTest, GrpcEtcdWatchWriteSuccess)
     auto cReq = req.mutable_create_request();
     cReq->set_watch_id(GRPC_TEST_WATCH_ID);
 
-    auto c = GrpcClient<Watch>::CreateGrpcClient(GRPC_TEST_SERVER_ADDR);
+    auto c = GrpcClient<Watch>::CreateGrpcClient(serverAddress_);
     ASSERT_TRUE(c);
 
     grpc::ClientContext context;

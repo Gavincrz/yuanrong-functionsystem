@@ -22,7 +22,7 @@
 #include "actor/actor.hpp"
 #include "async/future.hpp"
 
-#include "proto/pb/message_pb.h"
+#include "common/proto/pb/message_pb.h"
 
 namespace functionsystem::runtime_manager::test {
 class MockFunctionAgentActor : public litebus::ActorBase {

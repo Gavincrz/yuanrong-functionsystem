@@ -18,8 +18,9 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
-#include "rpc/server/common_grpc_server.h"
-#include "files.h"
+#include "common/rpc/server/common_grpc_server.h"
+#include "common/utils/files.h"
+#include "function_proxy/common/iam/internal_iam.h"
 #include "mocks/mock_runtime_client.h"
 #include "utils/future_test_helper.h"
 #include "utils/port_helper.h"
@@ -28,6 +29,7 @@ namespace functionsystem::test {
 using namespace ::testing;
 using namespace functionsystem::grpc;
 using namespace runtime_rpc;
+using namespace function_proxy;
 
 namespace {
 const std::string GRPC_SERVER_IP = "127.0.0.1";
@@ -56,13 +58,16 @@ public:
 class PosixServiceTest : public ::testing::Test {
 public:
     inline static uint16_t grpcServerPort_;
-    static void SetUpTestCase()
+    [[maybe_unused]] static void SetUpTestSuite()
     {
         grpcServerPort_ = functionsystem::test::FindAvailablePort();
     }
 
     void SetUp() override
     {
+        InternalIAM::Param param;
+        param.isEnableIAM = false;
+        internalIAM_ = std::make_shared<InternalIAM>(param);
         std::shared_ptr<::grpc::ServerCredentials> creds = ::grpc::InsecureServerCredentials();
 
         CommonGrpcServerConfig serverConfig;
@@ -71,6 +76,7 @@ public:
         serverConfig.creds = creds;
         server_ = std::make_shared<CommonGrpcServer>(serverConfig);
         posixService_ = std::make_shared<PosixService>();
+        posixService_->BindInternalIAM(internalIAM_);
         server_->RegisterService(posixService_);
         server_->Start();
         ASSERT_TRUE(server_->WaitServerReady());
@@ -102,6 +108,7 @@ public:
 protected:
     std::shared_ptr<CommonGrpcServer> server_{ nullptr };
     std::shared_ptr<PosixService> posixService_{ nullptr };
+    std::shared_ptr<InternalIAM> internalIAM_{ nullptr };
     std::shared_ptr<MockClientProxy> mockProxy_{ nullptr };
 };
 
@@ -124,7 +131,13 @@ TEST_F(PosixServiceTest, ClientConnectTest)
     EXPECT_EQ(mockProxy_->clients.size(), static_cast<uint32_t>(0));
     EXPECT_CALL(*client1, MockClientClosedCallback).Times(1);
 
+    auto client11 = CreateRuntimeClient(TEST_INSTANCE_ID + "1", TEST_RUNTIME_ID);
+    EXPECT_EQ(mockProxy_->clients.size(), static_cast<uint32_t>(0));
+    litebus::Future<bool> isCalled11;
+    EXPECT_CALL(*client11, MockClientClosedCallback).Times(1).WillOnce(Assign(&isCalled11, true));
+
     EXPECT_CALL(*mockProxy_, MockUpdatePosixClient(TEST_INSTANCE_ID, TEST_RUNTIME_ID, testing::_)).Times(1);
+    internalIAM_->Insert(TEST_INSTANCE_ID);
     auto client2 = CreateRuntimeClient(TEST_INSTANCE_ID, TEST_RUNTIME_ID);
     litebus::Future<bool> isCalled2;
     EXPECT_CALL(*client2, MockClientClosedCallback).Times(1).WillOnce(Assign(&isCalled2, true));
@@ -142,6 +155,7 @@ TEST_F(PosixServiceTest, ClientConnectTest)
 
     client1->Stop();
     client2->Stop();
+    ASSERT_AWAIT_READY(isCalled11);
     ASSERT_AWAIT_READY(isCalled2);
 }
 
@@ -154,6 +168,7 @@ TEST_F(PosixServiceTest, ClientConnectTest)
 TEST_F(PosixServiceTest, UpdatePosixClientTest)
 {
     EXPECT_CALL(*mockProxy_, MockUpdatePosixClient(TEST_INSTANCE_ID, TEST_RUNTIME_ID, testing::_)).Times(1);
+    internalIAM_->Insert(TEST_INSTANCE_ID);
     auto client = CreateRuntimeClient(TEST_INSTANCE_ID, TEST_RUNTIME_ID);
     EXPECT_CALL(*client, MockClientClosedCallback).Times(1);
 
@@ -190,6 +205,7 @@ TEST_F(PosixServiceTest, DuplicateClientConnect)
 {
     EXPECT_CALL(*mockProxy_, MockUpdatePosixClient(TEST_INSTANCE_ID, TEST_RUNTIME_ID, testing::_)).Times(1);
     EXPECT_CALL(*mockProxy_, MockUpdatePosixClient(TEST_INSTANCE_ID, "TEST_RUNTIME_ID_ACCEPT", testing::_)).Times(1);
+    internalIAM_->Insert(TEST_INSTANCE_ID);
     auto client = CreateRuntimeClient(TEST_INSTANCE_ID, TEST_RUNTIME_ID);
     litebus::Future<bool> isCalled1;
     EXPECT_CALL(*client, MockClientClosedCallback).Times(1).WillOnce(Assign(&isCalled1, true));

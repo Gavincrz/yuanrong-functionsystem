@@ -32,6 +32,7 @@ public:
     MOCK_METHOD(Status, Del, (const std::string &key), (override));
     MOCK_METHOD(Status, Del, (const std::vector<std::string> &keys, std::vector<std::string> &failedKeys), (override));
     MOCK_METHOD(Status, GetHealthStatus, (), (override));
+    MOCK_METHOD(Status, ShutDown, (), (override));
 };
 
 }  // namespace functionsystem::test

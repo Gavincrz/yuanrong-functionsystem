@@ -19,8 +19,8 @@
 
 #include <gmock/gmock.h>
 
-#include "proto/pb/message_pb.h"
-#include "status/status.h"
+#include "common/proto/pb/message_pb.h"
+#include "common/status/status.h"
 #include "runtime_manager/executor/runtime_executor.h"
 #include "utils/volume_mount.h"
 

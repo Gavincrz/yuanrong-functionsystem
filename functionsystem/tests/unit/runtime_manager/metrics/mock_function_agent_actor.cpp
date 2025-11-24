@@ -16,8 +16,8 @@
 
 #include "mock_function_agent_actor.h"
 
-#include "status/status.h"
-#include "logs/logging.h"
+#include "common/status/status.h"
+#include "common/logs/logging.h"
 
 namespace functionsystem::runtime_manager::test {
 void MockFunctionAgentActor::Init()

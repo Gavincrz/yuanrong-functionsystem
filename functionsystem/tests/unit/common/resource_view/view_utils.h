@@ -21,7 +21,7 @@
 
 #include "async/uuid_generator.hpp"
 #include "common/resource_view/resource_tool.h"
-#include "resource_type.h"
+#include "common/resource_view/resource_type.h"
 
 namespace functionsystem::test::view_utils {
 
@@ -248,6 +248,28 @@ inline resource_view::ResourceUnit Get1DResourceUnitWithSpecificNpuNumber(const 
     return unit;
 }
 
+inline resource_view::ResourceUnit Get1DResourceUnitWithSpecificNpuNumber(const std::vector<double> &hbm,
+                                                                          const std::vector<double> &latency,
+                                                                          const std::vector<double> &stream,
+                                                                          const std::string cardType = DEFAULT_NPU_TYPE)
+{
+    resource_view::ResourceUnit unit;
+    auto id = "Test_ResID_" + litebus::uuid_generator::UUID::GetRandomUUID().ToString();
+    unit.set_id(id);
+    (*unit.mutable_capacity()) = GetCpuMemNpuResources(cardType);
+    auto key = (*unit.mutable_capacity()->mutable_resources())[cardType].vectors().values().
+               at(resource_view::HETEROGENEOUS_MEM_KEY).vectors().begin()->first;
+    (*unit.mutable_allocatable()) = GetCpuMemNpuResourcesWithSpecificNpuNumber(hbm,
+                                                                               latency,
+                                                                               stream,
+                                                                               cardType, key);
+    (*unit.mutable_actualuse()) = GetCpuMemNpuResourcesWithSpecificNpuNumber({ 0,0,0,0,0,0,0,0 },
+                                                                             { 0,0,0,0,0,0,0,0 },
+                                                                             {100,100,100,100,100,100,100,100},
+                                                                             cardType, key);
+    return unit;
+}
+
 inline resource_view::ResourceUnit Get1DResourceUnitWithNpu(const std::string cardType = DEFAULT_NPU_TYPE)
 {
     resource_view::ResourceUnit unit;
@@ -307,6 +329,55 @@ inline resource_view::Resources GetCpuMemResources()
     return rs;
 }
 
+inline resource_view::Resource GetDiskResource(
+    const std::vector<int> vectorValue = { 100, 100, 100 },
+    std::string nodeid = litebus::uuid_generator::UUID::GetRandomUUID().ToString())
+{
+    resource_view::Resource r;
+    r.set_name(resource_view::DISK_RESOURCE_NAME);
+    r.set_type(resource_view::ValueType::Value_Type_VECTORS);
+
+    auto categories = r.mutable_vectors()->mutable_values();
+
+    auto &vectors1 = (*categories)[resource_view::DISK_RESOURCE_NAME];
+    auto &vector1 = (*vectors1.mutable_vectors())[nodeid];
+    for (int i = 0; i < static_cast<int>(vectorValue.size()) ;i++) {
+        auto value = vectorValue[i];
+        vector1.mutable_values()->Add(value);
+        resource_view::ResourceExtension extension;
+        extension.mutable_disk()->set_size(value);
+        extension.mutable_disk()->set_name("disk"+ std::to_string(i));
+        extension.mutable_disk()->set_mountpoints("/tmp/abc" + std::to_string(i) + "/");
+
+        (*r.mutable_extensions()->Add()) = extension;
+    }
+    return r;
+}
+
+inline resource_view::Resources GetDiskResources(
+    const std::vector<int> vectorValue = { 100, 100, 100 },
+    std::string nodeid = litebus::uuid_generator::UUID::GetRandomUUID().ToString())
+{
+    resource_view::Resources rs;
+    (*rs.mutable_resources())[resource_view::DISK_RESOURCE_NAME] = GetDiskResource(vectorValue, nodeid);
+    return rs;
+}
+
+
+inline resource_view::ResourceUnit Get1DResourceUnitWithDisk(
+    const std::vector<int> vectorValue = { 100, 100, 100 },
+    std::string nodeid = litebus::uuid_generator::UUID::GetRandomUUID().ToString())
+{
+    resource_view::ResourceUnit unit;
+    auto id = "Test_ResID_" + litebus::uuid_generator::UUID::GetRandomUUID().ToString();
+    unit.set_id(id);
+    (*unit.mutable_capacity()) = GetDiskResources(vectorValue, nodeid);
+    (*unit.mutable_allocatable()) = GetDiskResources(vectorValue, nodeid);
+    std::vector<int> actualuse(vectorValue.size(), 0);
+    (*unit.mutable_actualuse()) = GetDiskResources(actualuse, nodeid);
+    return unit;
+}
+
 inline resource_view::Resources GetCpuMemWithOtherEmptyResources()
 {
     resource_view::Resources rs;
@@ -337,6 +408,14 @@ inline resource_view::InstanceInfo GetInstanceWithResourceAndPriority(int32_t pr
 inline resource_view::InstanceInfo Get1DInstance()
 {
     return GetInstanceWithResourceAndPriority(0, INST_SCALA_VALUE, INST_SCALA_VALUE);
+}
+
+inline resource_view::InstanceInfo Get1DInstanceWithDiskResource(int diskSize = 100)
+{
+    resource_view::InstanceInfo ins = view_utils::Get1DInstance();
+    (*ins.mutable_resources()->mutable_resources())[resource_view::DISK_RESOURCE_NAME]
+        .mutable_scalar()->set_value(diskSize);
+    return ins;
 }
 
 inline resource_view::InstanceInfo Get1DInstanceWithNpuResource(int hbm, int latency, int stream,

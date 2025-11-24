@@ -15,4 +15,6 @@
 add_subdirectory(global_scheduler)
 add_subdirectory(instance_manager)
 add_subdirectory(meta_store)
+add_subdirectory(system_function_loader)
+add_subdirectory(scaler)
 add_subdirectory(resource_group_manager)

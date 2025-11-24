@@ -19,7 +19,7 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
-#include "constants.h"
+#include "common/constants/constants.h"
 #include "domain_scheduler/instance_control/instance_ctrl_actor.h"
 #include "common/schedule_decision/schedule_recorder/schedule_recorder.h"
 #include "mocks/mock_domain_sched_srv.h"
@@ -28,6 +28,7 @@
 #include "mocks/mock_scaler_actor.h"
 #include "mocks/mock_shared_client.h"
 #include "mocks/mock_shared_client_manager_proxy.h"
+#include "mocks/mock_resource_view.h"
 #include "utils/future_test_helper.h"
 
 namespace functionsystem::test {
@@ -41,7 +42,13 @@ public:
         instanceCtrl_ = std::make_shared<domain_scheduler::InstanceCtrlActor>("DomainInstanceCtrlTest");
         mockScheduler_ = std::make_shared<MockScheduler>();
         mockUnderlayerScheMgr_ = std::make_shared<MockDomainUnderlayerSchedMgr>();
+        auto resourceViewMgr_ = std::make_shared<resource_view::ResourceViewMgr>();
+        primary_ = MockResourceView::CreateMockResourceView();
+        virtual_ = MockResourceView::CreateMockResourceView();
+        resourceViewMgr_->primary_ = primary_;
+        resourceViewMgr_->virtual_ = virtual_;
         instanceCtrl_->BindScheduler(mockScheduler_);
+        instanceCtrl_->BindResourceView(resourceViewMgr_);
         instanceCtrl_->BindUnderlayerMgr(mockUnderlayerScheMgr_);
         instanceCtrl_->BindScheduleRecorder(schedule_decision::ScheduleRecorder::CreateScheduleRecorder());
         litebus::Spawn(instanceCtrl_);
@@ -57,6 +64,8 @@ protected:
     std::shared_ptr<domain_scheduler::InstanceCtrlActor> instanceCtrl_;
     std::shared_ptr<MockScheduler> mockScheduler_;
     std::shared_ptr<MockDomainUnderlayerSchedMgr> mockUnderlayerScheMgr_;
+    std::shared_ptr<MockResourceView> primary_;
+    std::shared_ptr<MockResourceView> virtual_;
 };
 
 /**
@@ -76,12 +85,16 @@ TEST_F(DomainInstanceCtrlTest, ScheduleInstanceSuccessful)
 
     std::string mockSelectedName = "selected";
     ScheduleResult result{ mockSelectedName, 0, "" };
-    EXPECT_CALL(*mockScheduler_, ScheduleDecision(_, _)).WillOnce(Return(result));
+    EXPECT_CALL(*mockScheduler_, ScheduleDecision(_, _)).WillOnce(Return(AsyncReturn(result)));
 
     auto mockSchedRsp = std::make_shared<messages::ScheduleResponse>();
     mockSchedRsp->set_code(0);
     mockSchedRsp->set_requestid(requestID);
-    EXPECT_CALL(*mockUnderlayerScheMgr_, DispatchSchedule(mockSelectedName, _)).WillOnce(Return(mockSchedRsp));
+    EXPECT_CALL(*mockUnderlayerScheMgr_, DispatchSchedule(mockSelectedName, _)).WillOnce(Return(AsyncReturn(mockSchedRsp)));
+    resource_view::PullResourceRequest snapshot;
+    snapshot.set_localviewinittime("INITTIME1");
+    snapshot.set_version(2);
+    EXPECT_CALL(*primary_, GetUnitSnapshotInfo(_)).WillOnce(Return(litebus::Future<resource_view::PullResourceRequest>{snapshot}));
 
     auto req = std::make_shared<messages::ScheduleRequest>();
     req->set_requestid(requestID);
@@ -92,6 +105,9 @@ TEST_F(DomainInstanceCtrlTest, ScheduleInstanceSuccessful)
     auto rsp = future.Get();
     EXPECT_EQ(rsp->code(), 0);
     EXPECT_EQ(rsp->requestid(), requestID);
+    EXPECT_TRUE(instanceCtrl_->cancelTag_.find(rsp->requestid())==instanceCtrl_->cancelTag_.end());
+    EXPECT_EQ(req->unitsnapshot().localviewinittime(), "INITTIME1");
+    EXPECT_EQ(req->unitsnapshot().version(), 2);
 }
 
 /**
@@ -111,12 +127,16 @@ TEST_F(DomainInstanceCtrlTest, ScheduleInstanceVersionWrong)
 
     std::string mockSelectedName = "selected";
     ScheduleResult result{ mockSelectedName, 0, "" };
-    EXPECT_CALL(*mockScheduler_, ScheduleDecision(_, _)).WillOnce(Return(result));
+    EXPECT_CALL(*mockScheduler_, ScheduleDecision(_, _)).WillOnce(Return(AsyncReturn(result)));
 
     auto mockSchedRsp = std::make_shared<messages::ScheduleResponse>();
     mockSchedRsp->set_code(StatusCode::INSTANCE_TRANSACTION_WRONG_VERSION);
     mockSchedRsp->set_requestid(requestID);
-    EXPECT_CALL(*mockUnderlayerScheMgr_, DispatchSchedule(mockSelectedName, _)).WillOnce(Return(mockSchedRsp));
+    EXPECT_CALL(*mockUnderlayerScheMgr_, DispatchSchedule(mockSelectedName, _)).WillOnce(Return(AsyncReturn(mockSchedRsp)));
+    resource_view::PullResourceRequest snapshot;
+    snapshot.set_localviewinittime("INITTIME1");
+    snapshot.set_version(2);
+    EXPECT_CALL(*primary_, GetUnitSnapshotInfo(_)).WillOnce(Return(litebus::Future<resource_view::PullResourceRequest>{snapshot}));
 
     auto req = std::make_shared<messages::ScheduleRequest>();
     req->set_requestid(requestID);
@@ -127,6 +147,10 @@ TEST_F(DomainInstanceCtrlTest, ScheduleInstanceVersionWrong)
     auto rsp = future.Get();
     EXPECT_EQ(rsp->code(), StatusCode::INSTANCE_TRANSACTION_WRONG_VERSION);
     EXPECT_EQ(rsp->requestid(), requestID);
+    EXPECT_TRUE(instanceCtrl_->cancelTag_.find(rsp->requestid())==instanceCtrl_->cancelTag_.end());
+    EXPECT_EQ(req->unitsnapshot().localviewinittime(), "INITTIME1");
+    EXPECT_EQ(req->unitsnapshot().version(), 2);
+    EXPECT_TRUE(instanceCtrl_->cancelTag_.find(rsp->requestid())==instanceCtrl_->cancelTag_.end());
 }
 
 /**
@@ -152,7 +176,7 @@ TEST_F(DomainInstanceCtrlTest, InsufficientResource)
     ScheduleResult resourceNotEnough{ "", RESOURCE_NOT_ENOUGH, "resources not enough" };
     ScheduleResult invalidParam{ "", PARAMETER_ERROR, "parameter error" };
     EXPECT_CALL(*mockScheduler_, ScheduleDecision(_, _))
-        .WillRepeatedly(Return(resourceNotEnough));
+        .WillRepeatedly(Return(AsyncReturn(resourceNotEnough)));
 
     auto req = std::make_shared<messages::ScheduleRequest>();
     req->set_requestid(requestID);
@@ -167,7 +191,7 @@ TEST_F(DomainInstanceCtrlTest, InsufficientResource)
     EXPECT_THAT(rsp->message(), testing::HasSubstr("resources not enough"));
 
     EXPECT_CALL(*mockScheduler_, ScheduleDecision(_, _))
-        .WillRepeatedly(Return(invalidParam));
+        .WillRepeatedly(Return(AsyncReturn(invalidParam)));
     future = instanceCtrl.Schedule(req);
     ASSERT_AWAIT_READY_FOR(future, 1000);
     rsp = future.Get();
@@ -176,6 +200,7 @@ TEST_F(DomainInstanceCtrlTest, InsufficientResource)
     EXPECT_THAT(
         rsp->message(),
         testing::HasSubstr("invalid resource parameter, request resource is greater than each node's max resource"));
+    EXPECT_TRUE(instanceCtrl_->cancelTag_.find(rsp->requestid())==instanceCtrl_->cancelTag_.end());
 }
 
 /**
@@ -195,7 +220,7 @@ TEST_F(DomainInstanceCtrlTest, SuccessfullyAfterRetries)
 
     std::string mockSelectedName = "selected";
     ScheduleResult result{ mockSelectedName, 0, "" };
-    EXPECT_CALL(*mockScheduler_, ScheduleDecision(_, _)).WillOnce(Return(result));
+    EXPECT_CALL(*mockScheduler_, ScheduleDecision(_, _)).WillOnce(Return(AsyncReturn(result)));
 
     auto pro = litebus::Promise<std::shared_ptr<messages::ScheduleResponse>>();
     pro.SetFailed(StatusCode::REQUEST_TIME_OUT);
@@ -204,9 +229,14 @@ TEST_F(DomainInstanceCtrlTest, SuccessfullyAfterRetries)
     mockSchedRsp->set_code(0);
     mockSchedRsp->set_requestid(requestID);
     EXPECT_CALL(*mockUnderlayerScheMgr_, DispatchSchedule(mockSelectedName, _))
-        .WillOnce(Return(failedFuture))
-        .WillOnce(Return(failedFuture))
-        .WillOnce(Return(mockSchedRsp));
+        .WillOnce(Return(AsyncReturn(failedFuture)))
+        .WillOnce(Return(AsyncReturn(failedFuture)))
+        .WillOnce(Return(AsyncReturn(mockSchedRsp)));
+    resource_view::PullResourceRequest snapshot;
+    snapshot.set_localviewinittime("INITTIME1");
+    snapshot.set_version(2);
+    EXPECT_CALL(*primary_, GetUnitSnapshotInfo(_)).Times(3).WillRepeatedly(Return(litebus::Future<resource_view::PullResourceRequest>{snapshot}));
+
 
     auto req = std::make_shared<messages::ScheduleRequest>();
     req->set_requestid(requestID);
@@ -217,6 +247,7 @@ TEST_F(DomainInstanceCtrlTest, SuccessfullyAfterRetries)
     auto rsp = future.Get();
     EXPECT_EQ(rsp->code(), 0);
     EXPECT_EQ(rsp->requestid(), requestID);
+    EXPECT_TRUE(instanceCtrl_->cancelTag_.find(rsp->requestid())==instanceCtrl_->cancelTag_.end());
 }
 
 /**
@@ -237,7 +268,7 @@ TEST_F(DomainInstanceCtrlTest, ReschedulingTriggeredByRetriesFailed)
 
     std::string mockSelectedName = "selected";
     ScheduleResult result{ mockSelectedName, 0, "" };
-    EXPECT_CALL(*mockScheduler_, ScheduleDecision(_, _)).WillRepeatedly(Return(result));
+    EXPECT_CALL(*mockScheduler_, ScheduleDecision(_, _)).WillRepeatedly(Return(AsyncReturn(result)));
 
     auto pro = litebus::Promise<std::shared_ptr<messages::ScheduleResponse>>();
     pro.SetFailed(StatusCode::REQUEST_TIME_OUT);
@@ -246,10 +277,21 @@ TEST_F(DomainInstanceCtrlTest, ReschedulingTriggeredByRetriesFailed)
     mockSchedRsp->set_code(0);
     mockSchedRsp->set_requestid(requestID);
     EXPECT_CALL(*mockUnderlayerScheMgr_, DispatchSchedule(mockSelectedName, _))
-        .WillOnce(Return(failedFuture))
-        .WillOnce(Return(failedFuture))
-        .WillOnce(Return(failedFuture))
-        .WillOnce(Return(mockSchedRsp));
+        .WillOnce(Return(AsyncReturn(failedFuture)))
+        .WillOnce(Return(AsyncReturn(failedFuture)))
+        .WillOnce(Return(AsyncReturn(failedFuture)))
+        .WillOnce(Return(AsyncReturn(mockSchedRsp)));
+
+    resource_view::PullResourceRequest snapshot;
+    snapshot.set_localviewinittime("INITTIME1");
+    snapshot.set_version(2);
+    resource_view::PullResourceRequest snapshot2;
+    snapshot2.set_localviewinittime("INITTIME1");
+    snapshot2.set_version(5);
+    EXPECT_CALL(*primary_, GetUnitSnapshotInfo(_)).WillOnce(Return(litebus::Future<resource_view::PullResourceRequest>{snapshot}))
+        .WillOnce(Return(litebus::Future<resource_view::PullResourceRequest>{snapshot}))
+        .WillOnce(Return(litebus::Future<resource_view::PullResourceRequest>{snapshot}))
+        .WillOnce(Return(litebus::Future<resource_view::PullResourceRequest>{snapshot2}));
 
     auto req = std::make_shared<messages::ScheduleRequest>();
     req->set_requestid(requestID);
@@ -260,6 +302,9 @@ TEST_F(DomainInstanceCtrlTest, ReschedulingTriggeredByRetriesFailed)
     auto rsp = future.Get();
     EXPECT_EQ(rsp->code(), 0);
     EXPECT_EQ(rsp->requestid(), requestID);
+    EXPECT_TRUE(instanceCtrl_->cancelTag_.find(rsp->requestid())==instanceCtrl_->cancelTag_.end());
+    EXPECT_EQ(req->unitsnapshot().localviewinittime(), "INITTIME1");
+    EXPECT_EQ(req->unitsnapshot().version(), 5);
 }
 
 /**
@@ -280,7 +325,7 @@ TEST_F(DomainInstanceCtrlTest, ReSchedulingAfterConflict)
 
     std::string mockSelectedName = "selected";
     ScheduleResult result{ mockSelectedName, 0, "" };
-    EXPECT_CALL(*mockScheduler_, ScheduleDecision(_, _)).WillRepeatedly(Return(result));
+    EXPECT_CALL(*mockScheduler_, ScheduleDecision(_, _)).WillRepeatedly(Return(AsyncReturn(result)));
 
     auto mockSchedRsp = std::make_shared<messages::ScheduleResponse>();
     mockSchedRsp->set_code(StatusCode::RESOURCE_NOT_ENOUGH);
@@ -289,8 +334,16 @@ TEST_F(DomainInstanceCtrlTest, ReSchedulingAfterConflict)
     mockSuccessRsp->set_code(0);
     mockSuccessRsp->set_requestid(requestID);
     EXPECT_CALL(*mockUnderlayerScheMgr_, DispatchSchedule(mockSelectedName, _))
-        .WillOnce(Return(mockSchedRsp))
-        .WillOnce(Return(mockSuccessRsp));
+        .WillOnce(Return(AsyncReturn(mockSchedRsp)))
+        .WillOnce(Return(AsyncReturn(mockSuccessRsp)));
+    resource_view::PullResourceRequest snapshot;
+    snapshot.set_localviewinittime("INITTIME1");
+    snapshot.set_version(2);
+    resource_view::PullResourceRequest snapshot2;
+    snapshot2.set_localviewinittime("INITTIME1");
+    snapshot2.set_version(5);
+    EXPECT_CALL(*primary_, GetUnitSnapshotInfo(_)).WillOnce(Return(litebus::Future<resource_view::PullResourceRequest>{snapshot}))
+        .WillOnce(Return(litebus::Future<resource_view::PullResourceRequest>{snapshot2}));
 
     auto req = std::make_shared<messages::ScheduleRequest>();
     req->set_requestid(requestID);
@@ -301,6 +354,9 @@ TEST_F(DomainInstanceCtrlTest, ReSchedulingAfterConflict)
     auto rsp = future.Get();
     EXPECT_EQ(rsp->code(), 0);
     EXPECT_EQ(rsp->requestid(), requestID);
+    EXPECT_TRUE(instanceCtrl_->cancelTag_.find(rsp->requestid())==instanceCtrl_->cancelTag_.end());
+    EXPECT_EQ(req->unitsnapshot().localviewinittime(), "INITTIME1");
+    EXPECT_EQ(req->unitsnapshot().version(), 5);
 }
 
 /**
@@ -321,7 +377,7 @@ TEST_F(DomainInstanceCtrlTest, ReSchedulingFailedAfterConflict)
 
     std::string mockSelectedName = "selected";
     ScheduleResult result{ mockSelectedName, 0, "" };
-    EXPECT_CALL(*mockScheduler_, ScheduleDecision(_, _)).WillRepeatedly(Return(result));
+    EXPECT_CALL(*mockScheduler_, ScheduleDecision(_, _)).WillRepeatedly(Return(AsyncReturn(result)));
 
     auto mockSchedRsp = std::make_shared<messages::ScheduleResponse>();
     mockSchedRsp->set_code(StatusCode::RESOURCE_NOT_ENOUGH);
@@ -340,6 +396,10 @@ TEST_F(DomainInstanceCtrlTest, ReSchedulingFailedAfterConflict)
                 rsp->set_code(StatusCode::RESOURCE_NOT_ENOUGH);
                 return rsp;
             }));
+    resource_view::PullResourceRequest snapshot;
+    snapshot.set_localviewinittime("INITTIME1");
+    snapshot.set_version(2);
+    EXPECT_CALL(*primary_, GetUnitSnapshotInfo(_)).WillRepeatedly(Return(litebus::Future<resource_view::PullResourceRequest>{snapshot}));
 
     auto req = std::make_shared<messages::ScheduleRequest>();
     req->set_requestid(requestID);
@@ -352,6 +412,9 @@ TEST_F(DomainInstanceCtrlTest, ReSchedulingFailedAfterConflict)
     // retry attempts.
     EXPECT_EQ(rsp->code(), StatusCode::ERR_SCHEDULE_CANCELED);
     EXPECT_EQ(rsp->requestid(), requestID);
+    EXPECT_TRUE(instanceCtrl_->cancelTag_.find(rsp->requestid())==instanceCtrl_->cancelTag_.end());
+    EXPECT_EQ(req->unitsnapshot().localviewinittime(), "INITTIME1");
+    EXPECT_EQ(req->unitsnapshot().version(), 2);
 }
 
 /**
@@ -382,13 +445,18 @@ TEST_F(DomainInstanceCtrlTest, CreateAgentSuccess)
     std::string mockSelectedName = "selected";
     ScheduleResult result{ mockSelectedName, 0, "" };
     EXPECT_CALL(*mockScheduler_, ScheduleDecision(_, _))
-        .WillOnce(Return(resourceNotEnough))
-        .WillOnce(Return(result));
+        .WillOnce(Return(AsyncReturn(resourceNotEnough)))
+        .WillOnce(Return(AsyncReturn(result)));
 
     auto mockSchedRsp = std::make_shared<messages::ScheduleResponse>();
     mockSchedRsp->set_code(0);
     mockSchedRsp->set_requestid(requestID);
-    EXPECT_CALL(*mockUnderlayerScheMgr_, DispatchSchedule(mockSelectedName, _)).WillOnce(Return(mockSchedRsp));
+    EXPECT_CALL(*mockUnderlayerScheMgr_, DispatchSchedule(mockSelectedName, _)).WillOnce(Return(AsyncReturn(mockSchedRsp)));
+
+    resource_view::PullResourceRequest snapshot;
+    snapshot.set_localviewinittime("INITTIME1");
+    snapshot.set_version(2);
+    EXPECT_CALL(*primary_, GetUnitSnapshotInfo(_)).WillOnce(Return(litebus::Future<resource_view::PullResourceRequest>{snapshot}));
 
     messages::CreateAgentResponse createAgentRsp;
     createAgentRsp.set_requestid(requestID);
@@ -407,6 +475,9 @@ TEST_F(DomainInstanceCtrlTest, CreateAgentSuccess)
     auto rsp = future.Get();
     EXPECT_EQ(rsp->code(), 0);
     EXPECT_EQ(rsp->requestid(), requestID);
+    EXPECT_TRUE(instanceCtrl_->cancelTag_.find(rsp->requestid())==instanceCtrl_->cancelTag_.end());
+    EXPECT_EQ(req->unitsnapshot().localviewinittime(), "INITTIME1");
+    EXPECT_EQ(req->unitsnapshot().version(), 2);
 
     litebus::Terminate(mockScaler->GetAID());
     litebus::Await(mockScaler->GetAID());
@@ -429,13 +500,18 @@ TEST_F(DomainInstanceCtrlTest, AffinityCreateAgent)
     std::string mockSelectedName = "selected";
     ScheduleResult result{ mockSelectedName, 0, "" };
     EXPECT_CALL(*mockScheduler_, ScheduleDecision(_, _))
-        .WillOnce(Return(resourceNotEnough))
-        .WillOnce(Return(result));
+        .WillOnce(Return(AsyncReturn(resourceNotEnough)))
+        .WillOnce(Return(AsyncReturn(result)));
+
+    resource_view::PullResourceRequest snapshot;
+    snapshot.set_localviewinittime("INITTIME1");
+    snapshot.set_version(2);
+    EXPECT_CALL(*primary_, GetUnitSnapshotInfo(_)).WillOnce(Return(litebus::Future<resource_view::PullResourceRequest>{snapshot}));
 
     auto mockSchedRsp = std::make_shared<messages::ScheduleResponse>();
     mockSchedRsp->set_code(0);
     mockSchedRsp->set_requestid(requestID);
-    EXPECT_CALL(*mockUnderlayerScheMgr_, DispatchSchedule(mockSelectedName, _)).WillOnce(Return(mockSchedRsp));
+    EXPECT_CALL(*mockUnderlayerScheMgr_, DispatchSchedule(mockSelectedName, _)).WillOnce(Return(AsyncReturn(mockSchedRsp)));
 
     messages::CreateAgentResponse createAgentRsp;
     createAgentRsp.set_requestid(requestID);
@@ -458,6 +534,9 @@ TEST_F(DomainInstanceCtrlTest, AffinityCreateAgent)
     auto rsp = future.Get();
     EXPECT_EQ(rsp->code(), 0);
     EXPECT_EQ(rsp->requestid(), requestID);
+    EXPECT_TRUE(instanceCtrl_->cancelTag_.find(rsp->requestid())==instanceCtrl_->cancelTag_.end());
+    EXPECT_EQ(req->unitsnapshot().localviewinittime(), "INITTIME1");
+    EXPECT_EQ(req->unitsnapshot().version(), 2);
 
     litebus::Terminate(mockScaler->GetAID());
     litebus::Await(mockScaler->GetAID());
@@ -489,8 +568,8 @@ TEST_F(DomainInstanceCtrlTest, CreateAgentFailed)
     ScheduleResult resourceNotEnough{ "", RESOURCE_NOT_ENOUGH, "resources not enough" };
     ScheduleResult invalidParam{ "", PARAMETER_ERROR, "parameter error" };
     EXPECT_CALL(*mockScheduler_, ScheduleDecision(_, _))
-        .WillOnce(Return(resourceNotEnough))
-        .WillOnce(Return(invalidParam));
+        .WillOnce(Return(AsyncReturn(resourceNotEnough)))
+        .WillOnce(Return(AsyncReturn(invalidParam)));
 
     auto req = std::make_shared<messages::ScheduleRequest>();
     req->set_requestid(requestID);
@@ -519,6 +598,7 @@ TEST_F(DomainInstanceCtrlTest, CreateAgentFailed)
     rsp = future.Get();
     EXPECT_EQ(rsp->code(), -1);
     EXPECT_EQ(rsp->requestid(), requestID);
+    EXPECT_TRUE(instanceCtrl_->cancelTag_.find(rsp->requestid())==instanceCtrl_->cancelTag_.end());
 
     litebus::Terminate(mockScaler->GetAID());
     litebus::Await(mockScaler->GetAID());
@@ -553,14 +633,19 @@ TEST_F(DomainInstanceCtrlTest, CreateAgentRetrySuccess)
     std::string mockSelectedName = "selected";
     ScheduleResult result{ mockSelectedName, 0, "" };
     EXPECT_CALL(*mockScheduler_, ScheduleDecision(_, _))
-        .WillOnce(Return(resourceNotEnough))
-        .WillOnce(Return(resourceNotEnough))
-        .WillOnce(Return(result));
+        .WillOnce(Return(AsyncReturn(resourceNotEnough)))
+        .WillOnce(Return(AsyncReturn(resourceNotEnough)))
+        .WillOnce(Return(AsyncReturn(result)));
+
+    resource_view::PullResourceRequest snapshot;
+    snapshot.set_localviewinittime("INITTIME1");
+    snapshot.set_version(2);
+    EXPECT_CALL(*primary_, GetUnitSnapshotInfo(_)).WillOnce(Return(litebus::Future<resource_view::PullResourceRequest>{snapshot}));
 
     auto mockSchedRsp = std::make_shared<messages::ScheduleResponse>();
     mockSchedRsp->set_code(0);
     mockSchedRsp->set_requestid(requestID);
-    EXPECT_CALL(*mockUnderlayerScheMgr_, DispatchSchedule(mockSelectedName, _)).WillOnce(Return(mockSchedRsp));
+    EXPECT_CALL(*mockUnderlayerScheMgr_, DispatchSchedule(mockSelectedName, _)).WillOnce(Return(AsyncReturn(mockSchedRsp)));
 
     auto req = std::make_shared<messages::ScheduleRequest>();
     req->set_requestid(requestID);
@@ -580,6 +665,9 @@ TEST_F(DomainInstanceCtrlTest, CreateAgentRetrySuccess)
     auto rsp = future.Get();
     EXPECT_EQ(rsp->code(), 0);
     EXPECT_EQ(rsp->requestid(), requestID);
+    EXPECT_TRUE(instanceCtrl_->cancelTag_.find(rsp->requestid())==instanceCtrl_->cancelTag_.end());
+    EXPECT_EQ(req->unitsnapshot().localviewinittime(), "INITTIME1");
+    EXPECT_EQ(req->unitsnapshot().version(), 2);
 
     litebus::Terminate(mockScaler->GetAID());
     litebus::Await(mockScaler->GetAID());
@@ -612,9 +700,9 @@ TEST_F(DomainInstanceCtrlTest, CreateAgentRetryFailed)
 
     ScheduleResult resourceNotEnough{ "", RESOURCE_NOT_ENOUGH, "resources not enough" };
     EXPECT_CALL(*mockScheduler_, ScheduleDecision(_, _))
-        .WillOnce(Return(resourceNotEnough))
-        .WillOnce(Return(resourceNotEnough))
-        .WillOnce(Return(resourceNotEnough));
+        .WillOnce(Return(AsyncReturn(resourceNotEnough)))
+        .WillOnce(Return(AsyncReturn(resourceNotEnough)))
+        .WillOnce(Return(AsyncReturn(resourceNotEnough)));
 
     auto req = std::make_shared<messages::ScheduleRequest>();
     req->set_requestid(requestID);
@@ -637,6 +725,7 @@ TEST_F(DomainInstanceCtrlTest, CreateAgentRetryFailed)
     EXPECT_EQ(rsp->requestid(), requestID);
     YRLOG_INFO("err msg: {}", rsp->message());
     EXPECT_THAT(rsp->message(), testing::HasSubstr("resources not enough"));
+    EXPECT_TRUE(instanceCtrl_->cancelTag_.find(rsp->requestid())==instanceCtrl_->cancelTag_.end());
 
     litebus::Terminate(mockScaler->GetAID());
     litebus::Await(mockScaler->GetAID());
@@ -667,10 +756,10 @@ TEST_F(DomainInstanceCtrlTest, MonopolyRetry)
 
     ScheduleResult resourceNotEnough{ "", RESOURCE_NOT_ENOUGH, "resources not enough" };
     EXPECT_CALL(*mockScheduler_, ScheduleDecision(_, _))
-        .WillOnce(Return(resourceNotEnough))
-        .WillOnce(Return(resourceNotEnough))
-        .WillOnce(Return(resourceNotEnough))
-        .WillOnce(Return(resourceNotEnough));
+        .WillOnce(Return(AsyncReturn(resourceNotEnough)))
+        .WillOnce(Return(AsyncReturn(resourceNotEnough)))
+        .WillOnce(Return(AsyncReturn(resourceNotEnough)))
+        .WillOnce(Return(AsyncReturn(resourceNotEnough)));
 
     auto req = std::make_shared<messages::ScheduleRequest>();
     req->set_requestid(requestID);
@@ -688,18 +777,26 @@ TEST_F(DomainInstanceCtrlTest, MonopolyRetry)
     std::string mockSelectedName = "selected";
     ScheduleResult ok{ mockSelectedName, SUCCESS, "success" };
     EXPECT_CALL(*mockScheduler_, ScheduleDecision(_, _))
-        .WillOnce(Return(resourceNotEnough))
-        .WillOnce(Return(resourceNotEnough))
-        .WillOnce(Return(ok));
+        .WillOnce(Return(AsyncReturn(resourceNotEnough)))
+        .WillOnce(Return(AsyncReturn(resourceNotEnough)))
+        .WillOnce(Return(AsyncReturn(ok)));
     auto mockSchedRsp = std::make_shared<messages::ScheduleResponse>();
     mockSchedRsp->set_code(0);
     mockSchedRsp->set_requestid(requestID);
-    EXPECT_CALL(*mockUnderlayerScheMgr_, DispatchSchedule(mockSelectedName, _)).WillOnce(Return(mockSchedRsp));
+    EXPECT_CALL(*mockUnderlayerScheMgr_, DispatchSchedule(mockSelectedName, _)).WillOnce(Return(AsyncReturn(mockSchedRsp)));
+
+    resource_view::PullResourceRequest snapshot;
+    snapshot.set_localviewinittime("INITTIME1");
+    snapshot.set_version(2);
+    EXPECT_CALL(*primary_, GetUnitSnapshotInfo(_)).WillOnce(Return(litebus::Future<resource_view::PullResourceRequest>{snapshot}));
 
     future = instanceCtrl.Schedule(req);
     ASSERT_AWAIT_READY_FOR(future, 1000);
     rsp = future.Get();
     EXPECT_EQ(rsp->code(), StatusCode::SUCCESS);
+    EXPECT_TRUE(instanceCtrl_->cancelTag_.find(rsp->requestid())==instanceCtrl_->cancelTag_.end());
+    EXPECT_EQ(req->unitsnapshot().localviewinittime(), "INITTIME1");
+    EXPECT_EQ(req->unitsnapshot().version(), 2);
 }
 
 TEST_F(DomainInstanceCtrlTest, AffinityRetry)
@@ -714,10 +811,10 @@ TEST_F(DomainInstanceCtrlTest, AffinityRetry)
 
     ScheduleResult labelNotFound{ "", AFFINITY_SCHEDULE_FAILED, "affinity schedule failed" };
     EXPECT_CALL(*mockScheduler_, ScheduleDecision(_, _))
-        .WillOnce(Return(labelNotFound))
-        .WillOnce(Return(labelNotFound))
-        .WillOnce(Return(labelNotFound))
-        .WillOnce(Return(labelNotFound));
+        .WillOnce(Return(AsyncReturn(labelNotFound)))
+        .WillOnce(Return(AsyncReturn(labelNotFound)))
+        .WillOnce(Return(AsyncReturn(labelNotFound)))
+        .WillOnce(Return(AsyncReturn(labelNotFound)));
 
     auto req = std::make_shared<messages::ScheduleRequest>();
     req->set_requestid(requestID);
@@ -739,18 +836,26 @@ TEST_F(DomainInstanceCtrlTest, AffinityRetry)
     std::string mockSelectedName = "selected";
     ScheduleResult ok{ mockSelectedName, SUCCESS, "success" };
     EXPECT_CALL(*mockScheduler_, ScheduleDecision(_, _))
-        .WillOnce(Return(labelNotFound))
-        .WillOnce(Return(labelNotFound))
-        .WillOnce(Return(ok));
+        .WillOnce(Return(AsyncReturn(labelNotFound)))
+        .WillOnce(Return(AsyncReturn(labelNotFound)))
+        .WillOnce(Return(AsyncReturn(ok)));
     auto mockSchedRsp = std::make_shared<messages::ScheduleResponse>();
     mockSchedRsp->set_code(0);
     mockSchedRsp->set_requestid(requestID);
-    EXPECT_CALL(*mockUnderlayerScheMgr_, DispatchSchedule(mockSelectedName, _)).WillOnce(Return(mockSchedRsp));
+    EXPECT_CALL(*mockUnderlayerScheMgr_, DispatchSchedule(mockSelectedName, _)).WillOnce(Return(AsyncReturn(mockSchedRsp)));
+
+    resource_view::PullResourceRequest snapshot;
+    snapshot.set_localviewinittime("INITTIME1");
+    snapshot.set_version(2);
+    EXPECT_CALL(*primary_, GetUnitSnapshotInfo(_)).WillOnce(Return(litebus::Future<resource_view::PullResourceRequest>{snapshot}));
 
     future = instanceCtrl.Schedule(req);
     ASSERT_AWAIT_READY_FOR(future, 2000);
     rsp = future.Get();
     EXPECT_EQ(rsp->code(), StatusCode::SUCCESS);
+    EXPECT_TRUE(instanceCtrl_->cancelTag_.find(rsp->requestid())==instanceCtrl_->cancelTag_.end());
+    EXPECT_EQ(req->unitsnapshot().localviewinittime(), "INITTIME1");
+    EXPECT_EQ(req->unitsnapshot().version(), 2);
 }
 
 /**
@@ -782,14 +887,19 @@ TEST_F(DomainInstanceCtrlTest, CreateAgentByPoolIDAffinityFailed)
     std::string mockSelectedName = "selected";
     ScheduleResult result{ mockSelectedName, 0, "" };
     EXPECT_CALL(*mockScheduler_, ScheduleDecision(_, _))
-        .WillOnce(Return(affinityFailed))
-        .WillOnce(Return(affinityFailed))
-        .WillOnce(Return(result));
+        .WillOnce(Return(AsyncReturn(affinityFailed)))
+        .WillOnce(Return(AsyncReturn(affinityFailed)))
+        .WillOnce(Return(AsyncReturn(result)));
 
     auto mockSchedRsp = std::make_shared<messages::ScheduleResponse>();
     mockSchedRsp->set_code(0);
     mockSchedRsp->set_requestid(requestID);
-    EXPECT_CALL(*mockUnderlayerScheMgr_, DispatchSchedule(mockSelectedName, _)).WillOnce(Return(mockSchedRsp));
+    EXPECT_CALL(*mockUnderlayerScheMgr_, DispatchSchedule(mockSelectedName, _)).WillOnce(Return(AsyncReturn(mockSchedRsp)));
+
+    resource_view::PullResourceRequest snapshot;
+    snapshot.set_localviewinittime("INITTIME1");
+    snapshot.set_version(2);
+    EXPECT_CALL(*primary_, GetUnitSnapshotInfo(_)).WillOnce(Return(litebus::Future<resource_view::PullResourceRequest>{snapshot}));
 
     auto req = std::make_shared<messages::ScheduleRequest>();
     req->set_requestid(requestID);
@@ -807,6 +917,9 @@ TEST_F(DomainInstanceCtrlTest, CreateAgentByPoolIDAffinityFailed)
     auto rsp = future.Get();
     EXPECT_EQ(rsp->code(), 0);
     EXPECT_EQ(rsp->requestid(), requestID);
+    EXPECT_TRUE(instanceCtrl_->cancelTag_.find(rsp->requestid())==instanceCtrl_->cancelTag_.end());
+    EXPECT_EQ(req->unitsnapshot().localviewinittime(), "INITTIME1");
+    EXPECT_EQ(req->unitsnapshot().version(), 2);
 
     litebus::Terminate(mockScaler->GetAID());
     litebus::Await(mockScaler->GetAID());
@@ -826,5 +939,6 @@ TEST_F(DomainInstanceCtrlTest, ScheduleTimeoutCancel)
     auto rsp = future.Get();
     EXPECT_EQ(rsp->code(), StatusCode::ERR_SCHEDULE_CANCELED);
     EXPECT_EQ(rsp->requestid(), "req");
+    EXPECT_TRUE(instanceCtrl_->cancelTag_.find(rsp->requestid())==instanceCtrl_->cancelTag_.end());
 }
 }  // namespace functionsystem::test

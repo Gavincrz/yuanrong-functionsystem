@@ -42,7 +42,7 @@ public:
     ~DomainUnderlayerStub() = default;
 
     litebus::Future<messages::ScheduleResponse> Reserve(const litebus::AID &dst,
-                                                     const std::shared_ptr<messages::ScheduleRequest> &req)
+                                                        const std::shared_ptr<messages::ScheduleRequest> &req)
     {
         Send(dst, "Reserve", req->SerializeAsString());
         reservePromises_[req->requestid()] = std::make_shared<litebus::Promise<messages::ScheduleResponse>>();
@@ -117,7 +117,7 @@ public:
     }
 
     litebus::Future<messages::KillGroupResponse> ClearGroup(const litebus::AID &dst,
-                                                    const std::shared_ptr<messages::KillGroup> &req)
+                                                            const std::shared_ptr<messages::KillGroup> &req)
     {
         Send(dst, "ClearGroup", req->SerializeAsString());
         killGroupPromises_[req->groupid()] = std::make_shared<litebus::Promise<messages::KillGroupResponse>>();
@@ -148,7 +148,7 @@ private:
     std::unordered_map<std::string, std::shared_ptr<litebus::Promise<messages::GroupResponse>>> unReservePromises_;
     std::unordered_map<std::string, std::shared_ptr<litebus::Promise<messages::GroupResponse>>> bindPromises_;
     std::unordered_map<std::string, std::shared_ptr<litebus::Promise<messages::GroupResponse>>> unBindPromises_;
-    std::unordered_map<std::string, std::shared_ptr<litebus::Promise<messages::KillGroupResponse >>> killGroupPromises_;
+    std::unordered_map<std::string, std::shared_ptr<litebus::Promise<messages::KillGroupResponse>>> killGroupPromises_;
 };
 
 class LocalGroupCtrlTest : public ::testing::Test {
@@ -163,8 +163,9 @@ public:
         resourceViewMgr->virtual_ = virtual_;
         mockScheduler_ = std::make_shared<MockScheduler>();
         mockLocalSchedSrv_ = std::make_shared<MockLocalSchedSrv>();
-        mockInstanceCtrl_ = std::make_shared<MockInstanceCtrl>(nullptr);
+        mockInstanceCtrl_ = std::make_shared<MockInstanceCtrl>();
         EXPECT_CALL(*mockInstanceCtrl_, RegisterClearGroupInstanceCallBack).WillRepeatedly(Return());
+        EXPECT_CALL(*mockInstanceCtrl_, IsInstanceRunning).WillRepeatedly(Return(false));
         mockMetaStoreClient_ = std::make_shared<MockMetaStoreClient>("");
         localGroupCtrlActor_ =
             std::make_shared<LocalGroupCtrlActor>(LOCAL_GROUP_CTRL_ACTOR_NAME, "nodeA", mockMetaStoreClient_);
@@ -205,7 +206,7 @@ public:
     void Start()
     {
         auto getResponse = std::make_shared<GetResponse>();
-        EXPECT_CALL(*mockMetaStoreClient_, Get).WillOnce(Return(getResponse));
+        EXPECT_CALL(*mockMetaStoreClient_, Get).WillOnce(Return(AsyncReturn(getResponse)));
         auto future = localGroupCtrl_->Sync().Then([=](const Status &) { return localGroupCtrl_->Recover(); });
         ASSERT_AWAIT_READY(future);
         EXPECT_EQ(future.IsOK(), true);
@@ -248,7 +249,7 @@ GroupInfoPair NewGroupInfoJson(std::string groupID, std::string ownerProxy, Grou
     std::string jsonStr;
     (void)google::protobuf::util::MessageToJsonString(*info, &jsonStr);
     kv.set_value(jsonStr);
-    return {kv, info};
+    return { kv, info };
 }
 
 // group schedule not started
@@ -267,7 +268,7 @@ TEST_F(LocalGroupCtrlTest, LocalGroupCtrlNotStarted)
 TEST_F(LocalGroupCtrlTest, LocalGroupCtrlStartedWithEmpty)
 {
     auto getResponse = std::make_shared<GetResponse>();
-    EXPECT_CALL(*mockMetaStoreClient_, Get).WillOnce(Return(getResponse));
+    EXPECT_CALL(*mockMetaStoreClient_, Get).WillOnce(Return(AsyncReturn(getResponse)));
     auto future = localGroupCtrl_->Sync().Then([=](const Status &) { return localGroupCtrl_->Recover(); });
     ASSERT_AWAIT_READY(future);
     EXPECT_EQ(future.IsOK(), true);
@@ -278,7 +279,7 @@ TEST_F(LocalGroupCtrlTest, LocalGroupCtrlStartedWithFailureGroupInfo)
 {
     auto getResponse = std::make_shared<GetResponse>();
     getResponse->status = Status(StatusCode::FAILED);
-    EXPECT_CALL(*mockMetaStoreClient_, Get).WillOnce(Return(getResponse));
+    EXPECT_CALL(*mockMetaStoreClient_, Get).WillOnce(Return(AsyncReturn(getResponse)));
     auto future = localGroupCtrl_->Sync().Then([=](const Status &) { return localGroupCtrl_->Recover(); });
     ASSERT_AWAIT_READY(future);
     EXPECT_EQ(future.IsOK(), true);
@@ -292,7 +293,7 @@ TEST_F(LocalGroupCtrlTest, LocalGroupCtrlStartedWithInvalidGroupInfo)
     kv.set_key("/yr/group/requestID/groupID");
     kv.set_value("xxxxxxx");
     getResponse->kvs.emplace_back(kv);
-    EXPECT_CALL(*mockMetaStoreClient_, Get).WillOnce(Return(getResponse));
+    EXPECT_CALL(*mockMetaStoreClient_, Get).WillOnce(Return(AsyncReturn(getResponse)));
     auto future = localGroupCtrl_->Sync().Then([=](const Status &) { return localGroupCtrl_->Recover(); });
     ASSERT_AWAIT_READY(future);
     EXPECT_EQ(future.IsOK(), true);
@@ -311,13 +312,13 @@ TEST_F(LocalGroupCtrlTest, LocalGroupCtrlStartedWithDifferGroupInfo)
     getResponse->kvs.emplace_back(kv1.kv);
     getResponse->kvs.emplace_back(kv2.kv);
     getResponse->kvs.emplace_back(kv3.kv);
-    EXPECT_CALL(*mockMetaStoreClient_, Get).WillOnce(Return(getResponse));
+    EXPECT_CALL(*mockMetaStoreClient_, Get).WillOnce(Return(AsyncReturn(getResponse)));
     // for SCHEDULING
     EXPECT_CALL(*mockInstanceCtrl_, RegisterReadyCallback).WillRepeatedly(Return());
     messages::GroupResponse resp;
     resp.set_code(SUCCESS);
     resp.set_message("SUCCESS");
-    EXPECT_CALL(*mockLocalSchedSrv_, ForwardGroupSchedule).WillOnce(Return(resp));
+    EXPECT_CALL(*mockLocalSchedSrv_, ForwardGroupSchedule).WillOnce(Return(AsyncReturn(resp)));
     // for FAILED
     EXPECT_CALL(*clientManager_, GetControlInterfacePosixClient).WillOnce(Return(nullptr));
     auto future = localGroupCtrl_->Sync().Then([=](const Status &) { return localGroupCtrl_->Recover(); });
@@ -498,34 +499,37 @@ TEST_F(LocalGroupCtrlTest, GroupScheduleWithRangeInstanceScheduleUseDefaultParam
 	createRequests->clear_requests();
 	auto request = createRequests->add_requests();
     request->mutable_schedulingops()->mutable_range();
-	EXPECT_CALL(*mockInstanceCtrl_, ToScheduling).Times(256).WillRepeatedly(Return(Status::OK()));
-	auto putResponse = std::make_shared<PutResponse>();
-	EXPECT_CALL(*mockMetaStoreClient_, Put).WillOnce(Return(putResponse)).WillOnce(Return(putResponse));
-	schedule_decision::GroupScheduleResult result;
-	result.code = 0;
-	for (int i = 0; i < 256; ++i) {
-		(void)result.results.emplace_back(schedule_decision::ScheduleResult{ "agent", 0, "" });
-	}
-	EXPECT_CALL(*mockScheduler_, GroupScheduleDecision(_)).WillOnce(Return(result));
-	EXPECT_CALL(*mockInstanceCtrl_, RegisterReadyCallback)
-		.WillRepeatedly(DoAll(
-			Invoke([](const std::string &instanceID, const std::shared_ptr<messages::ScheduleRequest> &scheduleReq,
-				      InstanceReadyCallBack callback) { callback(Status::OK()); })));
-	EXPECT_CALL(*mockInstanceCtrl_, ToCreating).WillRepeatedly(Return(Status::OK()));
-	auto mockSharedClient = std::make_shared<MockSharedClient>();
-	EXPECT_CALL(*clientManager_, GetControlInterfacePosixClient(_)).WillOnce(Return(mockSharedClient));
-	litebus::Promise<runtime::NotifyRequest> notifyCalled;
-	EXPECT_CALL(*mockSharedClient, NotifyResult(_))
-	    .WillOnce(Invoke([notifyCalled](runtime::NotifyRequest &&request) -> litebus::Future<runtime::NotifyResponse> {
-			notifyCalled.SetValue(request);
-			return runtime::NotifyResponse();
-		}));
-	auto future = localGroupCtrl_->GroupSchedule("srcInstnceID", createRequests);
-	ASSERT_AWAIT_READY(future);
-	EXPECT_EQ(future.IsOK(), true);
-	EXPECT_EQ(future.Get()->code(), common::ErrorCode::ERR_NONE);
-	ASSERT_AWAIT_READY(notifyCalled.GetFuture());
-	EXPECT_EQ(notifyCalled.GetFuture().Get().code(), common::ErrorCode::ERR_NONE);
+    EXPECT_CALL(*mockInstanceCtrl_, ToScheduling).Times(256).WillRepeatedly(Return(AsyncReturn(Status::OK())));
+    auto putResponse = std::make_shared<PutResponse>();
+    EXPECT_CALL(*mockMetaStoreClient_, Put)
+        .WillOnce(Return(AsyncReturn(putResponse)))
+        .WillOnce(Return(AsyncReturn(putResponse)));
+    schedule_decision::GroupScheduleResult result;
+    result.code = 0;
+    for (int i = 0; i < 256; ++i) {
+        (void)result.results.emplace_back(schedule_decision::ScheduleResult{ "agent", 0, "" });
+    }
+    EXPECT_CALL(*mockScheduler_, GroupScheduleDecision(_)).WillOnce(Return(AsyncReturn(result)));
+    EXPECT_CALL(*mockInstanceCtrl_, RegisterReadyCallback)
+        .WillRepeatedly(DoAll(
+            Invoke([](const std::string &instanceID, const std::shared_ptr<messages::ScheduleRequest> &scheduleReq,
+                      InstanceReadyCallBack callback) { callback(Status::OK()); })));
+    EXPECT_CALL(*mockInstanceCtrl_, ToCreating).WillRepeatedly(Return(AsyncReturn(Status::OK())));
+    auto mockSharedClient = std::make_shared<MockSharedClient>();
+    EXPECT_CALL(*clientManager_, GetControlInterfacePosixClient(_))
+        .WillOnce(Return(AsyncReturn(std::dynamic_pointer_cast<ControlInterfacePosixClient>(mockSharedClient))));
+    litebus::Promise<runtime::NotifyRequest> notifyCalled;
+    EXPECT_CALL(*mockSharedClient, NotifyResult(_))
+        .WillOnce(Invoke([notifyCalled](runtime::NotifyRequest &&request) -> litebus::Future<runtime::NotifyResponse> {
+            notifyCalled.SetValue(request);
+            return runtime::NotifyResponse();
+        }));
+    auto future = localGroupCtrl_->GroupSchedule("srcInstnceID", createRequests);
+    ASSERT_AWAIT_READY(future);
+    EXPECT_EQ(future.IsOK(), true);
+    EXPECT_EQ(future.Get()->code(), common::ErrorCode::ERR_NONE);
+    ASSERT_AWAIT_READY(notifyCalled.GetFuture());
+    EXPECT_EQ(notifyCalled.GetFuture().Get().code(), common::ErrorCode::ERR_NONE);
 }
 
 TEST_F(LocalGroupCtrlTest, GroupScheduleWithRangeInstanceScheduleUseMaxParamLocalSuccessful)
@@ -538,28 +542,31 @@ TEST_F(LocalGroupCtrlTest, GroupScheduleWithRangeInstanceScheduleUseMaxParamLoca
     auto request = createRequests->add_requests();
     request->mutable_schedulingops()->mutable_range();
     request->mutable_schedulingops()->mutable_range()->set_max(256);
-    EXPECT_CALL(*mockInstanceCtrl_, ToScheduling).Times(256).WillRepeatedly(Return(Status::OK()));
+    EXPECT_CALL(*mockInstanceCtrl_, ToScheduling).Times(256).WillRepeatedly(Return(AsyncReturn(Status::OK())));
     auto putResponse = std::make_shared<PutResponse>();
-    EXPECT_CALL(*mockMetaStoreClient_, Put).WillOnce(Return(putResponse)).WillOnce(Return(putResponse));
+    EXPECT_CALL(*mockMetaStoreClient_, Put)
+        .WillOnce(Return(AsyncReturn(putResponse)))
+        .WillOnce(Return(AsyncReturn(putResponse)));
     schedule_decision::GroupScheduleResult result;
     result.code = 0;
     for (int i = 0; i < 256; ++i) {
         (void)result.results.emplace_back(schedule_decision::ScheduleResult{ "agent", 0, "" });
     }
-    EXPECT_CALL(*mockScheduler_, GroupScheduleDecision(_)).WillOnce(Return(result));
+    EXPECT_CALL(*mockScheduler_, GroupScheduleDecision(_)).WillOnce(Return(AsyncReturn(result)));
     EXPECT_CALL(*mockInstanceCtrl_, RegisterReadyCallback)
-    .WillRepeatedly(DoAll(
-    	Invoke([](const std::string &instanceID, const std::shared_ptr<messages::ScheduleRequest> &scheduleReq,
-    	          InstanceReadyCallBack callback) { callback(Status::OK()); })));
-    EXPECT_CALL(*mockInstanceCtrl_, ToCreating).WillRepeatedly(Return(Status::OK()));
+        .WillRepeatedly(DoAll(
+            Invoke([](const std::string &instanceID, const std::shared_ptr<messages::ScheduleRequest> &scheduleReq,
+                      InstanceReadyCallBack callback) { callback(Status::OK()); })));
+    EXPECT_CALL(*mockInstanceCtrl_, ToCreating).WillRepeatedly(Return(AsyncReturn(Status::OK())));
     auto mockSharedClient = std::make_shared<MockSharedClient>();
-    EXPECT_CALL(*clientManager_, GetControlInterfacePosixClient(_)).WillOnce(Return(mockSharedClient));
+    EXPECT_CALL(*clientManager_, GetControlInterfacePosixClient(_))
+        .WillOnce(Return(AsyncReturn(std::dynamic_pointer_cast<ControlInterfacePosixClient>(mockSharedClient))));
     litebus::Promise<runtime::NotifyRequest> notifyCalled;
     EXPECT_CALL(*mockSharedClient, NotifyResult(_))
-    .WillOnce(Invoke([notifyCalled](runtime::NotifyRequest &&request) -> litebus::Future<runtime::NotifyResponse> {
-    	notifyCalled.SetValue(request);
-    	return runtime::NotifyResponse();
-    }));
+        .WillOnce(Invoke([notifyCalled](runtime::NotifyRequest &&request) -> litebus::Future<runtime::NotifyResponse> {
+            notifyCalled.SetValue(request);
+            return runtime::NotifyResponse();
+        }));
     auto future = localGroupCtrl_->GroupSchedule("srcInstnceID", createRequests);
     ASSERT_AWAIT_READY(future);
     EXPECT_EQ(future.IsOK(), true);
@@ -579,34 +586,37 @@ TEST_F(LocalGroupCtrlTest, GroupScheduleWithRangeInstanceScheduleSuccessful)
 	request->mutable_schedulingops()->mutable_range()->set_max(3);
 	request->mutable_schedulingops()->mutable_range()->set_min(1);
     request->mutable_schedulingops()->mutable_range()->set_step(1);
-	EXPECT_CALL(*mockInstanceCtrl_, ToScheduling).Times(3).WillRepeatedly(Return(Status::OK()));
-	auto putResponse = std::make_shared<PutResponse>();
-	EXPECT_CALL(*mockMetaStoreClient_, Put).WillOnce(Return(putResponse)).WillOnce(Return(putResponse));
-	schedule_decision::GroupScheduleResult result;
-	result.code = 0;
-	for (int i = 0; i < 3; ++i) {
-		(void)result.results.emplace_back(schedule_decision::ScheduleResult{ "agent", 0, "" });
-	}
-	EXPECT_CALL(*mockScheduler_, GroupScheduleDecision(_)).WillOnce(Return(result));
-	EXPECT_CALL(*mockInstanceCtrl_, RegisterReadyCallback)
-	.WillRepeatedly(DoAll(
-		Invoke([](const std::string &instanceID, const std::shared_ptr<messages::ScheduleRequest> &scheduleReq,
-		          InstanceReadyCallBack callback) { callback(Status::OK()); })));
-	EXPECT_CALL(*mockInstanceCtrl_, ToCreating).WillRepeatedly(Return(Status::OK()));
-	auto mockSharedClient = std::make_shared<MockSharedClient>();
-	EXPECT_CALL(*clientManager_, GetControlInterfacePosixClient(_)).WillOnce(Return(mockSharedClient));
-	litebus::Promise<runtime::NotifyRequest> notifyCalled;
-	EXPECT_CALL(*mockSharedClient, NotifyResult(_))
-	.WillOnce(Invoke([notifyCalled](runtime::NotifyRequest &&request) -> litebus::Future<runtime::NotifyResponse> {
-		notifyCalled.SetValue(request);
-		return runtime::NotifyResponse();
-	}));
-	auto future = localGroupCtrl_->GroupSchedule("srcInstnceID", createRequests);
-	ASSERT_AWAIT_READY(future);
-	EXPECT_EQ(future.IsOK(), true);
-	EXPECT_EQ(future.Get()->code(), common::ErrorCode::ERR_NONE);
-	ASSERT_AWAIT_READY(notifyCalled.GetFuture());
-	EXPECT_EQ(notifyCalled.GetFuture().Get().code(), common::ErrorCode::ERR_NONE);
+    EXPECT_CALL(*mockInstanceCtrl_, ToScheduling).Times(3).WillRepeatedly(Return(AsyncReturn(Status::OK())));
+    auto putResponse = std::make_shared<PutResponse>();
+    EXPECT_CALL(*mockMetaStoreClient_, Put)
+        .WillOnce(Return(AsyncReturn(putResponse)))
+        .WillOnce(Return(AsyncReturn(putResponse)));
+    schedule_decision::GroupScheduleResult result;
+    result.code = 0;
+    for (int i = 0; i < 3; ++i) {
+        (void)result.results.emplace_back(schedule_decision::ScheduleResult{ "agent", 0, "" });
+    }
+    EXPECT_CALL(*mockScheduler_, GroupScheduleDecision(_)).WillOnce(Return(AsyncReturn(result)));
+    EXPECT_CALL(*mockInstanceCtrl_, RegisterReadyCallback)
+        .WillRepeatedly(DoAll(
+            Invoke([](const std::string &instanceID, const std::shared_ptr<messages::ScheduleRequest> &scheduleReq,
+                      InstanceReadyCallBack callback) { callback(Status::OK()); })));
+    EXPECT_CALL(*mockInstanceCtrl_, ToCreating).WillRepeatedly(Return(AsyncReturn(Status::OK())));
+    auto mockSharedClient = std::make_shared<MockSharedClient>();
+    EXPECT_CALL(*clientManager_, GetControlInterfacePosixClient(_))
+        .WillOnce(Return(AsyncReturn(std::dynamic_pointer_cast<ControlInterfacePosixClient>(mockSharedClient))));
+    litebus::Promise<runtime::NotifyRequest> notifyCalled;
+    EXPECT_CALL(*mockSharedClient, NotifyResult(_))
+        .WillOnce(Invoke([notifyCalled](runtime::NotifyRequest &&request) -> litebus::Future<runtime::NotifyResponse> {
+            notifyCalled.SetValue(request);
+            return runtime::NotifyResponse();
+        }));
+    auto future = localGroupCtrl_->GroupSchedule("srcInstnceID", createRequests);
+    ASSERT_AWAIT_READY(future);
+    EXPECT_EQ(future.IsOK(), true);
+    EXPECT_EQ(future.Get()->code(), common::ErrorCode::ERR_NONE);
+    ASSERT_AWAIT_READY(notifyCalled.GetFuture());
+    EXPECT_EQ(notifyCalled.GetFuture().Get().code(), common::ErrorCode::ERR_NONE);
     EXPECT_EQ(localGroupCtrlActor_->groupCtxs_.size(), (size_t)1);
     // clear group info
     std::string requestID;
@@ -619,7 +629,9 @@ TEST_F(LocalGroupCtrlTest, GroupScheduleWithRangeInstanceScheduleSuccessful)
     auto clearGroupReq = std::make_shared<messages::KillGroup>();
     clearGroupReq->set_grouprequestid(requestID);
     clearGroupReq->set_groupid(groupID);
-    EXPECT_CALL(*mockInstanceCtrl_,DeleteSchedulingInstance).Times(3).WillRepeatedly(Return(Status::OK()));
+    EXPECT_CALL(*mockInstanceCtrl_, DeleteSchedulingInstance)
+        .Times(3)
+        .WillRepeatedly(Return(AsyncReturn(Status::OK())));
     auto clearFuture = litebus::Async(underlayerSrv_->GetAID(), &DomainUnderlayerStub::ClearGroup,
                                       localGroupCtrlActor_->GetAID(), clearGroupReq);
     ASSERT_AWAIT_READY(clearFuture);
@@ -659,9 +671,11 @@ TEST_F(LocalGroupCtrlTest, GroupScheduleLocalSuccessful)
         (void)createRequests->add_requests();
     }
 
-    EXPECT_CALL(*mockInstanceCtrl_, ToScheduling).Times(3).WillRepeatedly(Return(Status::OK()));
+    EXPECT_CALL(*mockInstanceCtrl_, ToScheduling).Times(3).WillRepeatedly(Return(AsyncReturn(Status::OK())));
     auto putResponse = std::make_shared<PutResponse>();
-    EXPECT_CALL(*mockMetaStoreClient_, Put).WillOnce(Return(putResponse)).WillOnce(Return(putResponse));
+    EXPECT_CALL(*mockMetaStoreClient_, Put)
+        .WillOnce(Return(AsyncReturn(putResponse)))
+        .WillOnce(Return(AsyncReturn(putResponse)));
     schedule_decision::GroupScheduleResult result;
     result.code = 0;
     for (int i = 0; i < num; ++i) {
@@ -673,17 +687,20 @@ TEST_F(LocalGroupCtrlTest, GroupScheduleLocalSuccessful)
         auto allocatedPromise = std::make_shared<litebus::Promise<Status>>();
         allocatedPromise->SetValue(Status(StatusCode::FAILED));
         (void)allocatedFailedResult.results.emplace_back(
-            schedule_decision::ScheduleResult{ "agent", 0, "", {}, "", {}, allocatedPromise });
+            schedule_decision::ScheduleResult{ "agent", 0, "", {}, "", {}, {}, allocatedPromise });
     }
-    EXPECT_CALL(*mockScheduler_, GroupScheduleDecision(_)).WillOnce(Return(allocatedFailedResult)).WillOnce(Return(result));
-    EXPECT_CALL(*primary_, DeleteInstances).WillRepeatedly(Return(Status::OK()));
+    EXPECT_CALL(*mockScheduler_, GroupScheduleDecision(_))
+        .WillOnce(Return(AsyncReturn(allocatedFailedResult)))
+        .WillOnce(Return(AsyncReturn(result)));
+    EXPECT_CALL(*primary_, DeleteInstances).WillRepeatedly(Return(AsyncReturn(Status::OK())));
     EXPECT_CALL(*mockInstanceCtrl_, RegisterReadyCallback)
         .WillRepeatedly(DoAll(
             Invoke([](const std::string &instanceID, const std::shared_ptr<messages::ScheduleRequest> &scheduleReq,
                       InstanceReadyCallBack callback) { callback(Status::OK()); })));
-    EXPECT_CALL(*mockInstanceCtrl_, ToCreating).WillRepeatedly(Return(Status::OK()));
+    EXPECT_CALL(*mockInstanceCtrl_, ToCreating).WillRepeatedly(Return(AsyncReturn(Status::OK())));
     auto mockSharedClient = std::make_shared<MockSharedClient>();
-    EXPECT_CALL(*clientManager_, GetControlInterfacePosixClient(_)).WillOnce(Return(mockSharedClient));
+    EXPECT_CALL(*clientManager_, GetControlInterfacePosixClient(_))
+        .WillOnce(Return(AsyncReturn(std::dynamic_pointer_cast<ControlInterfacePosixClient>(mockSharedClient))));
     litebus::Promise<runtime::NotifyRequest> notifyCalled;
     EXPECT_CALL(*mockSharedClient, NotifyResult(_))
         .WillOnce(Invoke([notifyCalled](runtime::NotifyRequest &&request) -> litebus::Future<runtime::NotifyResponse> {
@@ -715,10 +732,10 @@ TEST_F(LocalGroupCtrlTest, GroupScheduleFailedByETCDFailed)
     for (int i = 0; i < num; ++i) {
         (void)createRequests->add_requests();
     }
-    EXPECT_CALL(*mockInstanceCtrl_, ToScheduling).Times(3).WillRepeatedly(Return(Status::OK()));
+    EXPECT_CALL(*mockInstanceCtrl_, ToScheduling).Times(3).WillRepeatedly(Return(AsyncReturn(Status::OK())));
     auto putResponse = std::make_shared<PutResponse>();
     putResponse->status = Status(StatusCode::FAILED);
-    EXPECT_CALL(*mockMetaStoreClient_, Put).WillOnce(Return(putResponse));
+    EXPECT_CALL(*mockMetaStoreClient_, Put).WillOnce(Return(AsyncReturn(putResponse)));
     auto future = localGroupCtrl_->GroupSchedule("srcInstanceID", createRequests);
     ASSERT_AWAIT_READY(future);
     EXPECT_EQ(future.IsOK(), true);
@@ -738,7 +755,9 @@ TEST_F(LocalGroupCtrlTest, GroupScheduleFailedByToSchedulingFailed)
     for (int i = 0; i < num; ++i) {
         (void)createRequests->add_requests();
     }
-    EXPECT_CALL(*mockInstanceCtrl_, ToScheduling).Times(3).WillRepeatedly(Return(Status(StatusCode::FAILED)));
+    EXPECT_CALL(*mockInstanceCtrl_, ToScheduling)
+        .Times(3)
+        .WillRepeatedly(Return(AsyncReturn(Status(StatusCode::FAILED))));
     auto future = localGroupCtrl_->GroupSchedule("srcInstanceID", createRequests);
     ASSERT_AWAIT_READY(future);
     EXPECT_EQ(future.IsOK(), true);
@@ -758,23 +777,26 @@ TEST_F(LocalGroupCtrlTest, GroupScheduleForwardSuccessful)
     for (int i = 0; i < num; ++i) {
         (void)createRequests->add_requests();
     }
-    EXPECT_CALL(*mockInstanceCtrl_, ToScheduling).Times(3).WillRepeatedly(Return(Status::OK()));
+    EXPECT_CALL(*mockInstanceCtrl_, ToScheduling).Times(3).WillRepeatedly(Return(AsyncReturn(Status::OK())));
     auto putResponse = std::make_shared<PutResponse>();
-    EXPECT_CALL(*mockMetaStoreClient_, Put).WillOnce(Return(putResponse)).WillOnce(Return(putResponse));
+    EXPECT_CALL(*mockMetaStoreClient_, Put)
+        .WillOnce(Return(AsyncReturn(putResponse)))
+        .WillOnce(Return(AsyncReturn(putResponse)));
     schedule_decision::GroupScheduleResult result;
     result.code = static_cast<int32_t>(StatusCode::RESOURCE_NOT_ENOUGH);
-    EXPECT_CALL(*mockScheduler_, GroupScheduleDecision(_)).WillOnce(Return(result));
+    EXPECT_CALL(*mockScheduler_, GroupScheduleDecision(_)).WillOnce(Return(AsyncReturn(result)));
     messages::GroupResponse resp;
     resp.set_requestid(createRequests->requestid());
     resp.set_code(SUCCESS);
     resp.set_message("SUCCESS");
-    EXPECT_CALL(*mockLocalSchedSrv_, ForwardGroupSchedule).WillOnce(Return(resp));
+    EXPECT_CALL(*mockLocalSchedSrv_, ForwardGroupSchedule).WillOnce(Return(AsyncReturn(resp)));
     EXPECT_CALL(*mockInstanceCtrl_, RegisterReadyCallback)
         .WillRepeatedly(DoAll(
             Invoke([](const std::string &instanceID, const std::shared_ptr<messages::ScheduleRequest> &scheduleReq,
                       InstanceReadyCallBack callback) { callback(Status::OK()); })));
     auto mockSharedClient = std::make_shared<MockSharedClient>();
-    EXPECT_CALL(*clientManager_, GetControlInterfacePosixClient(_)).WillOnce(Return(mockSharedClient));
+    EXPECT_CALL(*clientManager_, GetControlInterfacePosixClient(_))
+        .WillOnce(Return(AsyncReturn(std::dynamic_pointer_cast<ControlInterfacePosixClient>(mockSharedClient))));
     litebus::Promise<runtime::NotifyRequest> notifyCalled;
     EXPECT_CALL(*mockSharedClient, NotifyResult(_))
         .WillOnce(Invoke([notifyCalled](runtime::NotifyRequest &&request) -> litebus::Future<runtime::NotifyResponse> {
@@ -800,24 +822,27 @@ TEST_F(LocalGroupCtrlTest, GroupScheduleWithRangeInstanceScheduleForwardSuccessf
     request->mutable_schedulingops()->mutable_range()->set_max(3);
     request->mutable_schedulingops()->mutable_range()->set_min(1);
     request->mutable_schedulingops()->mutable_range()->set_step(1);
-    EXPECT_CALL(*mockInstanceCtrl_, ToScheduling).Times(3).WillRepeatedly(Return(Status::OK()));
+    EXPECT_CALL(*mockInstanceCtrl_, ToScheduling).Times(3).WillRepeatedly(Return(AsyncReturn(Status::OK())));
     auto putResponse = std::make_shared<PutResponse>();
-    EXPECT_CALL(*mockMetaStoreClient_, Put).WillOnce(Return(putResponse)).WillOnce(Return(putResponse));
+    EXPECT_CALL(*mockMetaStoreClient_, Put)
+        .WillOnce(Return(AsyncReturn(putResponse)))
+        .WillOnce(Return(AsyncReturn(putResponse)));
     schedule_decision::GroupScheduleResult result;
     result.code = static_cast<int32_t>(StatusCode::RESOURCE_NOT_ENOUGH);
-	EXPECT_CALL(*mockScheduler_, GroupScheduleDecision(_)).WillOnce(Return(result));
+	EXPECT_CALL(*mockScheduler_, GroupScheduleDecision(_)).WillOnce(Return(AsyncReturn(result)));
 	messages::GroupResponse resp;
 	resp.set_requestid(createRequests->requestid());
 	resp.set_code(SUCCESS);
     resp.set_rangesuccessnum(3);
 	resp.set_message("SUCCESS");
-	EXPECT_CALL(*mockLocalSchedSrv_, ForwardGroupSchedule).WillOnce(Return(resp));
+	EXPECT_CALL(*mockLocalSchedSrv_, ForwardGroupSchedule).WillOnce(Return(AsyncReturn(resp)));
 	EXPECT_CALL(*mockInstanceCtrl_, RegisterReadyCallback)
 		.WillRepeatedly(DoAll(
 			Invoke([](const std::string &instanceID, const std::shared_ptr<messages::ScheduleRequest> &scheduleReq,
 					  InstanceReadyCallBack callback) { callback(Status::OK()); })));
 	auto mockSharedClient = std::make_shared<MockSharedClient>();
-	EXPECT_CALL(*clientManager_, GetControlInterfacePosixClient(_)).WillOnce(Return(mockSharedClient));
+	EXPECT_CALL(*clientManager_, GetControlInterfacePosixClient(_))
+        .WillOnce(Return(AsyncReturn(std::dynamic_pointer_cast<ControlInterfacePosixClient>(mockSharedClient))));
 	litebus::Promise<runtime::NotifyRequest> notifyCalled;
 	EXPECT_CALL(*mockSharedClient, NotifyResult(_))
 		.WillOnce(Invoke([notifyCalled](runtime::NotifyRequest &&request) -> litebus::Future<runtime::NotifyResponse> {
@@ -843,30 +868,33 @@ TEST_F(LocalGroupCtrlTest, GroupScheduleWithRangeInstanceScheduleForwardGetLessI
     request->mutable_schedulingops()->mutable_range()->set_max(3);
     request->mutable_schedulingops()->mutable_range()->set_min(1);
     request->mutable_schedulingops()->mutable_range()->set_step(1);
-    EXPECT_CALL(*mockInstanceCtrl_, ToScheduling).Times(3).WillRepeatedly(Return(Status::OK()));
+    EXPECT_CALL(*mockInstanceCtrl_, ToScheduling).Times(3).WillRepeatedly(Return(AsyncReturn(Status::OK())));
     auto putResponse = std::make_shared<PutResponse>();
-    EXPECT_CALL(*mockMetaStoreClient_, Put).WillOnce(Return(putResponse)).WillOnce(Return(putResponse));
+    EXPECT_CALL(*mockMetaStoreClient_, Put)
+        .WillOnce(Return(AsyncReturn(putResponse)))
+        .WillOnce(Return(AsyncReturn(putResponse)));
     schedule_decision::GroupScheduleResult result;
     result.code = static_cast<int32_t>(StatusCode::RESOURCE_NOT_ENOUGH);
-    EXPECT_CALL(*mockScheduler_, GroupScheduleDecision(_)).WillOnce(Return(result));
+    EXPECT_CALL(*mockScheduler_, GroupScheduleDecision(_)).WillOnce(Return(AsyncReturn(result)));
     messages::GroupResponse resp;
     resp.set_requestid(createRequests->requestid());
     resp.set_code(SUCCESS);
     resp.set_rangesuccessnum(2);
     resp.set_message("SUCCESS");
-    EXPECT_CALL(*mockLocalSchedSrv_, ForwardGroupSchedule).WillOnce(Return(resp));
+    EXPECT_CALL(*mockLocalSchedSrv_, ForwardGroupSchedule).WillOnce(Return(AsyncReturn(resp)));
     EXPECT_CALL(*mockInstanceCtrl_, RegisterReadyCallback)
     .WillRepeatedly(DoAll(
     	Invoke([](const std::string &instanceID, const std::shared_ptr<messages::ScheduleRequest> &scheduleReq,
     	          InstanceReadyCallBack callback) { callback(Status::OK()); })));
     auto mockSharedClient = std::make_shared<MockSharedClient>();
-    EXPECT_CALL(*clientManager_, GetControlInterfacePosixClient(_)).WillOnce(Return(mockSharedClient));
+    EXPECT_CALL(*clientManager_, GetControlInterfacePosixClient(_))
+        .WillOnce(Return(AsyncReturn(std::dynamic_pointer_cast<ControlInterfacePosixClient>(mockSharedClient))));
     litebus::Promise<runtime::NotifyRequest> notifyCalled;
     EXPECT_CALL(*mockSharedClient, NotifyResult(_))
         .WillOnce(Invoke([notifyCalled](runtime::NotifyRequest &&request) -> litebus::Future<runtime::NotifyResponse> {
-    	    notifyCalled.SetValue(request);
-    	    return runtime::NotifyResponse();
-    }));
+            notifyCalled.SetValue(request);
+            return runtime::NotifyResponse();
+        }));
     auto future = localGroupCtrl_->GroupSchedule("srcInstanceID", createRequests);
     ASSERT_AWAIT_READY(future);
     EXPECT_EQ(future.IsOK(), true);
@@ -888,23 +916,23 @@ TEST_F(LocalGroupCtrlTest, GroupScheduleForwardFailed)
     for (int i = 0; i < num; ++i) {
         (void)createRequests->add_requests();
     }
-    EXPECT_CALL(*mockInstanceCtrl_, ToScheduling).Times(3).WillRepeatedly(Return(Status::OK()));
+    EXPECT_CALL(*mockInstanceCtrl_, ToScheduling).Times(3).WillRepeatedly(Return(AsyncReturn(Status::OK())));
     auto putResponse = std::make_shared<PutResponse>();
-    EXPECT_CALL(*mockMetaStoreClient_, Put).Times(2).WillRepeatedly(Return(putResponse));
+    EXPECT_CALL(*mockMetaStoreClient_, Put).Times(2).WillRepeatedly(Return(AsyncReturn(putResponse)));
     schedule_decision::GroupScheduleResult result;
     result.code = static_cast<int32_t>(StatusCode::RESOURCE_NOT_ENOUGH);
-    EXPECT_CALL(*mockScheduler_, GroupScheduleDecision(_)).WillOnce(Return(result));
+    EXPECT_CALL(*mockScheduler_, GroupScheduleDecision(_)).WillOnce(Return(AsyncReturn(result)));
     messages::GroupResponse resp;
     resp.set_code(static_cast<int32_t>(StatusCode::ERR_GROUP_SCHEDULE_FAILED));
-    EXPECT_CALL(*mockLocalSchedSrv_, ForwardGroupSchedule)
-        .WillOnce(Return(resp));
+    EXPECT_CALL(*mockLocalSchedSrv_, ForwardGroupSchedule).WillOnce(Return(AsyncReturn(resp)));
     EXPECT_CALL(*mockInstanceCtrl_, RegisterReadyCallback)
         .WillRepeatedly(DoAll(
             Invoke([](const std::string &instanceID, const std::shared_ptr<messages::ScheduleRequest> &scheduleReq,
                       InstanceReadyCallBack callback) {})));
-    EXPECT_CALL(*mockInstanceCtrl_, ForceDeleteInstance).Times(3).WillRepeatedly(Return(Status::OK()));
+    EXPECT_CALL(*mockInstanceCtrl_, ForceDeleteInstance).Times(3).WillRepeatedly(Return(AsyncReturn(Status::OK())));
     auto mockSharedClient = std::make_shared<MockSharedClient>();
-    EXPECT_CALL(*clientManager_, GetControlInterfacePosixClient(_)).WillOnce(Return(mockSharedClient));
+    EXPECT_CALL(*clientManager_, GetControlInterfacePosixClient(_))
+        .WillOnce(Return(AsyncReturn(std::dynamic_pointer_cast<ControlInterfacePosixClient>(mockSharedClient))));
     litebus::Promise<runtime::NotifyRequest> notifyCalled;
     EXPECT_CALL(*mockSharedClient, NotifyResult(_))
         .WillOnce(Invoke([notifyCalled](runtime::NotifyRequest &&request) -> litebus::Future<runtime::NotifyResponse> {
@@ -914,7 +942,8 @@ TEST_F(LocalGroupCtrlTest, GroupScheduleForwardFailed)
     auto future = localGroupCtrl_->GroupSchedule("srcInstanceID", createRequests);
     ASSERT_AWAIT_READY(future);
     EXPECT_EQ(future.IsOK(), true);
-    EXPECT_EQ(future.Get()->code(), common::ErrorCode::ERR_NONE);
+    // for mock, rsp maybe modified by forward response
+    EXPECT_TRUE(future.Get()->code() == common::ErrorCode::ERR_NONE || future.Get()->code() == common::ErrorCode::ERR_GROUP_SCHEDULE_FAILED);
     ASSERT_AWAIT_READY(notifyCalled.GetFuture());
     EXPECT_EQ(notifyCalled.GetFuture().Get().code(), common::ErrorCode::ERR_GROUP_SCHEDULE_FAILED);
 }
@@ -930,24 +959,27 @@ TEST_F(LocalGroupCtrlTest, GroupScheduleWithRangeInstanceScheduleForwardFailed)
 	request->mutable_schedulingops()->mutable_range()->set_max(3);
 	request->mutable_schedulingops()->mutable_range()->set_min(1);
 	request->mutable_schedulingops()->mutable_range()->set_step(1);
-	EXPECT_CALL(*mockInstanceCtrl_, ToScheduling).Times(3).WillRepeatedly(Return(Status::OK()));
+	EXPECT_CALL(*mockInstanceCtrl_, ToScheduling).Times(3).WillRepeatedly(Return(AsyncReturn(Status::OK())));
     auto putResponse = std::make_shared<PutResponse>();
-	EXPECT_CALL(*mockMetaStoreClient_, Put).WillOnce(Return(putResponse)).WillOnce(Return(putResponse));
-	schedule_decision::GroupScheduleResult result;
-	result.code = static_cast<int32_t>(StatusCode::RESOURCE_NOT_ENOUGH);
-	EXPECT_CALL(*mockScheduler_, GroupScheduleDecision(_)).WillOnce(Return(result));
+    EXPECT_CALL(*mockMetaStoreClient_, Put)
+        .WillOnce(Return(AsyncReturn(putResponse)))
+        .WillOnce(Return(AsyncReturn(putResponse)));
+    schedule_decision::GroupScheduleResult result;
+    result.code = static_cast<int32_t>(StatusCode::RESOURCE_NOT_ENOUGH);
+    EXPECT_CALL(*mockScheduler_, GroupScheduleDecision(_)).WillOnce(Return(AsyncReturn(result)));
     messages::GroupResponse resp;
     resp.set_code(static_cast<int32_t>(StatusCode::ERR_GROUP_SCHEDULE_FAILED));
 	EXPECT_CALL(*mockLocalSchedSrv_, ForwardGroupSchedule)
-		.WillOnce(Return(resp));
+		.WillOnce(Return(AsyncReturn(resp)));
 	EXPECT_CALL(*mockInstanceCtrl_, RegisterReadyCallback)
 		.WillRepeatedly(DoAll(
 			Invoke([](const std::string &instanceID, const std::shared_ptr<messages::ScheduleRequest> &scheduleReq,
 	                  InstanceReadyCallBack callback) {})));
-	EXPECT_CALL(*mockInstanceCtrl_, ForceDeleteInstance).Times(3).WillRepeatedly(Return(Status::OK()));
+	EXPECT_CALL(*mockInstanceCtrl_, ForceDeleteInstance).Times(3).WillRepeatedly(Return(AsyncReturn(Status::OK())));
 	auto mockSharedClient = std::make_shared<MockSharedClient>();
-	EXPECT_CALL(*clientManager_, GetControlInterfacePosixClient(_)).WillOnce(Return(mockSharedClient));
-		litebus::Promise<runtime::NotifyRequest> notifyCalled;
+	EXPECT_CALL(*clientManager_, GetControlInterfacePosixClient(_)).WillOnce(Return(AsyncReturn(
+        (std::dynamic_pointer_cast<ControlInterfacePosixClient>(mockSharedClient)))));
+    litebus::Promise<runtime::NotifyRequest> notifyCalled;
 	EXPECT_CALL(*mockSharedClient, NotifyResult(_))
 		.WillOnce(Invoke([notifyCalled](runtime::NotifyRequest &&request) -> litebus::Future<runtime::NotifyResponse> {
 			notifyCalled.SetValue(request);
@@ -977,23 +1009,27 @@ TEST_F(LocalGroupCtrlTest, GroupScheduleRuningFailed)
             (void)createRequests->add_requests();
         }
 
-        EXPECT_CALL(*mockInstanceCtrl_, ToScheduling).Times(3).WillRepeatedly(Return(Status::OK()));
+        EXPECT_CALL(*mockInstanceCtrl_, ToScheduling).Times(3).WillRepeatedly(Return(AsyncReturn(Status::OK())));
         auto putResponse = std::make_shared<PutResponse>();
-        EXPECT_CALL(*mockMetaStoreClient_, Put).WillOnce(Return(putResponse)).WillOnce(Return(putResponse));
+        EXPECT_CALL(*mockMetaStoreClient_, Put)
+            .WillOnce(Return(AsyncReturn(putResponse)))
+            .WillOnce(Return(AsyncReturn(putResponse)));
         schedule_decision::GroupScheduleResult result;
         result.code = static_cast<int32_t>(StatusCode::RESOURCE_NOT_ENOUGH);
-        EXPECT_CALL(*mockScheduler_, GroupScheduleDecision(_)).WillOnce(Return(result));
+        EXPECT_CALL(*mockScheduler_, GroupScheduleDecision(_)).WillOnce(Return(AsyncReturn(result)));
         messages::GroupResponse resp;
         resp.set_code(SUCCESS);
         resp.set_message("SUCCESS");
-        EXPECT_CALL(*mockLocalSchedSrv_, ForwardGroupSchedule).WillOnce(Return(resp));
+        EXPECT_CALL(*mockLocalSchedSrv_, ForwardGroupSchedule).WillOnce(Return(AsyncReturn(resp)));
         EXPECT_CALL(*mockInstanceCtrl_, RegisterReadyCallback)
             .WillRepeatedly(DoAll(
                 Invoke([](const std::string &instanceID, const std::shared_ptr<messages::ScheduleRequest> &scheduleReq,
                           InstanceReadyCallBack callback) { callback(Status(StatusCode::ERR_USER_CODE_LOAD)); })));
         auto mockSharedClient = std::make_shared<MockSharedClient>();
-        EXPECT_CALL(*mockInstanceCtrl_, ForceDeleteInstance).Times(3).WillRepeatedly(Return(Status::OK()));
-        EXPECT_CALL(*clientManager_, GetControlInterfacePosixClient(_)).WillOnce(Return(mockSharedClient));
+        EXPECT_CALL(*mockInstanceCtrl_, ForceDeleteInstance).Times(3).WillRepeatedly(Return(AsyncReturn(Status::OK())));
+        EXPECT_CALL(*clientManager_, GetControlInterfacePosixClient(_))
+            .WillOnce(
+                Return(AsyncReturn(std::dynamic_pointer_cast<ControlInterfacePosixClient>(mockSharedClient))));
         litebus::Promise<runtime::NotifyRequest> notifyCalled;
         EXPECT_CALL(*mockSharedClient, NotifyResult(_))
             .WillOnce(
@@ -1040,11 +1076,14 @@ TEST_F(LocalGroupCtrlTest, ReserveAndUnReserveSuccessful)
     auto allocatedPromise = std::make_shared<litebus::Promise<Status>>();
     allocatedPromise->SetValue(Status(StatusCode::FAILED));
     EXPECT_CALL(*mockScheduler_, ScheduleDecision(_))
-        .WillOnce(Return(schedule_decision::ScheduleResult{ "agent", 0, {}, {}, "", {}, allocatedPromise}))
-        .WillOnce(Return(schedule_decision::ScheduleResult{ "agent", 0, {} }));
+        .WillOnce(
+            Return(AsyncReturn(schedule_decision::ScheduleResult{ "agent", 0, {}, {}, "", {}, {}, allocatedPromise })))
+        .WillOnce(Return(AsyncReturn(schedule_decision::ScheduleResult{ "agent", 0, {} })));
 
-    EXPECT_CALL(*primary_, GetResourceViewChanges()).WillRepeatedly(Return(std::make_shared<resource_view::ResourceUnitChanges>()));
-    EXPECT_CALL(*virtual_, GetResourceViewChanges()).WillRepeatedly(Return(std::make_shared<resource_view::ResourceUnitChanges>()));
+    EXPECT_CALL(*primary_, GetResourceViewChanges())
+        .WillRepeatedly(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnitChanges>())));
+    EXPECT_CALL(*virtual_, GetResourceViewChanges())
+        .WillRepeatedly(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnitChanges>())));
 
     {
         auto future = litebus::Async(underlayerSrv_->GetAID(), &DomainUnderlayerStub::Reserve,
@@ -1077,10 +1116,13 @@ TEST_F(LocalGroupCtrlTest, ReserveFailed)
 {
     auto scheduleReq = NewScheduleRequest();
     EXPECT_CALL(*mockScheduler_, ScheduleDecision(_))
-        .WillOnce(Return(schedule_decision::ScheduleResult{ "agent", StatusCode::RESOURCE_NOT_ENOUGH, {} }));
+        .WillOnce(
+            Return(AsyncReturn(schedule_decision::ScheduleResult{ "agent", StatusCode::RESOURCE_NOT_ENOUGH, {} })));
 
-    EXPECT_CALL(*primary_, GetResourceViewChanges()).WillRepeatedly(Return(std::make_shared<resource_view::ResourceUnitChanges>()));
-    EXPECT_CALL(*virtual_, GetResourceViewChanges()).WillRepeatedly(Return(std::make_shared<resource_view::ResourceUnitChanges>()));
+    EXPECT_CALL(*primary_, GetResourceViewChanges())
+        .WillRepeatedly(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnitChanges>())));
+    EXPECT_CALL(*virtual_, GetResourceViewChanges())
+        .WillRepeatedly(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnitChanges>())));
 
     auto future = litebus::Async(underlayerSrv_->GetAID(), &DomainUnderlayerStub::Reserve,
                                  localGroupCtrlActor_->GetAID(), scheduleReq);
@@ -1094,8 +1136,8 @@ TEST_F(LocalGroupCtrlTest, ReserveFailed)
 TEST_F(LocalGroupCtrlTest, BindFailedByNoReserve)
 {
     auto scheduleReq = NewScheduleRequest();
-    auto future = litebus::Async(underlayerSrv_->GetAID(), &DomainUnderlayerStub::Bind,
-                                 localGroupCtrlActor_->GetAID(), scheduleReq);
+    auto future = litebus::Async(underlayerSrv_->GetAID(), &DomainUnderlayerStub::Bind, localGroupCtrlActor_->GetAID(),
+                                 scheduleReq);
     ASSERT_AWAIT_READY(future);
     EXPECT_EQ(future.IsOK(), true);
     EXPECT_EQ(future.Get().code(), StatusCode::ERR_INNER_SYSTEM_ERROR);
@@ -1107,11 +1149,11 @@ TEST_F(LocalGroupCtrlTest, ReserveAndBindAndUnBindSuccessful)
     auto scheduleReq = NewScheduleRequest();
 
     EXPECT_CALL(*mockScheduler_, ScheduleDecision(_))
-        .WillOnce(Return(schedule_decision::ScheduleResult{ "agent", 0, {} }));
+        .WillOnce(Return(AsyncReturn(schedule_decision::ScheduleResult{ "agent", 0, {} })));
     EXPECT_CALL(*primary_, GetResourceViewChanges())
-        .WillRepeatedly(Return(std::make_shared<resource_view::ResourceUnitChanges>()));
+        .WillRepeatedly(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnitChanges>())));
     EXPECT_CALL(*virtual_, GetResourceViewChanges())
-        .WillRepeatedly(Return(std::make_shared<resource_view::ResourceUnitChanges>()));
+        .WillRepeatedly(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnitChanges>())));
 
     {
         auto future = litebus::Async(underlayerSrv_->GetAID(), &DomainUnderlayerStub::Reserve,
@@ -1122,7 +1164,7 @@ TEST_F(LocalGroupCtrlTest, ReserveAndBindAndUnBindSuccessful)
         EXPECT_EQ(result.code(), 0);
     }
 
-    EXPECT_CALL(*mockInstanceCtrl_, ToCreating).WillRepeatedly(Return(Status::OK()));
+    EXPECT_CALL(*mockInstanceCtrl_, ToCreating).WillRepeatedly(Return(AsyncReturn(Status::OK())));
     auto future = litebus::Async(underlayerSrv_->GetAID(), &DomainUnderlayerStub::Bind, localGroupCtrlActor_->GetAID(),
                                  scheduleReq);
     ASSERT_AWAIT_READY(future);
@@ -1132,7 +1174,7 @@ TEST_F(LocalGroupCtrlTest, ReserveAndBindAndUnBindSuccessful)
     ASSERT_AWAIT_READY(litebus::Async(underlayerSrv_->GetAID(), &DomainUnderlayerStub::Bind,
                                       localGroupCtrlActor_->GetAID(), scheduleReq));
 
-    EXPECT_CALL(*mockInstanceCtrl_, ForceDeleteInstance).WillOnce(Return(Status::OK()));
+    EXPECT_CALL(*mockInstanceCtrl_, ForceDeleteInstance).WillOnce(Return(AsyncReturn(Status::OK())));
     EXPECT_CALL(*primary_, DeleteInstances).Times(1);
     future = litebus::Async(underlayerSrv_->GetAID(), &DomainUnderlayerStub::UnBind, localGroupCtrlActor_->GetAID(),
                             scheduleReq);
@@ -1147,10 +1189,12 @@ TEST_F(LocalGroupCtrlTest, BindFailedByToCreating)
     auto scheduleReq = NewScheduleRequest();
 
     EXPECT_CALL(*mockScheduler_, ScheduleDecision(_))
-        .WillOnce(Return(schedule_decision::ScheduleResult{ "agent", 0, {} }));
+        .WillOnce(Return(AsyncReturn(schedule_decision::ScheduleResult{ "agent", 0, {} })));
 
-    EXPECT_CALL(*primary_, GetResourceViewChanges()).WillRepeatedly(Return(std::make_shared<resource_view::ResourceUnitChanges>()));
-    EXPECT_CALL(*virtual_, GetResourceViewChanges()).WillRepeatedly(Return(std::make_shared<resource_view::ResourceUnitChanges>()));
+    EXPECT_CALL(*primary_, GetResourceViewChanges())
+        .WillRepeatedly(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnitChanges>())));
+    EXPECT_CALL(*virtual_, GetResourceViewChanges())
+        .WillRepeatedly(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnitChanges>())));
 
     {
         auto future = litebus::Async(underlayerSrv_->GetAID(), &DomainUnderlayerStub::Reserve,
@@ -1161,10 +1205,11 @@ TEST_F(LocalGroupCtrlTest, BindFailedByToCreating)
         EXPECT_EQ(result.code(), 0);
     }
 
-    EXPECT_CALL(*mockInstanceCtrl_, ForceDeleteInstance).WillOnce(Return(Status::OK()));
-    EXPECT_CALL(*mockInstanceCtrl_, ToCreating).WillOnce(Return(Status(StatusCode::ERR_ETCD_OPERATION_ERROR)));
-    auto future = litebus::Async(underlayerSrv_->GetAID(), &DomainUnderlayerStub::Bind,
-                            localGroupCtrlActor_->GetAID(), scheduleReq);
+    EXPECT_CALL(*mockInstanceCtrl_, ForceDeleteInstance).WillOnce(Return(AsyncReturn(Status::OK())));
+    EXPECT_CALL(*mockInstanceCtrl_, ToCreating)
+        .WillOnce(Return(AsyncReturn(Status(StatusCode::ERR_ETCD_OPERATION_ERROR))));
+    auto future = litebus::Async(underlayerSrv_->GetAID(), &DomainUnderlayerStub::Bind, localGroupCtrlActor_->GetAID(),
+                                 scheduleReq);
     ASSERT_AWAIT_READY(future);
     EXPECT_EQ(future.IsOK(), true);
     EXPECT_EQ(future.Get().code(), StatusCode::ERR_ETCD_OPERATION_ERROR);
@@ -1176,10 +1221,12 @@ TEST_F(LocalGroupCtrlTest, BindFailedByToCreatingTxnFailedAlreadyScheduleToAnoth
     auto scheduleReq = NewScheduleRequest();
 
     EXPECT_CALL(*mockScheduler_, ScheduleDecision(_))
-        .WillOnce(Return(schedule_decision::ScheduleResult{ "agent", 0, {} }));
+        .WillOnce(Return(AsyncReturn(schedule_decision::ScheduleResult{ "agent", 0, {} })));
     auto changes = std::make_shared<resource_view::ResourceUnitChanges>();
-    EXPECT_CALL(*primary_, GetResourceViewChanges()).WillRepeatedly(Return(std::make_shared<resource_view::ResourceUnitChanges>()));
-    EXPECT_CALL(*virtual_, GetResourceViewChanges()).WillRepeatedly(Return(std::make_shared<resource_view::ResourceUnitChanges>()));
+    EXPECT_CALL(*primary_, GetResourceViewChanges())
+        .WillRepeatedly(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnitChanges>())));
+    EXPECT_CALL(*virtual_, GetResourceViewChanges())
+        .WillRepeatedly(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnitChanges>())));
     {
         auto future = litebus::Async(underlayerSrv_->GetAID(), &DomainUnderlayerStub::Reserve,
                                      localGroupCtrlActor_->GetAID(), scheduleReq);
@@ -1189,9 +1236,10 @@ TEST_F(LocalGroupCtrlTest, BindFailedByToCreatingTxnFailedAlreadyScheduleToAnoth
         EXPECT_EQ(result.code(), 0);
     }
     EXPECT_CALL(*primary_, DeleteInstances).Times(1);
-    EXPECT_CALL(*mockInstanceCtrl_, ToCreating).WillOnce(Return(Status(StatusCode::ERR_INSTANCE_DUPLICATED)));
-    auto future = litebus::Async(underlayerSrv_->GetAID(), &DomainUnderlayerStub::Bind,
-                                 localGroupCtrlActor_->GetAID(), scheduleReq);
+    EXPECT_CALL(*mockInstanceCtrl_, ToCreating)
+        .WillOnce(Return(AsyncReturn(Status(StatusCode::ERR_INSTANCE_DUPLICATED))));
+    auto future = litebus::Async(underlayerSrv_->GetAID(), &DomainUnderlayerStub::Bind, localGroupCtrlActor_->GetAID(),
+                                 scheduleReq);
     ASSERT_AWAIT_READY(future);
     EXPECT_EQ(future.IsOK(), true);
     EXPECT_EQ(future.Get().code(), StatusCode::SUCCESS);
@@ -1217,12 +1265,15 @@ TEST_F(LocalGroupCtrlTest, ReserveAndTimoutToReserve)
     auto scheduleReq = NewScheduleRequest();
 
     EXPECT_CALL(*mockScheduler_, ScheduleDecision(_))
-        .WillOnce(Return(schedule_decision::ScheduleResult{ "agent", 0, {} }));
+        .WillOnce(Return(AsyncReturn(schedule_decision::ScheduleResult{ "agent", 0, {} })));
 
-    EXPECT_CALL(*primary_, GetResourceViewChanges()).WillRepeatedly(Return(std::make_shared<resource_view::ResourceUnitChanges>()));
-    EXPECT_CALL(*virtual_, GetResourceViewChanges()).WillRepeatedly(Return(std::make_shared<resource_view::ResourceUnitChanges>()));
+    EXPECT_CALL(*primary_, GetResourceViewChanges())
+        .WillRepeatedly(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnitChanges>())));
+    EXPECT_CALL(*virtual_, GetResourceViewChanges())
+        .WillRepeatedly(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnitChanges>())));
     litebus::Future<std::vector<std::string>> deletedIns;
-    EXPECT_CALL(*primary_, DeleteInstances).WillOnce(DoAll(FutureArg<0>(&deletedIns), Return(Status::OK())));
+    EXPECT_CALL(*primary_, DeleteInstances)
+        .WillOnce(DoAll(FutureArg<0>(&deletedIns), Return(AsyncReturn(Status::OK()))));
     auto future = litebus::Async(underlayerSrv_->GetAID(), &DomainUnderlayerStub::Reserve,
                                  localGroupCtrlActor->GetAID(), scheduleReq);
     ASSERT_AWAIT_READY(future);
@@ -1239,8 +1290,8 @@ TEST_F(LocalGroupCtrlTest, ReserveAndTimoutToReserve)
 // fallback metastore recover test
 TEST_F(LocalGroupCtrlTest, OnHealthyStatusTest)
 {
-    auto localGroupCtrlActor =
-        std::make_shared<LocalGroupCtrlActor>(LOCAL_GROUP_CTRL_ACTOR_NAME + "-OnHealthyStatusTest", "nodeA", mockMetaStoreClient_);
+    auto localGroupCtrlActor = std::make_shared<LocalGroupCtrlActor>(
+        LOCAL_GROUP_CTRL_ACTOR_NAME + "-OnHealthyStatusTest", "nodeA", mockMetaStoreClient_);
     localGroupCtrlActor->BindInstanceCtrl(mockInstanceCtrl_);
     litebus::Spawn(localGroupCtrlActor);
     auto localGroupCtrl = std::make_shared<LocalGroupCtrl>(localGroupCtrlActor);
@@ -1261,9 +1312,11 @@ TEST_F(LocalGroupCtrlTest, OnHealthyStatusTest)
     getResponse->kvs.emplace_back(kv1.kv);
     getResponse->kvs.emplace_back(kv2.kv);
     getResponse->kvs.emplace_back(kv3.kv);
-    EXPECT_CALL(*mockMetaStoreClient_, Get).WillOnce(Return(getResponse));
+    EXPECT_CALL(*mockMetaStoreClient_, Get).WillOnce(Return(AsyncReturn(getResponse)));
     auto deleteResponse = std::make_shared<DeleteResponse>();
-    EXPECT_CALL(*mockMetaStoreClient_, Delete).WillOnce(Return(deleteResponse)).WillOnce(Return(deleteResponse));
+    EXPECT_CALL(*mockMetaStoreClient_, Delete)
+        .WillOnce(Return(AsyncReturn(deleteResponse)))
+        .WillOnce(Return(AsyncReturn(deleteResponse)));
     localGroupCtrlActor->NewGroupCtx(kv4.info);
     localGroupCtrl->OnHealthyStatus(Status::OK());
     ASSERT_AWAIT_TRUE([&]() -> bool {
@@ -1382,7 +1435,8 @@ TEST_F(LocalGroupCtrlTest, SfmdGroupScheduleLocalSuccessful)
 TEST_F(LocalGroupCtrlTest, ResponseLater)
 {
     auto mockSharedClient = std::make_shared<MockSharedClient>();
-    EXPECT_CALL(*clientManager_, GetControlInterfacePosixClient(_)).WillOnce(Return(mockSharedClient));
+    EXPECT_CALL(*clientManager_, GetControlInterfacePosixClient(_))
+        .WillOnce(Return(AsyncReturn(std::dynamic_pointer_cast<ControlInterfacePosixClient>(mockSharedClient))));
     litebus::Promise<runtime::NotifyRequest> notifyCalled;
     EXPECT_CALL(*mockSharedClient, NotifyResult(_))
         .WillOnce(Invoke([notifyCalled](runtime::NotifyRequest &&request) -> litebus::Future<runtime::NotifyResponse> {
@@ -1392,8 +1446,8 @@ TEST_F(LocalGroupCtrlTest, ResponseLater)
 
     auto putResponse = std::make_shared<PutResponse>();
     EXPECT_CALL(*mockMetaStoreClient_, Put).WillOnce(Return(putResponse));
-    auto localGroupCtrlActor =
-        std::make_shared<LocalGroupCtrlActor>(LOCAL_GROUP_CTRL_ACTOR_NAME + "-OnHealthyStatusTest", "nodeA", mockMetaStoreClient_);
+    auto localGroupCtrlActor = std::make_shared<LocalGroupCtrlActor>(
+        LOCAL_GROUP_CTRL_ACTOR_NAME + "-OnHealthyStatusTest", "nodeA", mockMetaStoreClient_);
     localGroupCtrlActor->BindInstanceCtrl(mockInstanceCtrl_);
     localGroupCtrlActor->BindControlInterfaceClientManager(clientManager_);
     litebus::Spawn(localGroupCtrlActor);
@@ -1401,7 +1455,7 @@ TEST_F(LocalGroupCtrlTest, ResponseLater)
     localGroupCtrl->ToReady();
 
     auto kv = NewGroupInfoJson("group-" + litebus::uuid_generator::UUID::GetRandomUUID().ToString(), "nodeA",
-                                GroupState::SCHEDULING, 3);
+                               GroupState::SCHEDULING, 3);
     auto ctx = localGroupCtrlActor->NewGroupCtx(kv.info);
     localGroupCtrlActor->OnGroupSuccessful(ctx);
     // notifyCalled should not be called

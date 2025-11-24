@@ -19,6 +19,7 @@
 #include <gtest/gtest.h>
 #include "mocks/mock_resource_view.h"
 #include "utils/port_helper.h"
+#include "utils/future_test_helper.h"
 
 namespace functionsystem::test {
 const std::string LITEBUS_URL("127.0.0.1:8080");  // NOLINT
@@ -68,17 +69,18 @@ TEST_F(ResourceViewMgrTest, GetResources)
 
     mgr_->primary_ = mockPrimary;
     mgr_->virtual_ = mockVirtual;
-    EXPECT_CALL(*mockPrimary, GetFullResourceView).WillOnce(Return(std::make_shared<ResourceUnit>()));
-    EXPECT_CALL(*mockVirtual, GetFullResourceView).WillOnce(Return(std::make_shared<ResourceUnit>()));
+    EXPECT_CALL(*mockPrimary, GetFullResourceView).WillOnce(Return(AsyncReturn(std::make_shared<ResourceUnit>())));
+    EXPECT_CALL(*mockVirtual, GetFullResourceView).WillOnce(Return(AsyncReturn(std::make_shared<ResourceUnit>())));
     auto future = mgr_->GetResources();
     auto resources = future.Get();
     EXPECT_EQ(resources.size(), (size_t)2);
     EXPECT_EQ(resources.find(ResourceType::PRIMARY) != resources.end(), true);
     EXPECT_EQ(resources.find(ResourceType::VIRTUAL) != resources.end(), true);
 
-
-    EXPECT_CALL(*mockPrimary, GetFullResourceView).WillOnce(Return(litebus::Status(StatusCode::FAILED)));
-    EXPECT_CALL(*mockVirtual, GetFullResourceView).WillOnce(Return(std::make_shared<ResourceUnit>()));
+    litebus::Future<std::shared_ptr<ResourceUnit>> failure;
+    failure.SetFailed(StatusCode::FAILED);
+    EXPECT_CALL(*mockPrimary, GetFullResourceView).WillOnce(Return(AsyncReturn(failure)));
+    EXPECT_CALL(*mockVirtual, GetFullResourceView).WillOnce(Return(AsyncReturn(std::make_shared<ResourceUnit>())));
     future = mgr_->GetResources();
     resources = future.Get();
     EXPECT_EQ(resources.size(), (size_t)0);
@@ -92,17 +94,18 @@ TEST_F(ResourceViewMgrTest, GetChanges)
 
     mgr_->primary_ = mockPrimary;
     mgr_->virtual_ = mockVirtual;
-    EXPECT_CALL(*mockPrimary, GetResourceViewChanges).WillOnce(Return(std::make_shared<ResourceUnitChanges>()));
-    EXPECT_CALL(*mockVirtual, GetResourceViewChanges).WillOnce(Return(std::make_shared<ResourceUnitChanges>()));
+    EXPECT_CALL(*mockPrimary, GetResourceViewChanges).WillOnce(Return(AsyncReturn(std::make_shared<ResourceUnitChanges>())));
+    EXPECT_CALL(*mockVirtual, GetResourceViewChanges).WillOnce(Return(AsyncReturn(std::make_shared<ResourceUnitChanges>())));
     auto future = mgr_->GetChanges();
     auto resources = future.Get();
     EXPECT_EQ(resources.size(), (size_t)2);
     EXPECT_EQ(resources.find(ResourceType::PRIMARY) != resources.end(), true);
     EXPECT_EQ(resources.find(ResourceType::VIRTUAL) != resources.end(), true);
 
-
-    EXPECT_CALL(*mockPrimary, GetResourceViewChanges).WillOnce(Return(litebus::Status(StatusCode::FAILED)));
-    EXPECT_CALL(*mockVirtual, GetResourceViewChanges).WillOnce(Return(std::make_shared<ResourceUnitChanges>()));
+    litebus::Future<std::shared_ptr<ResourceUnitChanges>> failure;
+    failure.SetFailed(StatusCode::FAILED);
+    EXPECT_CALL(*mockPrimary, GetResourceViewChanges).WillOnce(Return(AsyncReturn(failure)));
+    EXPECT_CALL(*mockVirtual, GetResourceViewChanges).WillOnce(Return(AsyncReturn(std::make_shared<ResourceUnitChanges>())));
     future = mgr_->GetChanges();
     resources = future.Get();
     EXPECT_EQ(resources.size(), (size_t)0);

@@ -25,12 +25,12 @@
 #include <thread>
 
 #include "common/constants/signal.h"
-#include "proto/pb/message_pb.h"
+#include "common/proto/pb/message_pb.h"
 #include "function_agent/code_deployer/s3_deployer.h"
 #include "function_agent_helper.h"
+#include "utils/port_helper.h"
 #include "mocks/mock_bundle_mgr.h"
 #include "mocks/mock_function_agent.h"
-#include "mocks/mock_heartbeat_observer_driver_ctrl.h"
 #include "mocks/mock_instance_ctrl.h"
 #include "mocks/mock_local_sched_srv.h"
 #include "mocks/mock_meta_store_client.h"
@@ -74,7 +74,6 @@ const string TEST_LOCAL_SCHEDULER_AID = "testLocalScheduler_01-32379";
 // agent address formatted as string "127.0.0.1:58866"
 const string SETUP_FUNC_AGENT_AID_NAME = "AgentServiceActor";
 const string SETUP_LOCAL_SCHEDULER_AID = "setupLocalScheduler_01-32379";
-const string SETUP_FUNC_AGENT_ADDRESS = "127.0.0.1:32279";
 const string SETUP_RUNTIME_MANAGER_AID = "setup-RuntimeManagerSrv";
 const string SETUP_RUNTIME_MANAGER_RANDOM_ID = "setup-runtimemanager-random-id";
 const string SETUP_INSTANCE_ID = "setup-instance-id";
@@ -86,12 +85,12 @@ const local_scheduler::FunctionAgentMgrActor::Param PARAM = {
     .pingCycleMs = 500,
     .enableTenantAffinity = true,
     .tenantPodReuseTimeWindow = 3,
+    .enableIpv4TenantIsolation = true,
     .enableForceDeletePod = true,
     .getAgentInfoRetryMs = 100,
     .invalidAgentGCInterval = 100,
 };
 
-const string TEST_META_STORE_ADDRESS = "127.0.0.1:32279";
 const RuntimeConfig runtimeConfig{ .runtimeHeartbeatEnable = "true",
                                    .runtimeMaxHeartbeatTimeoutTimes = 3,
                                    .runtimeHeartbeatTimeoutMS = 2000,
@@ -101,17 +100,21 @@ const RuntimeConfig runtimeConfig{ .runtimeHeartbeatEnable = "true",
 class FuncAgentMgrTest : public ::testing::Test {
 friend class FunctionAgentMgrActor;
 protected:
+    [[maybe_unused]] static void SetUpTestSuite()
+    {
+        metaStoreAddress_ = "127.0.0.1:" + std::to_string(FindAvailablePort());
+        funcAgentAddress_ = metaStoreAddress_;
+    }
+
     void SetUp() override
     {
-        heartbeatObserverDriverCtrl_ = make_shared<MockHeartbeatObserverDriverCtrl>();
-
-        mockMetaStoreClient_ = std::make_shared<MockMetaStoreClient>(TEST_META_STORE_ADDRESS);
+        mockMetaStoreClient_ = std::make_shared<MockMetaStoreClient>(metaStoreAddress_);
 
         auto getResponse = std::make_shared<GetResponse>();
         EXPECT_CALL(*mockMetaStoreClient_, Get).WillRepeatedly(Return(getResponse));
 
         funcAgentRegisInfoInit_.set_agentaidname(SETUP_FUNC_AGENT_AID_NAME);
-        funcAgentRegisInfoInit_.set_agentaddress(SETUP_FUNC_AGENT_ADDRESS);
+        funcAgentRegisInfoInit_.set_agentaddress(funcAgentAddress_);
         funcAgentRegisInfoInit_.set_runtimemgraid(SETUP_RUNTIME_MANAGER_AID);
         funcAgentRegisInfoInit_.set_runtimemgrid(SETUP_RUNTIME_MANAGER_RANDOM_ID);
         funcAgentRegisInfoInit_.set_statuscode(1);
@@ -135,11 +138,12 @@ protected:
         localSchedSrv_ = make_shared<MockLocalSchedSrv>();
         mockBundleMgr_ = make_shared<MockBundleMgr>();
 
-        funcAgentMgr_->Start(instCtrl_, resourceView_, heartbeatObserverDriverCtrl_);
+        funcAgentMgr_->Start(instCtrl_, resourceView_);
         funcAgentMgr_->BindLocalSchedSrv(localSchedSrv_);
         funcAgentMgr_->BindBundleMgr(mockBundleMgr_);
 
         litebus::Spawn(funcAgent_);
+
         auto putResponse = std::make_shared<PutResponse>();
         EXPECT_CALL(*mockMetaStoreClient_, Put).WillRepeatedly(Return(putResponse));
         std::string jsonStr;
@@ -159,9 +163,6 @@ protected:
         litebus::Future<string> registeredMsg;
         EXPECT_CALL(*funcAgent_.get(), MockRegistered(testing::_, testing::_, testing::_))
             .WillRepeatedly(testing::Return());
-
-        EXPECT_CALL(*heartbeatObserverDriverCtrl_.get(), Add(testing::_, testing::_, testing::_))
-            .WillRepeatedly(testing::Return(Status(StatusCode::SUCCESS)));
 
         EXPECT_CALL(*resourceView_.get(), AddResourceUnit(testing::_))
             .WillRepeatedly(testing::Return(Status(StatusCode::SUCCESS)));
@@ -206,6 +207,14 @@ protected:
         litebus::Terminate(funcAgent_->GetAID());
         litebus::Await(funcAgent_);
         funcAgentMgr_->ClearFuncAgentsRegis();
+        funcAgentMgr_ = nullptr;
+        funcAgent_ = nullptr;
+        instCtrl_ = nullptr;
+        localSchedSrv_ = nullptr;
+        mockBundleMgr_ = nullptr;
+        resourceView_ = nullptr;
+        funcAgentHelper_ = nullptr;
+        mockMetaStoreClient_ = nullptr;
     }
 
     std::vector<litebus::Future<string>> RegisterFuncAgents(std::string testName,
@@ -220,9 +229,6 @@ protected:
                                                            SETUP_LOCAL_SCHEDULER_AID, s3Config, codePackageThresholds);
             litebus::Spawn(funcAgents[i]);
         }
-
-        EXPECT_CALL(*heartbeatObserverDriverCtrl_.get(), Add(testing::_, testing::_, testing::_))
-            .WillRepeatedly(testing::Return(Status(StatusCode::SUCCESS)));
 
         EXPECT_CALL(*resourceView_.get(), AddResourceUnit(testing::_))
             .WillRepeatedly(testing::Return(Status(StatusCode::SUCCESS)));
@@ -297,7 +303,6 @@ protected:
         return GenerateRandomName("randomFuncAgent");
     }
 
-    shared_ptr<MockHeartbeatObserverDriverCtrl> heartbeatObserverDriverCtrl_;
     shared_ptr<local_scheduler::FunctionAgentMgr> funcAgentMgr_;
     shared_ptr<MockFunctionAgent> funcAgent_;
     shared_ptr<MockInstanceCtrl> instCtrl_;
@@ -308,6 +313,8 @@ protected:
     shared_ptr<MockMetaStoreClient> mockMetaStoreClient_;
     messages::FuncAgentRegisInfo funcAgentRegisInfoInit_;
     string randomFuncAgentName_;
+    inline static std::string funcAgentAddress_;
+    inline static std::string metaStoreAddress_;
 };
 
 TEST_F(FuncAgentMgrTest, CreateSuccess)
@@ -343,9 +350,6 @@ TEST_F(FuncAgentMgrTest, RegisterSuccess)
     litebus::Future<string> registeredMsg;
     EXPECT_CALL(*funcAgent.get(), MockRegistered(testing::_, testing::_, testing::_))
         .WillRepeatedly(testing::DoAll(test::FutureArg<2>(&registeredMsg)));
-
-    EXPECT_CALL(*heartbeatObserverDriverCtrl_.get(), Add(testing::_, testing::_, testing::_))
-        .WillOnce(testing::Return(Status(StatusCode::SUCCESS)));
 
     litebus::Future<resource_view::ResourceUnit> addResourceUnitMsg;
     EXPECT_CALL(*resourceView_.get(), AddResourceUnit(testing::_))
@@ -540,21 +544,10 @@ TEST_F(FuncAgentMgrTest, RegisterBuildLinkFail)
     EXPECT_CALL(*funcAgent.get(), MockRegistered(testing::_, testing::_, testing::_))
         .WillRepeatedly(testing::DoAll(test::FutureArg<2>(&registeredMsg)));
 
-    EXPECT_CALL(*heartbeatObserverDriverCtrl_.get(), Add(testing::_, testing::_, testing::_))
-        .WillOnce(testing::Return(Status(StatusCode::FAILED)));
-
-    litebus::Future<string> heartbeatDeleteMsg;
-    EXPECT_CALL(*heartbeatObserverDriverCtrl_.get(), Delete(testing::_))
-        .WillOnce(testing::DoAll(FutureArg<0>(&heartbeatDeleteMsg)));
-
     litebus::Async(funcAgent->GetAID(), &MockFunctionAgent::RegisterToLocalScheduler, funcAgentMgr_->GetActorAID());
 
     auto registerVal = registeredMsg.Get(100);
     ASSERT_TRUE(registerVal.IsSome());
-
-    auto heartbeatDeleteVal = heartbeatDeleteMsg.Get(100);
-    ASSERT_TRUE(heartbeatDeleteVal.IsSome());
-    EXPECT_STREQ(heartbeatDeleteVal.Get().c_str(), TEST_FUNC_AGENT_NAME.c_str());
 
     std::cout << funcAgentMgr_->Dump() << std::endl;
 
@@ -601,14 +594,6 @@ TEST_F(FuncAgentMgrTest, RegisterSyncInstanceFail)
 
     EXPECT_CALL(*funcAgent.get(), MockRegistered(testing::_, testing::_, testing::_)).WillRepeatedly(testing::Return());
 
-    EXPECT_CALL(*heartbeatObserverDriverCtrl_.get(), Add(testing::_, testing::_, testing::_))
-        .Times(2)
-        .WillRepeatedly(testing::Return(Status(StatusCode::SUCCESS)));
-
-    litebus::Future<string> heartbeatDeleteMsg;
-    EXPECT_CALL(*heartbeatObserverDriverCtrl_.get(), Delete(testing::_))
-        .WillRepeatedly(testing::DoAll(FutureArg<0>(&heartbeatDeleteMsg)));
-
     EXPECT_CALL(*resourceView_.get(), AddResourceUnit(testing::_))
         .WillRepeatedly(testing::Return(Status(StatusCode::SUCCESS)));
 
@@ -621,13 +606,15 @@ TEST_F(FuncAgentMgrTest, RegisterSyncInstanceFail)
 
     litebus::Async(funcAgent->GetAID(), &MockFunctionAgent::RegisterToLocalScheduler, funcAgentMgr_->GetActorAID());
 
-    auto heartbeatDeleteVal = heartbeatDeleteMsg.Get(100);
-    ASSERT_TRUE(heartbeatDeleteVal.IsSome());
-    EXPECT_STREQ(heartbeatDeleteVal.Get().c_str(), std::string("RegisterSyncInstanceFail_func_agent_AID").c_str());
-
     std::cout << funcAgentMgr_->Dump() << std::endl;
 
     litebus::Async(funcAgent->GetAID(), &MockFunctionAgent::RegisterToLocalScheduler, funcAgentMgr_->GetActorAID());
+
+    litebus::AID heartBeatAID =
+        litebus::AID(HEARTBEAT_OBSERVER_BASENAME + FUNCTION_AGENT_AGENT_MGR_ACTOR_NAME, funcAgentMgr_->GetActorAID().Url());
+    HeartbeatClientDriver pingPongDriver("RegisterSyncInstanceFail_func_agent_AID_2",
+                                  [](const litebus::AID &) {});
+    (void)pingPongDriver.Start(heartBeatAID);
 
     ASSERT_AWAIT_TRUE([=]() -> bool {
         return CheckIsRegister(funcAgentMgr_, "RegisterSyncInstanceFail_func_agent_AID_2", nullptr);
@@ -688,6 +675,16 @@ inline std::shared_ptr<messages::DeployInstanceRequest> GenDeployInstanceRequest
     spec->set_secretaccesskey("mock_secretaccesskey");
     spec->set_token("mock_token");
     return req;
+}
+
+inline std::shared_ptr<messages::StaticFunctionChangeRequest> GenStaticFunctionChangeRequest(
+    const std::string &requestID, const std::string &instanceID, int32_t status)
+{
+    auto staticFunctionChangeRequest = std::make_shared<messages::StaticFunctionChangeRequest>();
+    staticFunctionChangeRequest->set_instanceid(instanceID);
+    staticFunctionChangeRequest->set_requestid(requestID);
+    staticFunctionChangeRequest->set_status(status);
+    return staticFunctionChangeRequest;
 }
 
 TEST_F(FuncAgentMgrTest, DeployInstanceSuccess)
@@ -1045,9 +1042,6 @@ TEST_F(FuncAgentMgrTest, UpdateResourcesNoInit)
     litebus::Future<string> registeredMsg;
     EXPECT_CALL(*funcAgent.get(), MockRegistered(testing::_, testing::_, testing::_))
         .WillRepeatedly(testing::DoAll(test::FutureArg<2>(&registeredMsg)));
-
-    EXPECT_CALL(*heartbeatObserverDriverCtrl_.get(), Add(testing::_, testing::_, testing::_))
-        .WillOnce(testing::Return(Status(StatusCode::SUCCESS)));
 
     EXPECT_CALL(*resourceView_.get(), AddResourceUnit(testing::_))
         .WillRepeatedly(testing::Return(Status(StatusCode::SUCCESS)));
@@ -1446,13 +1440,102 @@ TEST_F(FuncAgentMgrTest, RetrieveAgentRegisInfoWithFailedStatusSuccess)
     funcAgentsRegis.clear();
 }
 
+TEST_F(FuncAgentMgrTest, StaticFunctionScheduleRequest)
+{
+    auto funcAgentMgr =
+        make_shared<local_scheduler::FunctionAgentMgr>(make_shared<local_scheduler::FunctionAgentMgrActor>(
+            "RecoverHeartBeatSuccessActor", PARAM, "nodeID", mockMetaStoreClient_));
+    funcAgentMgr->SetNodeID("nodeID");
+    funcAgentMgr->ToReady();
+
+    std::unordered_map<std::string, messages::FuncAgentRegisInfo> funcAgentsRegis;
+    messages::FuncAgentRegisInfo info1;
+    info1.set_agentaidname("RecoverHeartBeatSuccess_agent_aid_name");
+    info1.set_agentaddress("RecoverHeartBeatSuccess_agent_address");
+    info1.set_runtimemgraid("RecoverHeartBeatSuccess_runtime_manager_aid");
+    info1.set_runtimemgrid("RecoverHeartBeatSuccess_runtime_manager_randomid");
+    info1.set_statuscode(static_cast<int32_t>(FunctionAgentMgrActor::RegisStatus::FAILED));
+    funcAgentsRegis["RecoverHeartBeatSuccess_agent_id"] = info1;
+
+    messages::FuncAgentRegisInfo info2;
+    info2.set_agentaidname("RecoverHeartBeatSuccessActor");
+    uint16_t port = GetPortEnv("LITEBUS_PORT", 0);
+    info2.set_agentaddress("127.0.0.1:" + std::to_string(port));
+    info2.set_runtimemgraid("funcAgentMgr_runtime_manager_aid");
+    info2.set_runtimemgrid("funcAgentMgr_runtime_manager_randomid");
+    info2.set_statuscode(static_cast<int32_t>(FunctionAgentMgrActor::RegisStatus::SUCCESS));
+    funcAgentsRegis["funcAgentMgr"] = info2;
+
+    std::string jsonStr = FuncAgentRegisToCollectionStrHelper(funcAgentsRegis);
+    std::cout << "serialized jsonStr:" << jsonStr << std::endl;
+    std::string nodeID = funcAgentMgr->GetNodeID();
+    KeyValue kv;
+    kv.set_key("funcAgentRegisInfos");
+    kv.set_value(jsonStr);
+
+    auto getResponse = std::make_shared<GetResponse>();
+    getResponse->kvs.push_back(std::move(kv));
+    EXPECT_CALL(*mockMetaStoreClient_, Get).WillOnce(Return(getResponse));
+
+    EXPECT_CALL(*localSchedSrv_, NotifyEvictResult(_)).WillOnce(Return());
+    EXPECT_CALL(*mockBundleMgr_, SyncBundles).WillOnce(Return(Status::OK()));
+
+    std::shared_ptr<resource_view::ResourceUnit> resourceUnit = std::make_shared<resource_view::ResourceUnit>();
+    resourceUnit->set_id("funcAgentMgr");
+    auto instances = resourceUnit->mutable_instances();
+    resource_view::InstanceInfo instanceInfo;
+    instanceInfo.set_instanceid("funcAgentMgr_instance_id");
+    instances->insert({ "funcAgentMgr_instance_id", instanceInfo });
+
+    messages::UpdateResourcesRequest resourceViewReq;
+    auto resourceUnit2 = resourceViewReq.mutable_resourceunit();
+    resourceUnit2->set_id("funcAgentMgr");
+    auto capacity = resourceUnit2->mutable_capacity();
+    auto resources = capacity->mutable_resources();
+
+    auto instances2 = resourceUnit2->mutable_instances();
+    resource_view::InstanceInfo instanceInfo2;
+    instanceInfo2.set_instanceid("funcAgentMgr_instance_id");
+    instances2->insert({ "funcAgentMgr_instance_id", instanceInfo2 });
+
+    resource_view::Resource resource;
+    resource.set_name("CPU");
+    resource.set_type(resource_view::ValueType::Value_Type_SCALAR);
+
+    auto scalar = resource.mutable_scalar();
+    scalar->set_limit(100);
+    scalar->set_value(50);
+    resources->insert({ "CPU", resource });
+
+    funcAgentMgr->Start(instCtrl_, resourceView_);
+    funcAgentMgr->BindLocalSchedSrv(localSchedSrv_);
+    funcAgentMgr->BindBundleMgr(mockBundleMgr_);
+    auto future = funcAgentMgr->Sync();
+    ASSERT_AWAIT_READY(future);
+    future = funcAgentMgr->Recover();
+    ASSERT_AWAIT_READY(future);
+
+    ASSERT_AWAIT_TRUE([=]() -> bool {
+        auto lambda = [=](){
+            std::string name = "funcAgentMgr";
+            funcAgentMgr->UpdateResources(funcAgentMgr->GetActorAID(), std::move(name),
+                                          resourceViewReq.SerializeAsString());
+        };
+        return CheckIsRegister(funcAgentMgr, "funcAgentMgr", lambda);
+    });
+
+    // clean
+    resourceViewReq.clear_resourceunit();
+    funcAgentsRegis.clear();
+}
+
 TEST_F(FuncAgentMgrTest, RecoverHeartBeatEmptySuccess)
 {
     auto funcAgentMgr =
         make_shared<local_scheduler::FunctionAgentMgr>(make_shared<local_scheduler::FunctionAgentMgrActor>(
             "RecoverHeartBeatSuccessActor", PARAM, "nodeID", mockMetaStoreClient_));
     funcAgentMgr->SetNodeID("nodeID");
-    funcAgentMgr->Start(instCtrl_, resourceView_, heartbeatObserverDriverCtrl_);
+    funcAgentMgr->Start(instCtrl_, resourceView_);
     funcAgentMgr->BindLocalSchedSrv(localSchedSrv_);
     funcAgentMgr->BindBundleMgr(mockBundleMgr_);
     funcAgentMgr->ToReady();
@@ -1658,7 +1741,7 @@ TEST_F(FuncAgentMgrTest, InvalidAgentGC)
 
     funcAgentMgr_->SetFuncAgentsRegis(funcAgentsRegis);
     auto putResponse = std::make_shared<PutResponse>();
-    EXPECT_CALL(*mockMetaStoreClient_, Put).WillOnce(Return(putResponse)).WillOnce(Return(putResponse));;
+    EXPECT_CALL(*mockMetaStoreClient_, Put).WillRepeatedly(Return(putResponse));
     litebus::Async(funcAgentMgr_->GetActorAID(), &FunctionAgentMgrActor::StopHeartbeat, "agent_id");
     ASSERT_AWAIT_TRUE([=]() -> bool {
         auto info = litebus::Async(funcAgentMgr_->GetActorAID(), &FunctionAgentMgrActor::GetFuncAgentsRegis).Get();
@@ -1733,8 +1816,9 @@ TEST_F(FuncAgentMgrTest, TenantEventCase1)
     EXPECT_TRUE(tenantCache->functionAgentCacheMap[event.functionAgentID].isAgentOnThisNode);
 
     funcAgentMgr_->OnTenantDeleteInstance(event);
-    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-    EXPECT_EQ(tenantCache->functionAgentCacheMap.count(event.functionAgentID), (size_t)0);
+    ASSERT_AWAIT_TRUE([=]() -> bool {
+       return tenantCache->functionAgentCacheMap.count(event.functionAgentID) == (size_t)0;
+    });
 }
 
 /*
@@ -1744,7 +1828,7 @@ TEST_F(FuncAgentMgrTest, OnHealthyStatusTest)
 {
     auto funcAgentMgr = make_shared<local_scheduler::FunctionAgentMgr>(
         make_shared<local_scheduler::FunctionAgentMgrActor>("funcAgentMgr-OnHealthyStatusTest", PARAM, "nodeID", mockMetaStoreClient_));
-    funcAgentMgr->Start(instCtrl_, resourceView_, heartbeatObserverDriverCtrl_);
+    funcAgentMgr->Start(instCtrl_, resourceView_);
 
     Status status(StatusCode::FAILED);
     funcAgentMgr->OnHealthyStatus(status);
@@ -1782,8 +1866,7 @@ TEST_F(FuncAgentMgrTest, GracefulShutdown)
     auto deleteResponse = std::make_shared<DeleteResponse>();
     EXPECT_CALL(*mockMetaStoreClient_, Delete).WillRepeatedly(Return(deleteResponse));
 
-    EXPECT_CALL(*instCtrl_.get(), EvictInstanceOnAgent(_))
-        .WillRepeatedly(testing::Return(Status(StatusCode::SUCCESS)));
+    EXPECT_CALL(*instCtrl_.get(), EvictInstanceOnAgent(_)).WillRepeatedly(testing::Return(Status(StatusCode::SUCCESS)));
 
     EXPECT_CALL(*resourceView_.get(), UpdateUnitStatus(_, _)).WillRepeatedly(Return(Status(StatusCode::SUCCESS)));
     EXPECT_CALL(*mockBundleMgr_, UpdateBundlesStatus).WillRepeatedly(Return());
@@ -1802,6 +1885,76 @@ TEST_F(FuncAgentMgrTest, GracefulShutdown)
     EXPECT_EQ(future.Get().StatusCode(), StatusCode::SUCCESS);
     auto regis = funcAgentMgr_->GetFuncAgentsRegis();
     EXPECT_EQ(regis.empty(), true);
+}
+
+TEST_F(FuncAgentMgrTest, CreateStaticFunctionInstance)
+{
+    messages::ScheduleResponse scheduleResponse = GenScheduleResponse(0, "", "", REQUEST_ID);
+    litebus::Future<shared_ptr<messages::ScheduleRequest>> scheduleFuture;
+    EXPECT_CALL(*instCtrl_.get(), Schedule)
+        .WillOnce(testing::DoAll(FutureArg<0>(&scheduleFuture), testing::Return(scheduleResponse)));
+    litebus::Future<string> resp;
+    EXPECT_CALL(*funcAgent_.get(), MockStaticFunctionScheduleResponse(testing::_, testing::_, testing::_))
+        .WillOnce(testing::DoAll(testing::DoAll(FutureArg<2>(&resp))));
+
+    messages::ScheduleRequest scheduleReq;
+    scheduleReq.set_requestid(REQUEST_ID);
+    litebus::Async(funcAgent_->GetAID(), &MockFunctionAgent::StaticFunctionScheduleRequest, funcAgentMgr_->GetActorAID(),
+                   scheduleReq);
+
+    auto ret = scheduleFuture.Get(1000);
+    ASSERT_TRUE(ret.IsSome());
+    EXPECT_TRUE(ret.Get()->requestid() == REQUEST_ID);
+
+    auto respStr = resp.Get(1000);
+    ASSERT_TRUE(respStr.IsSome());
+    messages::ScheduleResponse respVal;
+    auto parseVal = respVal.ParseFromString(respStr.Get());
+    EXPECT_TRUE(parseVal);
+    EXPECT_STREQ(respVal.requestid().c_str(), REQUEST_ID.c_str());
+}
+
+TEST_F(FuncAgentMgrTest, NotifyFunctionStatusChangeSuccess)
+{
+    litebus::Future<std::string> mockMsg;
+
+    messages::StaticFunctionChangeResponse mockResp =
+        GenStaticFunctionChangeResponse(StatusCode::SUCCESS, "notify success", REQUEST_ID, INSTANCE_ID);
+    EXPECT_CALL(*funcAgent_.get(), MockNotifyFunctionStatusChange(testing::_, testing::_, testing::_))
+        .WillRepeatedly(testing::DoAll(test::FutureArg<2>(&mockMsg),
+                                       testing::Return(std::pair<bool, string>(true, mockResp.SerializeAsString()))));
+
+    auto req = GenStaticFunctionChangeRequest(REQUEST_ID, INSTANCE_ID, 3);
+    auto ret = funcAgentMgr_->NotifyFunctionStatusChange(req, randomFuncAgentName_);
+
+    auto resp = ret.Get(1000);
+    ASSERT_TRUE(resp.IsSome());
+    EXPECT_STREQ(resp.Get().requestid().c_str(), REQUEST_ID.c_str());
+    EXPECT_EQ(resp.Get().code(), StatusCode::SUCCESS);
+
+    auto msg = mockMsg.Get(1000);
+    ASSERT_TRUE(msg.IsSome());
+    ASSERT_FALSE(msg.Get().empty());
+
+}
+
+TEST_F(FuncAgentMgrTest, NotifyFunctionStatusChangeRetrySuccess)
+{
+    messages::StaticFunctionChangeResponse mockResp =
+        GenStaticFunctionChangeResponse(StatusCode::SUCCESS, "notify success", REQUEST_ID, INSTANCE_ID);
+    EXPECT_CALL(*funcAgent_.get(), MockNotifyFunctionStatusChange(testing::_, testing::_, testing::_))
+        .WillOnce(testing::Return(std::pair<bool, string>{ false, "" }))
+        .WillOnce(testing::Return(std::pair<bool, string>{ false, "" }))
+        .WillRepeatedly(testing::Return(std::pair<bool, string>{ true, mockResp.SerializeAsString() }));
+
+    auto req = GenStaticFunctionChangeRequest(REQUEST_ID, INSTANCE_ID, 3);
+
+    auto ret = funcAgentMgr_->NotifyFunctionStatusChange(req, randomFuncAgentName_);
+
+    auto resp = ret.Get(1000);
+    ASSERT_EQ(resp.IsSome(), true);
+    EXPECT_STREQ(resp.Get().requestid().c_str(), REQUEST_ID.c_str());
+    EXPECT_EQ(resp.Get().code(), StatusCode::SUCCESS);
 }
 
 }  // namespace functionsystem::test

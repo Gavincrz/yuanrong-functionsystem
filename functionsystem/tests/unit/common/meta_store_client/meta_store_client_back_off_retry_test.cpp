@@ -20,10 +20,10 @@
 #include <async/defer.hpp>
 #include <async/future.hpp>
 
-#include "logs/logging.h"
+#include "common/logs/logging.h"
 #include "meta_store_client/meta_store_client.h"
 #include "meta_store_client/meta_store_struct.h"
-#include "proto/pb/message_pb.h"
+#include "common/proto/pb/message_pb.h"
 #include "kv_service_actor.h"
 #include "utils/future_test_helper.h"
 #include "utils/port_helper.h"
@@ -104,10 +104,10 @@ class MetaStoreClientBackOffRetryTest : public ::testing::Test {
 public:
     MetaStoreClientBackOffRetryTest() = default;
     ~MetaStoreClientBackOffRetryTest() override = default;
-    static void SetUpTestCase()
+    [[maybe_unused]] static void SetUpTestSuite()
     {
     }
-    static void TearDownTestCase()
+    [[maybe_unused]] static void TearDownTestSuite()
     {
     }
 
@@ -223,7 +223,9 @@ TEST_F(MetaStoreClientBackOffRetryTest, DropFirstSeveralAttemptsAndSuccess_PutGe
             return true;
         };
         WatchOption option = { .prefix = true, .prevKv = true, .revision = 0 };
-        auto syncer = []() -> litebus::Future<SyncResult> { return SyncResult{Status::OK(), 0}; };
+        auto syncer = [](const std::shared_ptr<GetResponse> &) -> litebus::Future<SyncResult> {
+            return SyncResult{ Status::OK() };
+        };
         auto watcher = client->Watch("llt/sn/workers", option, observer, syncer);
         ASSERT_AWAIT_READY(watcher);
     }
@@ -306,7 +308,9 @@ TEST_F(MetaStoreClientBackOffRetryTest, DropFirstSeveralAttemptsAndSuccess_Txn)
             return true;
         };
         WatchOption option = { .prefix = true, .prevKv = true, .revision = 0 };
-        auto syncer = []() -> litebus::Future<SyncResult> { return SyncResult{Status::OK(), 0}; };
+        auto syncer = [](const std::shared_ptr<GetResponse> &) -> litebus::Future<SyncResult> {
+            return SyncResult{ Status::OK() };
+        };
         auto watcher = client->GetAndWatch("llt/sn/workers", option, observer, syncer);
         ASSERT_AWAIT_READY(watcher);
 
@@ -338,9 +342,9 @@ TEST_F(MetaStoreClientBackOffRetryTest, DropFirstSeveralAttemptsAndSuccess_Txn)
                   static_cast<uint32_t>(1));
         EXPECT_EQ(std::get<DeleteResponse>(txnResponse->responses[0].response).prevKvs[0].key(), "llt/sn/workers/xxx");
         EXPECT_EQ(std::get<PutResponse>(txnResponse->responses[1].response).prevKv.value(), "");
-        EXPECT_EQ(std::get<GetResponse>(txnResponse->responses[2].response).kvs.size(), static_cast<uint32_t>(1));
-        EXPECT_EQ(std::get<GetResponse>(txnResponse->responses[2].response).kvs[0].key(), "llt/sn/workers/yyy");
-        EXPECT_EQ(std::get<GetResponse>(txnResponse->responses[2].response).kvs[0].value(), "2.0");
+        EXPECT_EQ(std::get<GetResponse>(txnResponse->responses[2].response).kvs.size(), static_cast<uint32_t>(1)); // Txn 中的 Range 查询始终查的缓存 cache_
+        EXPECT_EQ(std::get<GetResponse>(txnResponse->responses[2].response).kvs[0].key(), "llt/sn/workers/xxx"); // Txn 中的 Range 查询始终查的缓存 cache_
+        EXPECT_EQ(std::get<GetResponse>(txnResponse->responses[2].response).kvs[0].value(), "1.0"); // Txn 中的 Range 查询始终查的缓存 cache_
     }
 
     ASSERT_AWAIT_READY(putPromise.GetFuture());

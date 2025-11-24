@@ -22,8 +22,9 @@
 #include <gmock/gmock.h>
 #include <functional>
 
-#include "proto/pb/posix/runtime_rpc.grpc.pb.h"
-#include "rpc/stream/posix_reactor.h"
+#include "common/proto/pb/posix/runtime_rpc.grpc.pb.h"
+#include "common/rpc/stream/posix_reactor.h"
+#include "common/aksk/aksk_util.h"
 
 namespace functionsystem::test {
 using namespace functionsystem::grpc;
@@ -71,6 +72,12 @@ public:
             stub_ = RuntimeRPC::NewStub(channel);
             context_.AddMetadata("instance_id", config.instanceID);
             context_.AddMetadata("runtime_id", config.runtimeID);
+            context_.AddMetadata("authorization", config.token);
+            context_.AddMetadata("access_key", "ak");
+            auto timestamp = litebus::time::GetCurrentUTCTime();
+            context_.AddMetadata("timestamp", timestamp);
+            SensitiveValue sk("sk");
+            context_.AddMetadata("signature", SignTimestamp("ak", sk, timestamp));
             stub_->async()->MessageStream(&context_, reactor_.get());
         } catch (std::exception &e) {
             YRLOG_ERROR(
@@ -104,6 +111,8 @@ public:
         auto sendMsgID = request->messageid();
         auto bodyType = request->body_case();
         std::cout << "send msg id = " << sendMsgID << ", body type = " << bodyType << std::endl;
+        SensitiveValue sk("sk");
+        functionsystem::SignStreamingMessage("ak", sk, request);
         if (reactor_ == nullptr || reactor_->IsDone()) {
             return false;
         }
@@ -138,6 +147,8 @@ public:
         }
         std::cout << ", instance id = " << config_.instanceID << ", runtime id = " << config_.runtimeID <<
             ", message id = " << recv->messageid() << std::endl;
+        SensitiveValue sk("sk");
+        functionsystem::SignStreamingMessage("ak", sk, resp);
         Send(resp);
         MockReceiver(recv);
     }

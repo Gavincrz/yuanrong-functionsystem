@@ -21,11 +21,13 @@
 
 #include <cstdint>
 #include <memory>
-#include <utility>
 
-#include "logs/logging.h"
+#include "async/async.hpp"
+#include "common/constants/constants.h"
+#include "common/logs/logging.h"
 #include "mocks/mock_distributed_cache_client.h"
 #include "utils/future_test_helper.h"
+#include "utils/os_utils.hpp"
 
 namespace functionsystem::test {
 using namespace local_scheduler;
@@ -33,13 +35,13 @@ using namespace ::testing;
 
 class DsHealthyCheckerTest : public ::testing::Test {
 public:
-    static void SetUpTestCase()
+    [[maybe_unused]] static void SetUpTestSuite()
     {
         mockDistributedCacheClient_ = std::make_shared<MockDistributedCacheClient>();
-        dsHealthyChecker_ = std::make_shared<DsHealthyChecker>(1000, 5, mockDistributedCacheClient_);
+        dsHealthyChecker_ = std::make_shared<DsHealthyChecker>(0, 5, mockDistributedCacheClient_);
     }
 
-    static void TearDownTestCase()
+    [[maybe_unused]] static void TearDownTestSuite()
     {
         dsHealthyChecker_ = nullptr;
         mockDistributedCacheClient_ = nullptr;
@@ -74,16 +76,47 @@ TEST_F(DsHealthyCheckerTest, CheckHealthy)
     dsHealthyChecker_->SubscribeDsHealthy(cb);
     EXPECT_FALSE(dsHealthyChecker_->GetIsUnhealthy());
 
-    (void)litebus::Spawn(dsHealthyChecker_);
+    litebus::os::SetEnv("DATA_SYSTEM_FEATURE_USED", "stream");
+    const auto aid = litebus::Spawn(dsHealthyChecker_);
     YRLOG_WARN("checker->Start");
 
     ASSERT_AWAIT_READY(promise->GetFuture());
     EXPECT_TRUE(promise->GetFuture().Get());
 
     EXPECT_TRUE(dsHealthyChecker_->GetIsUnhealthy());
+    EXPECT_TRUE(litebus::Async(aid, &DsHealthyChecker::IsDataSystemFeatureUsed).Get());
 
     litebus::Terminate(dsHealthyChecker_->GetAID());
     litebus::Await(dsHealthyChecker_->GetAID());
+}
+
+TEST_F(DsHealthyCheckerTest, CheckHealthyWithKScaleDown)
+{
+    auto mockDistributedCacheClient = std::make_shared<MockDistributedCacheClient>();
+    auto dsHealthyChecker = std::make_shared<DsHealthyChecker>(0, 5, mockDistributedCacheClient);
+
+    EXPECT_CALL(*mockDistributedCacheClient, GetHealthStatus)
+        .WillOnce(Return(Status(SUCCESS)))
+        .WillRepeatedly(Return(Status(DS_SCALE_DOWN)));
+
+    auto promise = std::make_shared<litebus::Promise<bool>>();
+    auto cb = [promise](const bool healthy) {
+        if (!healthy)
+            promise->SetValue(true);
+    };
+    dsHealthyChecker->SubscribeDsHealthy(cb);
+    EXPECT_FALSE(dsHealthyChecker->GetIsUnhealthy());
+
+    (void)litebus::Spawn(dsHealthyChecker);
+    YRLOG_WARN("checker->Start");
+
+    ASSERT_AWAIT_READY(promise->GetFuture());
+    EXPECT_TRUE(promise->GetFuture().Get());
+
+    EXPECT_TRUE(dsHealthyChecker->GetIsUnhealthy());
+
+    litebus::Terminate(dsHealthyChecker->GetAID());
+    litebus::Await(dsHealthyChecker->GetAID());
 }
 
 }  // namespace functionsystem::test

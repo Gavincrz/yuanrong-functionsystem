@@ -30,7 +30,7 @@ public:
     inline static std::unique_ptr<meta_store::test::EtcdServiceDriver> etcdSrvDriver_;
     inline static std::string metaStoreServerHost_;
 
-    [[maybe_unused]] static void SetUpTestCase()
+    [[maybe_unused]] static void SetUpTestSuite()
     {
         etcdSrvDriver_ = std::make_unique<meta_store::test::EtcdServiceDriver>();
         int metaStoreServerPort = functionsystem::test::FindAvailablePort();
@@ -38,7 +38,7 @@ public:
         etcdSrvDriver_->StartServer(metaStoreServerHost_);
     }
 
-    [[maybe_unused]] static void TearDownTestCase()
+    [[maybe_unused]] static void TearDownTestSuite()
     {
         etcdSrvDriver_->StopServer();
     }

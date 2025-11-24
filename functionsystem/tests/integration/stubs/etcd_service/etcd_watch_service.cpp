@@ -17,7 +17,7 @@
 #include "etcd_watch_service.h"
 
 #include "async/async.hpp"
-#include "logs/logging.h"
+#include "common/logs/logging.h"
 #include "etcd_watch_srv_actor.h"
 
 namespace functionsystem::meta_store::test {

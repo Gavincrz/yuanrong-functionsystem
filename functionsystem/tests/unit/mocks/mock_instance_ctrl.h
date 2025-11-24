@@ -21,7 +21,7 @@
 
 #include <async/async.hpp>
 
-#include "logs/logging.h"
+#include "common/logs/logging.h"
 #include "function_proxy/local_scheduler/instance_control/instance_ctrl.h"
 #include "gmock/gmock-function-mocker.h"
 
@@ -35,6 +35,11 @@ public:
         : InstanceCtrl(std::move(actor))
     {
     }
+    MockInstanceCtrl()
+        : InstanceCtrl(std::make_shared<local_scheduler::InstanceCtrlActor>("name", "node",
+                                                                            local_scheduler::InstanceCtrlConfig()))
+    {
+    }
     ~MockInstanceCtrl() override = default;
 
     MOCK_METHOD(litebus::Future<messages::ScheduleResponse>, Schedule,
@@ -43,6 +48,8 @@ public:
                 (override));
     MOCK_METHOD(litebus::Future<KillResponse>, Kill,
                 (const std::string &srcInstanceID, const std::shared_ptr<KillRequest> &killReq), (override));
+    MOCK_METHOD(litebus::Future<ExitResponse>, Exit,
+                (const std::string &srcInstanceID, const std::shared_ptr<ExitRequest> &exitReq), (override));
     MOCK_METHOD(litebus::Future<Status>, SyncInstances, (const std::shared_ptr<resource_view::ResourceUnit> &view),
                 (override));
     MOCK_METHOD(litebus::Future<Status>, SyncAgent,
@@ -79,6 +86,7 @@ public:
     MOCK_METHOD(litebus::Future<Status>, DeleteSchedulingInstance, (const std::string &instanceID, const std::string &requestID), (override));
     MOCK_METHOD(void, RegisterClearGroupInstanceCallBack, (local_scheduler::ClearGroupInstanceCallBack callback), (override));
     MOCK_METHOD(litebus::Future<Status>, GracefulShutdown, (), (override));
+    MOCK_METHOD(litebus::Future<bool>, IsInstanceRunning, (const std::string &instanceID), (override));
     MOCK_METHOD(litebus::Future<KillResponse>, ForwardSubscriptionEvent, (const std::shared_ptr<KillContext> &ctx),
                 (override));
 };

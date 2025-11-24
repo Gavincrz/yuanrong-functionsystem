@@ -181,7 +181,7 @@ TEST_F(DomainGroupCtrlTest, ResourceNotEnoughTimeout)
     auto groupInfo = NewGroupInfo(1);
     schedule_decision::GroupScheduleResult result;
     result.code = StatusCode::RESOURCE_NOT_ENOUGH;
-    EXPECT_CALL(*mockScheduler_, GroupScheduleDecision(_)).WillRepeatedly(Return(result));
+    EXPECT_CALL(*mockScheduler_, GroupScheduleDecision(_)).WillRepeatedly(Return(AsyncReturn(result)));
     auto future = litebus::Async(localSchedSrvStub_->GetAID(), &LocalSchedSrvStub::ForwardGroupSchedule,
                                  domainGroupCtrlActor_->GetAID(), groupInfo);
     ASSERT_AWAIT_READY(future);
@@ -198,18 +198,18 @@ TEST_F(DomainGroupCtrlTest, ScheduleFailedAfterReserveFailure)
     }
     litebus::Promise<schedule_decision::GroupScheduleResult> promise;
     promise.SetFailed(StatusCode::ERR_GROUP_SCHEDULE_FAILED);
-    EXPECT_CALL(*mockScheduler_, GroupScheduleDecision(_)).WillOnce(Return(result)).WillOnce(Return(promise.GetFuture()));
+    EXPECT_CALL(*mockScheduler_, GroupScheduleDecision(_)).WillOnce(Return(AsyncReturn(result))).WillOnce(Return(AsyncReturn(promise.GetFuture())));
 
     auto response = std::make_shared<messages::ScheduleResponse>();
     response->set_code(StatusCode::SUCCESS);
     auto response1 = std::make_shared<messages::ScheduleResponse>();
     response1->set_code(StatusCode::DOMAIN_SCHEDULER_UNAVAILABLE_SCHEDULER);
     EXPECT_CALL(*mockUnderlayerSchedMgr_, Reserve)
-        .WillOnce(Return(response))
-        .WillOnce(Return(response1))
-        .WillOnce(Return(response1));
+        .WillOnce(Return(AsyncReturn(response)))
+        .WillOnce(Return(AsyncReturn(response1)))
+        .WillOnce(Return(AsyncReturn(response1)));
     EXPECT_CALL(*mockUnderlayerSchedMgr_, UnReserve)
-        .WillRepeatedly(Return(Status::OK()));
+        .WillRepeatedly(Return(AsyncReturn(Status::OK())));
     auto groupInfo = NewGroupInfo(100);
     auto future = litebus::Async(localSchedSrvStub_->GetAID(), &LocalSchedSrvStub::ForwardGroupSchedule,
                                  domainGroupCtrlActor_->GetAID(), groupInfo);
@@ -230,10 +230,10 @@ TEST_F(DomainGroupCtrlTest, ReserveRollback)
     schedule_decision::GroupScheduleResult noEnough;
     noEnough.code = StatusCode::RESOURCE_NOT_ENOUGH;
     EXPECT_CALL(*mockScheduler_, GroupScheduleDecision(_))
-        .WillOnce(Return(result))
-        .WillOnce(Return(result))
-        .WillOnce(Return(noEnough))
-        .WillRepeatedly(Return(failure));
+        .WillOnce(Return(AsyncReturn(result)))
+        .WillOnce(Return(AsyncReturn(result)))
+        .WillOnce(Return(AsyncReturn(noEnough)))
+        .WillRepeatedly(Return(AsyncReturn(failure)));
 
     auto response = std::make_shared<messages::ScheduleResponse>();
     response->set_code(StatusCode::SUCCESS);
@@ -241,16 +241,16 @@ TEST_F(DomainGroupCtrlTest, ReserveRollback)
     response1->set_code(StatusCode::DOMAIN_SCHEDULER_UNAVAILABLE_SCHEDULER);
     EXPECT_CALL(*mockUnderlayerSchedMgr_, Reserve)
         // first round to reserve
-        .WillOnce(Return(response))
-        .WillOnce(Return(response1))
-        .WillOnce(Return(response1))
+        .WillOnce(Return(AsyncReturn(response)))
+        .WillOnce(Return(AsyncReturn(response1)))
+        .WillOnce(Return(AsyncReturn(response1)))
         // second round to reserve
-        .WillOnce(Return(response))
-        .WillOnce(Return(response))
-        .WillOnce(Return(response1));
+        .WillOnce(Return(AsyncReturn(response)))
+        .WillOnce(Return(AsyncReturn(response)))
+        .WillOnce(Return(AsyncReturn(response1)));
 
     EXPECT_CALL(*mockUnderlayerSchedMgr_, UnReserve)
-        .WillRepeatedly(Return(Status::OK()));
+        .WillRepeatedly(Return(AsyncReturn(Status::OK())));
     auto groupInfo = NewGroupInfo(1);
     auto future = litebus::Async(localSchedSrvStub_->GetAID(), &LocalSchedSrvStub::ForwardGroupSchedule,
                                  domainGroupCtrlActor_->GetAID(), groupInfo);
@@ -268,25 +268,25 @@ TEST_F(DomainGroupCtrlTest, BindRollback)
     }
     litebus::Promise<schedule_decision::GroupScheduleResult> promise;
     promise.SetFailed(StatusCode::ERR_GROUP_SCHEDULE_FAILED);
-    EXPECT_CALL(*mockScheduler_, GroupScheduleDecision(_)).WillOnce(Return(result)).WillOnce(Return(promise.GetFuture()));
+    EXPECT_CALL(*mockScheduler_, GroupScheduleDecision(_)).WillOnce(Return(AsyncReturn(result))).WillOnce(Return(AsyncReturn(promise.GetFuture())));
 
     auto response = std::make_shared<messages::ScheduleResponse>();
     response->set_code(StatusCode::SUCCESS);
     auto response1 = std::make_shared<messages::ScheduleResponse>();
     response1->set_code(StatusCode::DOMAIN_SCHEDULER_UNAVAILABLE_SCHEDULER);
     EXPECT_CALL(*mockUnderlayerSchedMgr_, Reserve).Times(3)
-        .WillRepeatedly(Return(response));
+        .WillRepeatedly(Return(AsyncReturn(response)));
     EXPECT_CALL(*mockUnderlayerSchedMgr_, UnReserve).Times(0);
 
     EXPECT_CALL(*mockUnderlayerSchedMgr_, Bind)
-        .WillOnce(Return(Status::OK()))
-        .WillOnce(Return(Status(StatusCode::ERR_INNER_COMMUNICATION)))
-        .WillOnce(Return(Status(StatusCode::ERR_INNER_COMMUNICATION)));
+        .WillOnce(Return(AsyncReturn(Status::OK())))
+        .WillOnce(Return(AsyncReturn(Status(StatusCode::ERR_INNER_COMMUNICATION))))
+        .WillOnce(Return(AsyncReturn(Status(StatusCode::ERR_INNER_COMMUNICATION))));
 
     EXPECT_CALL(*mockUnderlayerSchedMgr_, UnBind)
-        .WillOnce(Return(Status::OK()))
-        .WillOnce(Return(Status(StatusCode::ERR_INNER_COMMUNICATION)))
-        .WillOnce(Return(Status(StatusCode::ERR_INNER_COMMUNICATION)));
+        .WillOnce(Return(AsyncReturn(Status::OK())))
+        .WillOnce(Return(AsyncReturn(Status(StatusCode::ERR_INNER_COMMUNICATION))))
+        .WillOnce(Return(AsyncReturn(Status(StatusCode::ERR_INNER_COMMUNICATION))));
 
     auto groupInfo = NewGroupInfo(100);
     auto future = litebus::Async(localSchedSrvStub_->GetAID(), &LocalSchedSrvStub::ForwardGroupSchedule,
@@ -303,23 +303,23 @@ TEST_F(DomainGroupCtrlTest, LocalAbnormalBindRollback)
     for (int i = 0; i < INSTANCE_NUM; ++i) {
         (void)result.results.emplace_back(schedule_decision::ScheduleResult{ "agent", 0, "" });
     }
-    EXPECT_CALL(*mockScheduler_, GroupScheduleDecision(_)).WillOnce(Return(result));
+    EXPECT_CALL(*mockScheduler_, GroupScheduleDecision(_)).WillOnce(Return(AsyncReturn(result)));
 
     auto response = std::make_shared<messages::ScheduleResponse>();
     response->set_code(StatusCode::SUCCESS);
     EXPECT_CALL(*mockUnderlayerSchedMgr_, Reserve).Times(3)
-        .WillRepeatedly(Return(response));
+        .WillRepeatedly(Return(AsyncReturn(response)));
     EXPECT_CALL(*mockUnderlayerSchedMgr_, UnReserve).Times(0);
 
     EXPECT_CALL(*mockUnderlayerSchedMgr_, Bind)
-        .WillOnce(Return(Status::OK()))
-        .WillOnce(Return(Status(StatusCode::DOMAIN_SCHEDULER_UNAVAILABLE_SCHEDULER)))
-        .WillOnce(Return(Status(StatusCode::DOMAIN_SCHEDULER_UNAVAILABLE_SCHEDULER)));
+        .WillOnce(Return(AsyncReturn(Status::OK())))
+        .WillOnce(Return(AsyncReturn(Status(StatusCode::DOMAIN_SCHEDULER_UNAVAILABLE_SCHEDULER))))
+        .WillOnce(Return(AsyncReturn(Status(StatusCode::DOMAIN_SCHEDULER_UNAVAILABLE_SCHEDULER))));
 
     EXPECT_CALL(*mockUnderlayerSchedMgr_, UnBind)
-        .WillOnce(Return(Status::OK()))
-        .WillOnce(Return(Status(StatusCode::DOMAIN_SCHEDULER_UNAVAILABLE_SCHEDULER)))
-        .WillOnce(Return(Status(StatusCode::DOMAIN_SCHEDULER_UNAVAILABLE_SCHEDULER)));
+        .WillOnce(Return(AsyncReturn(Status::OK())))
+        .WillOnce(Return(AsyncReturn(Status(StatusCode::DOMAIN_SCHEDULER_UNAVAILABLE_SCHEDULER))))
+        .WillOnce(Return(AsyncReturn(Status(StatusCode::DOMAIN_SCHEDULER_UNAVAILABLE_SCHEDULER))));
 
     auto groupInfo = NewGroupInfo(100);
     auto future = litebus::Async(localSchedSrvStub_->GetAID(), &LocalSchedSrvStub::ForwardGroupSchedule,
@@ -336,16 +336,16 @@ TEST_F(DomainGroupCtrlTest, GroupScheduleSuccessful)
     for (int i = 0; i < INSTANCE_NUM; ++i) {
         (void)result.results.emplace_back(schedule_decision::ScheduleResult{ "agent", 0, "" });
     }
-    EXPECT_CALL(*mockScheduler_, GroupScheduleDecision(_)).WillOnce(Return(result));
+    EXPECT_CALL(*mockScheduler_, GroupScheduleDecision(_)).WillOnce(Return(AsyncReturn(result)));
 
     auto response = std::make_shared<messages::ScheduleResponse>();
     response->set_code(StatusCode::SUCCESS);
     EXPECT_CALL(*mockUnderlayerSchedMgr_, Reserve).Times(3)
-        .WillRepeatedly(Return(response));
+        .WillRepeatedly(Return(AsyncReturn(response)));
     EXPECT_CALL(*mockUnderlayerSchedMgr_, UnReserve).Times(0);
 
     EXPECT_CALL(*mockUnderlayerSchedMgr_, Bind)
-        .WillRepeatedly(Return(Status::OK()));
+        .WillRepeatedly(Return(AsyncReturn(Status::OK())));
 
     EXPECT_CALL(*mockUnderlayerSchedMgr_, UnBind).Times(0);
 
@@ -363,15 +363,15 @@ TEST_F(DomainGroupCtrlTest, GroupScheduleRangeInstanceSuccessful)
     for (int i = 0; i < INSTANCE_NUM; ++i) {
         result.results.emplace_back(schedule_decision::ScheduleResult{ "agent", 0, "" });
     }
-    EXPECT_CALL(*mockScheduler_, GroupScheduleDecision(_)).WillOnce(Return(result));
+    EXPECT_CALL(*mockScheduler_, GroupScheduleDecision(_)).WillOnce(Return(AsyncReturn(result)));
     auto response = std::make_shared<messages::ScheduleResponse>();
     response->set_code(StatusCode::SUCCESS);
     EXPECT_CALL(*mockUnderlayerSchedMgr_, Reserve).Times(3)
-        .WillRepeatedly(Return(response));
+        .WillRepeatedly(Return(AsyncReturn(response)));
     EXPECT_CALL(*mockUnderlayerSchedMgr_, UnReserve).Times(0);
 
     EXPECT_CALL(*mockUnderlayerSchedMgr_, Bind)
-        .WillRepeatedly(Return(Status::OK()));
+        .WillRepeatedly(Return(AsyncReturn(Status::OK())));
 
     EXPECT_CALL(*mockUnderlayerSchedMgr_, UnBind).Times(0);
     auto groupInfo = NewRangeInstanceScheduleGroupInfo(100, 3, 1, 1);
@@ -386,7 +386,7 @@ TEST_F(DomainGroupCtrlTest, GroupScheduleRangeInstanceFailed_ResourceNotEnoughTi
     auto groupInfo = NewRangeInstanceScheduleGroupInfo(1, 3, 1, 1);
     schedule_decision::GroupScheduleResult result;
     result.code = StatusCode::RESOURCE_NOT_ENOUGH;
-    EXPECT_CALL(*mockScheduler_, GroupScheduleDecision(_)).WillRepeatedly(Return(result));
+    EXPECT_CALL(*mockScheduler_, GroupScheduleDecision(_)).WillRepeatedly(Return(AsyncReturn(result)));
     auto future = litebus::Async(localSchedSrvStub_->GetAID(), &LocalSchedSrvStub::ForwardGroupSchedule,
                                  domainGroupCtrlActor_->GetAID(), groupInfo);
     ASSERT_AWAIT_READY(future);
@@ -411,8 +411,8 @@ TEST_F(DomainGroupCtrlTest, GroupScheduleRangeInstanceReserveCallBackThenSuccess
     schedule_decision::GroupScheduleResult noEnough;
     noEnough.code = StatusCode::RESOURCE_NOT_ENOUGH;
     EXPECT_CALL(*mockScheduler_, GroupScheduleDecision(_))
-        .WillOnce(Return(result))
-        .WillOnce(Return(noEnough));
+        .WillOnce(Return(AsyncReturn(result)))
+        .WillOnce(Return(AsyncReturn(noEnough)));
 
     auto response = std::make_shared<messages::ScheduleResponse>();
     response->set_code(StatusCode::SUCCESS);
@@ -420,14 +420,14 @@ TEST_F(DomainGroupCtrlTest, GroupScheduleRangeInstanceReserveCallBackThenSuccess
     response1->set_code(StatusCode::DOMAIN_SCHEDULER_UNAVAILABLE_SCHEDULER);
     EXPECT_CALL(*mockUnderlayerSchedMgr_, Reserve)
         // first round to reserve
-        .WillOnce(Return(response))
-        .WillOnce(Return(response1))
-        .WillOnce(Return(response1));
+        .WillOnce(Return(AsyncReturn(response)))
+        .WillOnce(Return(AsyncReturn(response1)))
+        .WillOnce(Return(AsyncReturn(response1)));
 
     EXPECT_CALL(*mockUnderlayerSchedMgr_, UnReserve)
-        .WillRepeatedly(Return(Status::OK()));
+        .WillRepeatedly(Return(AsyncReturn(Status::OK())));
     EXPECT_CALL(*mockUnderlayerSchedMgr_, Bind)
-        .WillRepeatedly(Return(Status::OK()));
+        .WillRepeatedly(Return(AsyncReturn(Status::OK())));
     EXPECT_CALL(*mockUnderlayerSchedMgr_, UnBind).Times(0);
 
     auto groupInfo = NewRangeInstanceScheduleGroupInfo(100, 3, 1, 1);
@@ -441,7 +441,7 @@ TEST_F(DomainGroupCtrlTest, GroupScheduleRangeInstanceReserveCallBackThenSuccess
 TEST_F(DomainGroupCtrlTest, RollBackInstanceAfterLastestSuccessfulReserved)
 {
     auto genResult = [](std::shared_ptr<GroupScheduleContext> ctx, std::vector<bool> reserveResult) {
-        for (int i = 0; i < INSTANCE_NUM; i++) {
+        for (int i = 0; i < reserveResult.size(); i++) {
             if (!reserveResult[i]) {
                 ctx->failedReserve.emplace(ctx->requests[i]->requestid());
             }
@@ -455,11 +455,11 @@ TEST_F(DomainGroupCtrlTest, RollBackInstanceAfterLastestSuccessfulReserved)
         auto ctx = domainGroupCtrlActor_->NewGroupContext(groupInfo);
         // failed success success
         genResult(ctx, {false, true, true});
-        domainGroupCtrlActor_->RollbackContext(ctx);
+        auto rollbacked = domainGroupCtrlActor_->RollbackContext(ctx);
         EXPECT_EQ(ctx->lastReservedInd, -1);
         EXPECT_CALL(*mockUnderlayerSchedMgr_, UnReserve).Times(3)
                 .WillRepeatedly(Return(Status::OK()));
-        auto future = domainGroupCtrlActor_->RollbackRangeReserve(ctx->tryScheduleResults, ctx);
+        auto future = domainGroupCtrlActor_->RollbackRangeReserve(rollbacked, ctx->tryScheduleResults, ctx);
         ASSERT_AWAIT_READY(future);
         EXPECT_EQ(ctx->lastReservedInd, -1);
     }
@@ -471,11 +471,11 @@ TEST_F(DomainGroupCtrlTest, RollBackInstanceAfterLastestSuccessfulReserved)
         auto ctx = domainGroupCtrlActor_->NewGroupContext(groupInfo);
         // failed success success
         genResult(ctx, {true, true, false});
-        domainGroupCtrlActor_->RollbackContext(ctx);
+        auto rollbacked = domainGroupCtrlActor_->RollbackContext(ctx);
         EXPECT_EQ(ctx->lastReservedInd, -1);
         EXPECT_CALL(*mockUnderlayerSchedMgr_, UnReserve).Times(3)
             .WillRepeatedly(Return(Status::OK()));
-        auto future = domainGroupCtrlActor_->RollbackRangeReserve(ctx->tryScheduleResults, ctx);
+        auto future = domainGroupCtrlActor_->RollbackRangeReserve(rollbacked, ctx->tryScheduleResults, ctx);
         ASSERT_AWAIT_READY(future);
         EXPECT_EQ(ctx->lastReservedInd, -1);
     }
@@ -486,11 +486,11 @@ TEST_F(DomainGroupCtrlTest, RollBackInstanceAfterLastestSuccessfulReserved)
         auto ctx = domainGroupCtrlActor_->NewGroupContext(groupInfo);
         // success success false
         genResult(ctx, {true, true, false});
-        domainGroupCtrlActor_->RollbackContext(ctx);
+        auto rollbacked = domainGroupCtrlActor_->RollbackContext(ctx);
         EXPECT_EQ(ctx->lastReservedInd, 1);
         EXPECT_CALL(*mockUnderlayerSchedMgr_, UnReserve).Times(1)
-                .WillRepeatedly(Return(Status::OK()));
-        auto future = domainGroupCtrlActor_->RollbackRangeReserve(ctx->tryScheduleResults, ctx);
+                .WillRepeatedly(Return(AsyncReturn(Status::OK())));
+        auto future = domainGroupCtrlActor_->RollbackRangeReserve(rollbacked, ctx->tryScheduleResults, ctx);
         ASSERT_AWAIT_READY(future);
         EXPECT_EQ(ctx->lastReservedInd, 1);
     }
@@ -499,11 +499,11 @@ TEST_F(DomainGroupCtrlTest, RollBackInstanceAfterLastestSuccessfulReserved)
         auto ctx = domainGroupCtrlActor_->NewGroupContext(groupInfo);
         // success success false
         genResult(ctx, {true, true, false});
-        domainGroupCtrlActor_->RollbackContext(ctx);
+        auto rollbacked = domainGroupCtrlActor_->RollbackContext(ctx);
         EXPECT_EQ(ctx->lastReservedInd, 1);
         EXPECT_CALL(*mockUnderlayerSchedMgr_, UnReserve).Times(1)
-                .WillRepeatedly(Return(Status::OK()));
-        auto future = domainGroupCtrlActor_->RollbackRangeReserve(ctx->tryScheduleResults, ctx);
+                .WillRepeatedly(Return(AsyncReturn(Status::OK())));
+        auto future = domainGroupCtrlActor_->RollbackRangeReserve(rollbacked, ctx->tryScheduleResults, ctx);
         ASSERT_AWAIT_READY(future);
         EXPECT_EQ(ctx->lastReservedInd, 1);
     }
@@ -512,11 +512,34 @@ TEST_F(DomainGroupCtrlTest, RollBackInstanceAfterLastestSuccessfulReserved)
         auto ctx = domainGroupCtrlActor_->NewGroupContext(groupInfo);
         // success success success
         genResult(ctx, {true, true, true});
-        domainGroupCtrlActor_->RollbackContext(ctx);
+        auto rollbacked = domainGroupCtrlActor_->RollbackContext(ctx);
         EXPECT_EQ(ctx->lastReservedInd, 2);
-        EXPECT_CALL(*mockUnderlayerSchedMgr_, UnReserve).Times(0)
-                .WillRepeatedly(Return(Status::OK()));
-        auto future = domainGroupCtrlActor_->RollbackRangeReserve(ctx->tryScheduleResults, ctx);
+        EXPECT_CALL(*mockUnderlayerSchedMgr_, UnReserve).Times(0);
+        auto future = domainGroupCtrlActor_->RollbackRangeReserve(rollbacked, ctx->tryScheduleResults, ctx);
+        ASSERT_AWAIT_READY(future);
+        EXPECT_EQ(ctx->lastReservedInd, 2);
+    }
+    {
+        auto groupInfo = NewRangeInstanceScheduleGroupInfo(1, 5, 3, 2);
+        auto ctx = domainGroupCtrlActor_->NewGroupContext(groupInfo);
+        genResult(ctx, {true, false, true, false, true});
+        auto rollbacked = domainGroupCtrlActor_->RollbackContext(ctx);
+        EXPECT_EQ(ctx->lastReservedInd, 2);
+        EXPECT_CALL(*mockUnderlayerSchedMgr_, UnReserve).Times(3)
+            .WillRepeatedly(Return(Status::OK()));
+        auto future = domainGroupCtrlActor_->RollbackRangeReserve(rollbacked, ctx->tryScheduleResults, ctx);
+        ASSERT_AWAIT_READY(future);
+        EXPECT_EQ(ctx->lastReservedInd, 2);
+    }
+    {
+        auto groupInfo = NewRangeInstanceScheduleGroupInfo(1, 5, 3, 2);
+        auto ctx = domainGroupCtrlActor_->NewGroupContext(groupInfo);
+        genResult(ctx, {true, true, true, false, true});
+        auto rollbacked = domainGroupCtrlActor_->RollbackContext(ctx);
+        EXPECT_EQ(ctx->lastReservedInd, 2);
+        EXPECT_CALL(*mockUnderlayerSchedMgr_, UnReserve).Times(2)
+            .WillRepeatedly(Return(Status::OK()));
+        auto future = domainGroupCtrlActor_->RollbackRangeReserve(rollbacked, ctx->tryScheduleResults, ctx);
         ASSERT_AWAIT_READY(future);
         EXPECT_EQ(ctx->lastReservedInd, 2);
     }
@@ -550,7 +573,7 @@ TEST_F(DomainGroupCtrlTest, TestReleaseUnusedReserve)
             .mutable_groupschedctx()->set_reserved("test2");
 
         EXPECT_CALL(*mockUnderlayerSchedMgr_, UnReserve).Times(1)
-            .WillOnce(Return(Status::OK()));
+            .WillOnce(Return(AsyncReturn(Status::OK())));
         domainGroupCtrlActor_->ReleaseUnusedReserve(ctx->tryScheduleResults, ctx);
         EXPECT_EQ(ctx->lastReservedInd, 0);
     }
@@ -664,7 +687,7 @@ TEST_F(DomainGroupCtrlTest, SfmdGroupScheduleSuccessful)
     // single node
     {
         EXPECT_CALL(*mockScheduler_, GroupScheduleDecision(_))
-            .WillOnce(Return(result));
+            .WillOnce(Return(AsyncReturn(result)));
         auto groupInfo = NewSfmdGroupInfo(100);
 
         auto response1 = NewScheduleResponse(selectedNodeId1);
@@ -678,9 +701,9 @@ TEST_F(DomainGroupCtrlTest, SfmdGroupScheduleSuccessful)
         (*response3->mutable_scheduleresult()->add_devices()) = std::move(NewHeteroDeviceInfo(103, "0.0.0.3"));
 
         EXPECT_CALL(*mockUnderlayerSchedMgr_, Reserve).Times(3)
-            .WillOnce(Return(response1))
-            .WillOnce(Return(response2))
-            .WillOnce(Return(response3));
+            .WillOnce(Return(AsyncReturn(response1)))
+            .WillOnce(Return(AsyncReturn(response2)))
+            .WillOnce(Return(AsyncReturn(response3)));
         EXPECT_CALL(*mockUnderlayerSchedMgr_, UnReserve).Times(0);
 
         std::vector<std::shared_ptr<messages::ScheduleRequest>> scheduleReqs;
@@ -750,7 +773,7 @@ TEST_F(DomainGroupCtrlTest, SfmdGroupScheduleSuccessful)
 
     // multi node
     {
-        EXPECT_CALL(*mockScheduler_, GroupScheduleDecision(_)).WillOnce(Return(result));
+        EXPECT_CALL(*mockScheduler_, GroupScheduleDecision(_)).WillOnce(Return(AsyncReturn(result)));
         auto groupInfo = NewSfmdGroupInfo(100);
 
         auto response1 = NewScheduleResponse(selectedNodeId1);
@@ -767,9 +790,9 @@ TEST_F(DomainGroupCtrlTest, SfmdGroupScheduleSuccessful)
         response3->set_instanceid(groupInfo->requests(2).instance().instanceid());
 
         EXPECT_CALL(*mockUnderlayerSchedMgr_, Reserve).Times(3)
-            .WillOnce(Return(response1))
-            .WillOnce(Return(response2))
-            .WillOnce(Return(response3));
+            .WillOnce(Return(AsyncReturn(response1)))
+            .WillOnce(Return(AsyncReturn(response2)))
+            .WillOnce(Return(AsyncReturn(response3)));
         EXPECT_CALL(*mockUnderlayerSchedMgr_, UnReserve).Times(0);
 
         std::vector<std::shared_ptr<messages::ScheduleRequest>> scheduleReqs;
@@ -852,11 +875,11 @@ TEST_F(DomainGroupCtrlTest, SfmdGroupScheduleSuccessful)
         expectedInsRankIds[response3->instanceid()] = { 0, 2 };
 
         for (const auto &req : scheduleReqs) {
-            auto &instanceId = req->instance().instanceid();
-            if (!google::protobuf::util::JsonStringToMessage(req->instance().createoptions().at(
-                    "FUNCTION_GROUP_RUNNING_INFO"), &functionGroupRunningInfo).ok()) {
+        auto &instanceId = req->instance().instanceid();
+        if (!google::protobuf::util::JsonStringToMessage(req->instance().createoptions().at(
+                "FUNCTION_GROUP_RUNNING_INFO"), &functionGroupRunningInfo).ok()) {
                 EXPECT_EQ(1, 0);
-                    }
+            }
             EXPECT_EQ(expectedInsRankIds[instanceId].find(functionGroupRunningInfo.instancerankid()) !=
                       expectedInsRankIds[instanceId].end(), true);
         }
@@ -879,7 +902,7 @@ TEST_F(DomainGroupCtrlTest, HeteroGroupSchedulerWithResourceGroup)
 
 
     EXPECT_CALL(*mockScheduler_, GroupScheduleDecision(_))
-        .WillOnce(Return(result));
+        .WillOnce(Return(AsyncReturn(result)));
     auto groupInfo = NewSfmdGroupInfo(100);
     for (auto &req : *groupInfo->mutable_requests()) {
         req.mutable_instance()->mutable_scheduleoption()->set_target(resources::CreateTarget::RESOURCE_GROUP);
@@ -896,9 +919,9 @@ TEST_F(DomainGroupCtrlTest, HeteroGroupSchedulerWithResourceGroup)
     (*response3->mutable_scheduleresult()->add_devices()) = std::move(NewHeteroDeviceInfo(103, "0.0.0.3"));
 
     EXPECT_CALL(*mockUnderlayerSchedMgr_, Reserve).Times(3)
-        .WillOnce(Return(response1))
-        .WillOnce(Return(response2))
-        .WillOnce(Return(response3));
+        .WillOnce(Return(AsyncReturn(response1)))
+        .WillOnce(Return(AsyncReturn(response2)))
+        .WillOnce(Return(AsyncReturn(response3)));
     EXPECT_CALL(*mockUnderlayerSchedMgr_, UnReserve).Times(0);
 
     std::vector<std::shared_ptr<messages::ScheduleRequest>> scheduleReqs;

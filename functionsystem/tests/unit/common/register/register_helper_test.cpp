@@ -18,11 +18,11 @@
 
 #include <gtest/gtest.h>
 
-#include "heartbeat/heartbeat_observer.h"
-#include "heartbeat/ping_pong_driver.h"
-#include "logs/logging.h"
-#include "proto/pb/message_pb.h"
-#include "status/status.h"
+#include "common/heartbeat/heartbeat_client.h"
+#include "common/heartbeat/heartbeat_observer.h"
+#include "common/logs/logging.h"
+#include "common/proto/pb/message_pb.h"
+#include "common/status/status.h"
 #include "utils/future_test_helper.h"
 #include "utils/port_helper.h"
 
@@ -50,15 +50,16 @@ public:
             YRLOG_INFO("register fail");
             return;
         }
-        uint16_t port = GetPortEnv("LITEBUS_PORT", 8080);
-        registerHelper_->SetHeartbeatObserveDriver(DOWNSTREAM_ACTOR_NAME, "127.0.0.1:" + std::to_string(port), 1000,
-                                                   [heartbeatTimeout(heartbeatTimeout_)](const litebus::AID &aid) {
-                                                       YRLOG_INFO("upstream heartbeat timeout, aid: {}",
-                                                                  aid.HashString());
-                                                       if (heartbeatTimeout != nullptr) {
-                                                           heartbeatTimeout->SetValue(true);
-                                                       }
-                                                   });
+        uint16_t port = GetPortEnv("LITEBUS_PORT", 0);
+        registerHelper_->SetHeartbeatObserveDriver(DOWNSTREAM_ACTOR_NAME,
+            "127.0.0.1:" + std::to_string(port),
+            1000,
+            [heartbeatTimeout(heartbeatTimeout_)](const litebus::AID &aid, HeartbeatConnection) {
+                YRLOG_INFO("upstream heartbeat timeout, aid: {}", aid.HashString());
+                if (heartbeatTimeout != nullptr) {
+                    heartbeatTimeout->SetValue(true);
+                }
+            }, UPSTREAM_ACTOR_NAME);
         messages::Registered registeredMsg;
         registeredMsg.set_code(static_cast<int32_t>(StatusCode::SUCCESS));
         registeredMsg.set_message("register successfully");
@@ -73,7 +74,7 @@ public:
 
     litebus::Future<bool> HeartbeatTimeoutFuture()
     {
-         return heartbeatTimeout_->GetFuture();
+        return heartbeatTimeout_->GetFuture();
     };
 
 private:
@@ -101,15 +102,18 @@ public:
         messages::Registered registeredMsg;
         registeredMsg.ParseFromString(msg);
         YRLOG_INFO("registered code: {}, message: {}", registeredMsg.code(), registeredMsg.message());
-        registerHelper_->SetPingPongDriver(
-            1000, [heartbeatTimeout(heartbeatTimeout_)](const litebus::AID &aid, HeartbeatConnection type) {
+        uint16_t port = GetPortEnv("LITEBUS_PORT", 8080);
+        std::string actorAddress = "127.0.0.1:" + std::to_string(port);
+        registerHelper_->SetPingPongDriver(DOWNSTREAM_ACTOR_NAME, actorAddress,
+            1000, [heartbeatTimeout(heartbeatTimeout_)](const litebus::AID &aid) {
                 if (heartbeatTimeout != nullptr) {
                     heartbeatTimeout->SetValue(true);
                 }
-            });
+            }, UPSTREAM_ACTOR_NAME);
     }
 
-    void RegisterTimeoutHandler(){
+    void RegisterTimeoutHandler()
+    {
         registerTimeout_->SetValue(true);
     }
 
@@ -120,8 +124,8 @@ public:
         uint16_t port = GetPortEnv("LITEBUS_PORT", 8080);
         std::string actorAddress = "127.0.0.1:" + std::to_string(port);
         registerMsg.set_address(actorAddress);
-        registerHelper_->StartRegister(UPSTREAM_ACTOR_NAME, actorAddress, registerMsg.SerializeAsString(),
-                                       maxRegistersTimes);
+        registerHelper_->StartRegister(
+            UPSTREAM_ACTOR_NAME, actorAddress, registerMsg.SerializeAsString(), maxRegistersTimes);
     }
 
     bool IsRegistered()

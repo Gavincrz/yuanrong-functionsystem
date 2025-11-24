@@ -17,8 +17,8 @@
 #ifndef TEST_INTEGRATION_STUBS_LOCAL_SCHEDULER_SERVICE_STUB_H
 #define TEST_INTEGRATION_STUBS_LOCAL_SCHEDULER_SERVICE_STUB_H
 
-#include "proto/pb/posix_pb.h"
-#include "rpc/stream/posix/control_client.h"
+#include "common/proto/pb/posix_pb.h"
+#include "common/rpc/stream/posix/control_client.h"
 
 namespace functionsystem::test {
 

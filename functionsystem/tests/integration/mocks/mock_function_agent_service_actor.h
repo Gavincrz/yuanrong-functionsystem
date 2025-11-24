@@ -22,9 +22,9 @@
 #include <actor/actor.hpp>
 #include <async/async.hpp>
 
-#include "proto/pb/message_pb.h"
+#include "common/proto/pb/message_pb.h"
 #include "common/register/register_helper.h"
-#include "status/status.h"
+#include "common/status/status.h"
 
 namespace functionsystem::test {
 
@@ -57,8 +57,10 @@ public:
             return;
         }
         runtimeManagerAID_ = litebus::AID(req.name(), req.address());
-        registerHelper_->SetHeartbeatObserveDriver(req.name(), req.address(), 12000,
-                                                   [](const litebus::AID &) { YRLOG_WARN("heartbeat timeouts"); });
+        registerHelper_->SetHeartbeatObserveDriver(
+            req.name(), req.address(), 12000, [](const litebus::AID &, HeartbeatConnection) {
+                YRLOG_WARN("heartbeat timeouts");
+            }, MOCK_AGENT_SERVICE_NAME);
         // send Registered message back to runtime_manager
         rsp.set_code((int32_t)StatusCode::SUCCESS);
         registerHelper_->SendRegistered(req.name(), req.address(), rsp.SerializeAsString());
@@ -96,23 +98,27 @@ public:
         Send(from, "UpdateRuntimeStatusResponse", rsp.SerializeAsString());
     }
 
-    bool StartInstance(const messages::StartInstanceRequest &request)
+    int StartInstance(const messages::StartInstanceRequest &request)
     {
-        YRLOG_INFO("send StartInstance request to {}", std::string(runtimeManagerAID_));
-        Send(runtimeManagerAID_, "StartInstance", request.SerializeAsString());
-        return true;
+        YRLOG_INFO("Send StartInstance request to {}", std::string(runtimeManagerAID_));
+        return Send(runtimeManagerAID_, "StartInstance", request.SerializeAsString());
     }
+
     void StartInstanceResponse(const litebus::AID &from, std::string && /* name */, std::string &&msg)
     {
+        YRLOG_INFO("Receive StartInstance response from {}", std::string(from));
         startInstanceResponseMsg_.SetValue(msg);
     }
 
-    void StopInstance(const messages::StopInstanceRequest &request)
+    int StopInstance(const messages::StopInstanceRequest &request)
     {
-        Send(runtimeManagerAID_, "StopInstance", request.SerializeAsString());
+        YRLOG_INFO("Send StopInstance request to {}", std::string(runtimeManagerAID_));
+        return Send(runtimeManagerAID_, "StopInstance", request.SerializeAsString());
     }
+
     void StopInstanceResponse(const litebus::AID &from, std::string && /* name */, std::string &&msg)
     {
+        YRLOG_INFO("Receive StopInstance response from {}", std::string(from));
         stopInstanceResponseMsg_.SetValue(msg);
     }
 

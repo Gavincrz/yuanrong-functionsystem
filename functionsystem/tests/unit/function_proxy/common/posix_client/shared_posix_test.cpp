@@ -15,7 +15,7 @@
  */
 
 #include "async/async.hpp"
-#include "actor_worker.h"
+#include "common/utils/actor_worker.h"
 #include "function_proxy/common/posix_client/shared_client/shared_client.h"
 #include "function_proxy/common/posix_client/shared_client/shared_client_manager.h"
 #include "function_proxy/common/posix_client/shared_client/posix_stream_manager_proxy.h"

@@ -13,29 +13,32 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include "constants.h"
-#include "logs/logging.h"
+#include "common/constants/constants.h"
+#include "common/logs/logging.h"
 #include "function_proxy/local_scheduler/instance_control/instance_ctrl_actor.h"
 
 #include <gtest/gtest.h>
 
 #include "common/constants/signal.h"
 #include "common/etcd_service/etcd_service_driver.h"
-#include "metrics/metrics_adapter.h"
-#include "http/http_server.h"
-#include "rpc/server/common_grpc_server.h"
+#include "common/metrics/metrics_adapter.h"
+#include "common/http/http_server.h"
+#include "common/rpc/server/common_grpc_server.h"
 #include "common/scheduler_framework/utils/label_affinity_selector.h"
-#include "files.h"
+#include "common/utils/files.h"
 #include "common/utils/struct_transfer.h"
-#include "hex/hex.h"
+#include "common/hex/hex.h"
+#include "function_proxy/common/iam/internal_iam.h"
 #include "function_proxy/common/posix_client/shared_client/posix_stream_manager_proxy.h"
 #include "function_proxy/common/posix_client/shared_client/shared_client_manager.h"
+#include "function_proxy/local_scheduler/instance_control/instance_ctrl_message.h"
 #include "httpd/http.hpp"
 #include "mocks/mock_function_agent_mgr.h"
 #include "mocks/mock_instance_control_view.h"
 #include "mocks/mock_instance_state_machine.h"
 #include "mocks/mock_observer.h"
 #include "mocks/mock_runtime_client.h"
+#include "mocks/mock_internal_iam.h"
 #include "mocks/mock_cloud_api_gateway.h"
 #include "mocks/mock_scheduler.h"
 #include "mocks/mock_local_sched_srv.h"
@@ -51,7 +54,7 @@ using namespace functionsystem::grpc;
 using namespace functionsystem::function_proxy;
 using namespace testing;
 namespace {
-const std::string RESOURCE_DIR = "/home/lwy/sn/resource";
+const std::string RESOURCE_DIR = "/home/sn/resource";
 const std::string A_TXT_CONTENT =
     "f48f9d5a9706088947ac438ebe005aa26c9370579f2231c538b28894a315562182da0eb18002c86728c4cdc0df5efb19e1c2060e93370fd891d4f3d9e5b2b61376643f86d0210ce996446a985759b15112037a5a2f6463cf5fd6afc7ff30fe814bf960eb0c16c5059407c74d6a93a8b3110405cbc935dff672da3b648d62e0d5cecd91bc7063211e6b33210afb6899e8322eabffe167318a5ac5d591aa7579efd37e9e4c7fcf390e97c1151b7c1bf00b4a18764a1a0cac1fda1ea6389b39d755127f0e5bc072e6d5936738be1585535dc63b71ad58686f71c821325009de36bdbac31c1c044845bd1bb41230ec9815695ef3f9e7143a16410113ff3286147a76";
 const std::string B_TXT_CONTENT =
@@ -74,16 +77,9 @@ const std::string GRPC_SERVER_IP = "127.0.0.1";
 
 const std::string HTTP_SERVER_NAME = "v3.0";
 
-// OS path
-const std::string OIDC_TOKEN_DIR = "/var/run/secrets/tokens/";
-const std::string OIDC_TOKEN_PATH = "/var/run/secrets/tokens/oidc-token";
-const std::string MOCK_OIDC_TOKEN_CONTENT = "test_oidc_token";
-const std::string MOCK_IAM_TOKEN = "mock-iam-token";
-
 // sub-pub
 const std::string SUBSCRIBER_ID = "subscriber";
 const std::string PUBLISHER_ID = "publisher";
-
 }
 
 class MockUtilClass {
@@ -101,7 +97,7 @@ class InstanceCtrlActorTest : public ::testing::Test {
 public:
     inline static std::string metaStoreServerHost_;
     inline static uint16_t grpcServerPort_;
-    static void SetUpTestCase()
+    [[maybe_unused]] static void SetUpTestSuite()
     {
         int metaStoreServerPort = functionsystem::test::FindAvailablePort();
         metaStoreServerHost_ = "127.0.0.1:" + std::to_string(metaStoreServerPort);
@@ -145,6 +141,10 @@ public:
         etcdSrvDriver_->StartServer(metaStoreServerHost_);
         metaStoreClient_ = MetaStoreClient::Create({ .etcdAddress = metaStoreServerHost_ });
         auto metaStorageAccessor = std::make_shared<MetaStorageAccessor>(metaStoreClient_);
+        param_.policyPath = RESOURCE_DIR;
+        mockInternalIAM_ = std::make_shared<MockInternalIAM>(param_);
+        mockInternalIAM_->BindMetaStorageAccessor(metaStorageAccessor);
+        EXPECT_TRUE(mockInternalIAM_->Init());
 
         CommonGrpcServerConfig serverConfig;
         serverConfig.ip = GRPC_SERVER_IP;
@@ -152,6 +152,7 @@ public:
         serverConfig.creds = ::grpc::InsecureServerCredentials();
         server_ = std::make_shared<CommonGrpcServer>(serverConfig);
         posixService_ = std::make_shared<PosixService>();
+        posixService_->BindInternalIAM(mockInternalIAM_);
         server_->RegisterService(posixService_);
         server_->Start();
         ASSERT_TRUE(server_->WaitServerReady());
@@ -186,6 +187,8 @@ public:
                                                                  instanceCtrlConfig_);
 
         instanceCtrlActor_->BindMetaStoreClient(metaStoreClient_);
+        EXPECT_CALL(*mockInternalIAM_, IsIAMEnabled).WillRepeatedly(Return(true));
+        instanceCtrlActor_->BindInternalIAM(mockInternalIAM_);
         instanceCtrlActor_->BindFunctionAgentMgr(mockFunctionAgentMgr_);
         instanceCtrlActor_->BindObserver(mockObserver_);
         instanceCtrlActor_->BindInstanceControlView(mockInstanceCtrlView_);
@@ -202,6 +205,7 @@ public:
         litebus::Terminate(instanceCtrlActor_->GetAID());
         litebus::Await(instanceCtrlActor_);
         instanceCtrlActor_= nullptr;
+        mockInternalIAM_ = nullptr;
         litebus::Terminate(sharedClientManager_->GetAID());
         litebus::Await(sharedClientManager_);
         sharedClientManager_ = nullptr;
@@ -242,6 +246,8 @@ public:
 protected:
     InstanceCtrlConfig instanceCtrlConfig_;
     bool isResourceExisted_{ false };
+    InternalIAM::Param param_{ true, "" };
+    std::shared_ptr<MockInternalIAM> mockInternalIAM_;
     std::unique_ptr<meta_store::test::EtcdServiceDriver> etcdSrvDriver_;
     std::shared_ptr<MetaStoreClient> metaStoreClient_;
     std::shared_ptr<InstanceCtrlActor> instanceCtrlActor_;
@@ -326,6 +332,40 @@ TEST_F(InstanceCtrlActorTest, StopAppDriver)
     killContext->isLocal = true;
     EXPECT_CALL(*mockInstanceCtrlView_, GetInstance).WillOnce(Return(nullptr));
     instanceCtrlActor_->StopAppDriver(killContext);
+}
+
+TEST_F(InstanceCtrlActorTest, AuthorizeKillTest)
+{
+    EXPECT_CALL(*mockInternalIAM_, IsIAMEnabled).WillRepeatedly(Return(true));
+    EXPECT_CALL(*mockInternalIAM_, GetCredType).WillRepeatedly(Return(function_proxy::IAMCredType::TOKEN));
+    EXPECT_TRUE(instanceCtrlActor_->AuthorizeKill("", nullptr).Get().IsOk());
+    EXPECT_TRUE(instanceCtrlActor_->AuthorizeKill("job-killer-123", nullptr).Get().IsOk());
+    auto mockInstanceStateMachine = std::make_shared<MockInstanceStateMachine>("TEST_PROXY_ID");
+    EXPECT_CALL(*mockInstanceCtrlView_, GetInstance).WillOnce(Return(nullptr)).WillOnce(Return(mockInstanceStateMachine))
+        .WillOnce(Return(nullptr)).WillRepeatedly(Return(mockInstanceStateMachine));
+    InstanceInfo ins1;
+    ins1.set_tenantid("tenant002");
+    ins1.set_instanceid(TEST_INSTANCE_ID);
+    auto killReq = std::make_shared<KillRequest>();
+    EXPECT_TRUE(instanceCtrlActor_->AuthorizeKill("ins-123", killReq).Get().IsError());
+    EXPECT_CALL(*mockInstanceStateMachine, GetInstanceInfo).WillOnce(Return(ins1));
+    EXPECT_TRUE(
+        instanceCtrlActor_->AuthorizeKill("ins-123", killReq).Get().StatusCode() == StatusCode::ERR_INSTANCE_NOT_FOUND);
+
+    InstanceInfo emptyTenant1;
+    emptyTenant1.set_instanceid(TEST_INSTANCE_ID);
+    EXPECT_CALL(*mockInstanceStateMachine, GetInstanceInfo).WillOnce(Return(emptyTenant1));
+    EXPECT_TRUE(instanceCtrlActor_->AuthorizeKill("ins-123", killReq).Get().IsOk());
+    EXPECT_CALL(*mockInstanceStateMachine, GetInstanceInfo).WillOnce(Return(ins1)).WillOnce(Return(emptyTenant1));
+    EXPECT_TRUE(instanceCtrlActor_->AuthorizeKill("ins-123", killReq).Get().IsOk());
+    InstanceInfo ins;
+    ins.set_tenantid("tenant002");
+    ins.set_instanceid(TEST_INSTANCE_ID);
+    ins.set_issystemfunc(true);
+    EXPECT_CALL(*mockInstanceStateMachine, GetInstanceInfo).WillRepeatedly(Return(ins));
+    EXPECT_CALL(*mockInternalIAM_, Authorize).WillOnce(Return(Status::OK()));
+    EXPECT_TRUE(instanceCtrlActor_->AuthorizeKill("ins-123", killReq).Get().IsOk());
+
 }
 
 TEST_F(InstanceCtrlActorTest, SetTenantAffinityOpt_instance)
@@ -496,7 +536,7 @@ TEST_F(InstanceCtrlActorTest, SetInstanceBillingContext)
  * SetScheduleReqConfigSuccess
  * Test Set ScheduleReq config successfully
  * Steps:
- * 1. execute SetScheduleReqFunctionAgentIDAndHeteroConfig and set ScheduleReq
+ * 1. execute MergeScheduleResultToRequest and set ScheduleReq
  *
  * Expectations:
  * 1. set ScheduleReq successfully
@@ -526,7 +566,7 @@ TEST_F(InstanceCtrlActorTest, SetScheduleReqConfigSuccess)
         (*cg.mutable_vectors())["uuid"].add_values(1010);
     }
 
-    SetScheduleReqFunctionAgentIDAndHeteroConfig(scheduleReq, result);
+    MergeScheduleResultToRequest(scheduleReq, result);
     ASSERT_TRUE(scheduleReq->mutable_instance()->functionagentid() == "agent-id-0");
     EXPECT_EQ(scheduleReq->instance().schedulerchain().size(), 1);
     EXPECT_EQ(scheduleReq->instance().schedulerchain().Get(0), "agent-id-0");
@@ -554,7 +594,7 @@ TEST_F(InstanceCtrlActorTest, ShutdownWithNoInstanceClient)
     inst.set_instanceid(id);
     inst.set_requestid(id2);
 
-    metrics::MetricsAdapter::GetInstance().GetMetricsContext().InitBillingInstance(id, std::map<std::string, std::string>{});
+    metrics::MetricsAdapter::GetInstance().GetMetricsContext().InitBillingInstance(id, "", std::map<std::string, std::string>{});
     auto res = instanceCtrlActor_->ShutDownInstance(inst, 10);
     EXPECT_EQ(res.Get(), Status::OK());
     auto endTime = metrics::MetricsAdapter::GetInstance().GetMetricsContext().GetBillingInstance(id).endTimeMillis;
@@ -562,7 +602,6 @@ TEST_F(InstanceCtrlActorTest, ShutdownWithNoInstanceClient)
     EXPECT_TRUE(endTime != 0);
     metrics::MetricsAdapter::GetInstance().GetMetricsContext().EraseBillingInstance();
 }
-
 /**
  * RetryForwardSchedule
  * Test is transition version is incorrect, and retry RetryForwardSchedule
@@ -659,11 +698,14 @@ TEST_F(InstanceCtrlActorTest, TryDispatchOnLocal)
     result.savedInfo = instanceInfoSaved;
     EXPECT_CALL(*mockInstanceStateMachine, TransitionToImpl(_, _, _, _, _)).WillRepeatedly(Return(result));
     bool isCalled = false;
-    EXPECT_CALL(*mockScheduler, ScheduleConfirm).WillOnce(Return(Status::OK()))
-        .WillOnce(Return(Status::OK())).WillOnce(DoAll(Assign(&isCalled, true), Return(Status::OK()))); // mock schedule successfully
+    EXPECT_CALL(*mockScheduler, ScheduleConfirm)
+        .WillOnce(Return(Status::OK()))
+        .WillOnce(Return(Status::OK()))
+        .WillOnce(DoAll(Assign(&isCalled, true), Return(Status::OK())));  // mock schedule successfully
 
     // test instance parentfunctionproxyaid is empty
-    auto future = instanceCtrlActor_->TryDispatchOnLocal(status, scheduleRequest, scheduleResult, InstanceState::SCHEDULING, mockInstanceStateMachine);
+    auto future = instanceCtrlActor_->TryDispatchOnLocal(status, scheduleRequest, scheduleResult,
+                                                         InstanceState::SCHEDULING, mockInstanceStateMachine);
     ASSERT_AWAIT_READY(future);
     EXPECT_EQ(future.Get().code(), StatusCode::INSTANCE_TRANSACTION_WRONG_VERSION);
 
@@ -775,6 +817,7 @@ TEST_F(InstanceCtrlActorTest, CancelSchedule)
         request->set_requestid(TEST_REQUEST_ID);
         request->mutable_instance()->CopyFrom(info);
         EXPECT_CALL(*mockInstanceStateMachine, GetScheduleRequest).WillRepeatedly(Return(request));
+        EXPECT_CALL(*mockInternalIAM_, IsIAMEnabled).WillOnce(Return(false)).WillOnce(Return(false));
         InstanceState state;
         EXPECT_CALL(*mockInstanceStateMachine, TransitionToImpl)
             .WillOnce(DoAll(testing::SaveArg<0>(&state), Return(TransitionResult{ litebus::None(), info, info })));
@@ -808,7 +851,7 @@ TEST_F(InstanceCtrlActorTest, CancelSchedule)
  */
 TEST_F(InstanceCtrlActorTest, RetryNotificationSignal) {
     auto scheduleReq = std::make_shared<messages::ScheduleRequest>();
-    scheduleReq->mutable_instance()->mutable_instancestatus()->set_code(static_cast<int32_t>(InstanceState::CREATING));
+    scheduleReq->mutable_instance()->mutable_instancestatus()->set_code(static_cast<int32_t>(InstanceState::RUNNING));
     scheduleReq->mutable_instance()->set_functionproxyid(TEST_NODE_ID);
     scheduleReq->mutable_instance()->set_instanceid(SUBSCRIBER_ID);
     scheduleReq->set_requestid("requestId");
@@ -853,6 +896,137 @@ TEST_F(InstanceCtrlActorTest, RetryNotificationSignal) {
 
     response = instanceCtrlActor_->Kill(PUBLISHER_ID, notifyReq).Get();
     EXPECT_EQ(response.code(), common::ErrorCode::ERR_NONE);
+}
+
+TEST_F(InstanceCtrlActorTest, GetStaticFunctionChangeRequest) {
+    InstanceInfo info;
+    info.set_instanceid("test-instanceID");
+    info.set_requestid("test-requestID");
+    auto req = GetStaticFunctionChangeRequest(info, 0);
+    EXPECT_EQ(req->instanceid(), info.instanceid());
+    EXPECT_EQ(req->requestid(), info.requestid());
+    EXPECT_EQ(req->status(), 0);
+}
+
+TEST_F(InstanceCtrlActorTest, CheckExistInstanceStateTest)
+{
+    auto runtimePromise = std::make_shared<litebus::Promise<messages::ScheduleResponse>>();
+    auto scheduleReq = std::make_shared<messages::ScheduleRequest>();
+
+    // running but instance is not existed
+    auto instanceControlView = std::make_shared<MockInstanceControlView>("nodeID");
+    instanceCtrlActor_->instanceControlView_ = instanceControlView;
+    EXPECT_CALL(*instanceControlView, GetInstance).WillOnce(Return(nullptr));
+
+    auto result = litebus::Async(instanceCtrlActor_->GetAID(), &InstanceCtrlActor::CheckExistInstanceState,
+                                 InstanceState::RUNNING, runtimePromise, scheduleReq, false);
+    ASSERT_AWAIT_READY(result);
+    EXPECT_FALSE(result.Get());
+
+    // running local instance
+    runtimePromise = std::make_shared<litebus::Promise<messages::ScheduleResponse>>();
+    scheduleReq = std::make_shared<messages::ScheduleRequest>();
+
+    auto mockInstanceStateMachine = std::make_shared<MockInstanceStateMachine>("machine1");
+    EXPECT_CALL(*instanceControlView, GetInstance).WillOnce(Return(mockInstanceStateMachine));
+    EXPECT_CALL(*mockInstanceStateMachine, GetOwner).WillOnce(Return(TEST_NODE_ID));
+
+    result = litebus::Async(instanceCtrlActor_->GetAID(), &InstanceCtrlActor::CheckExistInstanceState,
+                            InstanceState::RUNNING, runtimePromise, scheduleReq, false);
+    ASSERT_AWAIT_READY(runtimePromise->GetFuture());
+    EXPECT_EQ(runtimePromise->GetFuture().Get().code(), static_cast<int32_t>(StatusCode::ERR_INSTANCE_DUPLICATED));
+
+    // running remote instance, aid ok
+    EXPECT_CALL(*mockObserver_, GetLocalSchedulerAID)
+        .WillOnce(Return(litebus::Option<litebus::AID>(instanceCtrlActor_->GetAID())));
+    EXPECT_CALL(*instanceControlView, GetInstance)
+        .WillOnce(Return(mockInstanceStateMachine))
+        .WillOnce(Return(mockInstanceStateMachine))
+        .WillOnce(Return(mockInstanceStateMachine));
+    EXPECT_CALL(*mockInstanceStateMachine, GetOwner)
+        .WillOnce(Return("remote_owner"))
+        .WillOnce(Return("remote_owner"))
+        .WillOnce(Return("remote_owner"))
+        .WillOnce(Return(TEST_NODE_ID));
+    EXPECT_CALL(*mockInstanceStateMachine, GetInstanceState).WillOnce(Return(InstanceState::FATAL));
+
+    runtimePromise = std::make_shared<litebus::Promise<messages::ScheduleResponse>>();
+    result = litebus::Async(instanceCtrlActor_->GetAID(), &InstanceCtrlActor::CheckExistInstanceState,
+                            InstanceState::RUNNING, runtimePromise, scheduleReq, false);
+    ASSERT_AWAIT_READY(runtimePromise->GetFuture());
+    EXPECT_EQ(runtimePromise->GetFuture().Get().code(), static_cast<int32_t>(StatusCode::ERR_INSTANCE_EXITED));
+}
+
+TEST_F(InstanceCtrlActorTest, ExitWithoutCodeTest)
+{
+    auto request = std::make_shared<ExitRequest>();
+    request->set_code(common::ERR_NONE);
+    auto future = litebus::Async(instanceCtrlActor_->GetAID(), &InstanceCtrlActor::HandleExit, "InstanceA", request);
+    ASSERT_AWAIT_READY(future);
+    EXPECT_EQ(future.Get().code(), common::ErrorCode::ERR_NONE);
+}
+
+TEST_F(InstanceCtrlActorTest, ExitInvalidCodeTest)
+{
+    auto request = std::make_shared<ExitRequest>();
+    request->set_code(common::ERR_REQUEST_BETWEEN_RUNTIME_BUS);  // invalid code
+    auto future = litebus::Async(instanceCtrlActor_->GetAID(), &InstanceCtrlActor::HandleExit, "InstanceA", request);
+    ASSERT_AWAIT_READY(future);
+    EXPECT_EQ(future.Get().code(), common::ERR_PARAM_INVALID);
+    EXPECT_EQ(future.Get().message(), "invalid exit code");
+}
+
+TEST_F(InstanceCtrlActorTest, ExitWithNPUFaultTest)
+{
+    auto mockInstanceCtrlView = std::make_shared<MockInstanceControlView>("TEST_NODE_ID");
+    instanceCtrlActor_->instanceControlView_ = mockInstanceCtrlView;
+
+    auto stateMachine = std::make_shared<MockInstanceStateMachine>("TEST_NODE_ID");
+    auto &mockStateMachine = *stateMachine;
+
+    // instance not found
+    EXPECT_CALL(*mockInstanceCtrlView, GetInstance).WillOnce(Return(nullptr));
+    auto request = std::make_shared<ExitRequest>();
+    request->set_code(common::ERR_NPU_FAULT_ERROR);
+    auto future = litebus::Async(instanceCtrlActor_->GetAID(), &InstanceCtrlActor::HandleExit, "InstanceA", request);
+    ASSERT_AWAIT_READY(future);
+    EXPECT_EQ(future.Get().code(), common::ERR_INSTANCE_NOT_FOUND);
+    EXPECT_EQ(future.Get().message(), "instance not found");
+
+    // instance not on this node
+    EXPECT_CALL(*mockInstanceCtrlView, GetInstance).WillOnce(Return(stateMachine));
+    EXPECT_CALL(mockStateMachine, GetOwner).WillOnce(Return("fake node"));
+    future = litebus::Async(instanceCtrlActor_->GetAID(), &InstanceCtrlActor::HandleExit, "InstanceA", request);
+    ASSERT_AWAIT_READY(future);
+    EXPECT_EQ(future.Get().code(), common::ERR_INSTANCE_NOT_FOUND);
+    EXPECT_EQ(future.Get().message(), "instance not found");
+
+    // invalid state
+    EXPECT_CALL(*mockInstanceCtrlView, GetInstance).WillRepeatedly(Return(stateMachine));
+    EXPECT_CALL(mockStateMachine, GetOwner).WillRepeatedly(Return("TEST_NODE_ID"));
+    EXPECT_CALL(mockStateMachine, GetInstanceState).WillOnce(Return(InstanceState::FATAL));
+    future = litebus::Async(instanceCtrlActor_->GetAID(), &InstanceCtrlActor::HandleExit, "InstanceA", request);
+    ASSERT_AWAIT_READY(future);
+    EXPECT_EQ(future.Get().code(), common::ERR_INNER_SYSTEM_ERROR);
+    EXPECT_EQ(future.Get().message(), "invalid status, instance is not running");
+
+    // instance is creating
+    EXPECT_CALL(mockStateMachine, GetInstanceState).WillOnce(Return(InstanceState::CREATING));
+    EXPECT_CALL(mockStateMachine, AddStateChangeCallback).WillOnce(Return());
+    future = litebus::Async(instanceCtrlActor_->GetAID(), &InstanceCtrlActor::HandleExit, "InstanceA", request);
+    ASSERT_AWAIT_READY(future);
+    EXPECT_EQ(future.Get().code(), common::ERR_NONE);
+
+    // running -> sub-health
+    EXPECT_CALL(mockStateMachine, GetInstanceState).WillOnce(Return(InstanceState::RUNNING));
+    EXPECT_CALL(mockStateMachine, IsSaving).WillOnce(Return(false));
+    InstanceInfo info;
+    EXPECT_CALL(mockStateMachine, GetInstanceInfo).WillOnce(Return(info));
+    EXPECT_CALL(mockStateMachine, TransitionToImpl(InstanceState::SUB_HEALTH, _, _, _, ERR_NPU_FAULT_ERROR))
+        .WillOnce(Return(TransitionResult{ InstanceState::SUB_HEALTH, InstanceInfo(), InstanceInfo(), 3 }));
+    future = litebus::Async(instanceCtrlActor_->GetAID(), &InstanceCtrlActor::HandleExit, "InstanceA", request);
+    ASSERT_AWAIT_READY(future);
+    EXPECT_EQ(future.Get().code(), common::ERR_NONE);
 }
 
 }  // namespace functionsystem::test

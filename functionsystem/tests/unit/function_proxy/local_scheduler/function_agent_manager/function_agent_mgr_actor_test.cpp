@@ -17,7 +17,7 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
-#include "proto/pb/message_pb.h"
+#include "common/proto/pb/message_pb.h"
 #include "common/types/instance_state.h"
 #include "function_agent/code_deployer/s3_deployer.h"
 #include "kv_service_accessor_actor.h"
@@ -36,7 +36,6 @@ using std::string;
 using namespace local_scheduler;
 using namespace ::testing;
 
-const string TEST_META_STORE_ADDRESS = "127.0.0.1:32279";
 const local_scheduler::FunctionAgentMgrActor::Param PARAM = {
     .retryTimes = 3,
     .retryCycleMs = 100,
@@ -44,7 +43,7 @@ const local_scheduler::FunctionAgentMgrActor::Param PARAM = {
     .pingCycleMs = 500,
     .enableTenantAffinity = true,
     .tenantPodReuseTimeWindow = 3,
-    .enableForceDeletePod = true,
+    .enableIpv4TenantIsolation = true,
     .getAgentInfoRetryMs = 100,
     .invalidAgentGCInterval = 100,
 };
@@ -75,9 +74,9 @@ protected:
 
 class FuncAgentMgrActorHelper : public FunctionAgentMgrActor {
 public:
-    FuncAgentMgrActorHelper()
+    FuncAgentMgrActorHelper(const std::string &metaStoreAddress)
         : FunctionAgentMgrActor("funcAgentMgr", PARAM, "nodeID",
-                                std::make_shared<MockMetaStoreClient>(TEST_META_STORE_ADDRESS))
+                                std::make_shared<MockMetaStoreClient>(metaStoreAddress))
     {
     }
 
@@ -101,10 +100,17 @@ public:
 
 class FuncAgentMgrActorTest : public ::testing::Test {
 protected:
+    [[maybe_unused]] static void SetUpTestSuite()
+    {
+        metaStoreAddress_ = "127.0.0.1:" + std::to_string(FindAvailablePort());
+    }
+
     void SetUp() override
     {
-        agentMgrActorHelper_ = make_shared<FuncAgentMgrActorHelper>();
+        agentMgrActorHelper_ = make_shared<FuncAgentMgrActorHelper>(metaStoreAddress_);
     }
+
+    inline static std::string metaStoreAddress_;
     shared_ptr<FuncAgentMgrActorHelper> agentMgrActorHelper_;
 };
 
@@ -142,7 +148,6 @@ TEST_F(FuncAgentMgrActorTest, TimeoutEventTest)
     auto mockMetaStoreClient_ = std::make_shared<MockMetaStoreClient>("111111");
     auto actor = make_shared<local_scheduler::FunctionAgentMgrActor>("RecoverHeartBeatSuccessActor", PARAM, "nodeID",
                                                                      mockMetaStoreClient_);
-    actor->heartBeatObserverCtrl_ = std::make_shared<HeartbeatObserverCtrl>(100, 100);
     actor->TimeoutEvent("id1");
     EXPECT_EQ(actor->funcAgentTable_.count("id1"), size_t(0));
 
@@ -237,7 +242,7 @@ TEST_F(FuncAgentMgrActorTest, QueryDebugInstanceInfos)
     EXPECT_EQ(response->kvs.size(), static_cast<uint32_t>(1));
     EXPECT_EQ(response->kvs[0].key(), "/yr/debug/test_instID1");
     messages::DebugInstanceInfo info;
-    google::protobuf::util::JsonStringToMessage(response->kvs[0].value(),&info);
+    (void)google::protobuf::util::JsonStringToMessage(response->kvs[0].value(),&info);
     EXPECT_EQ(info.instanceid(),"test_instID1");
     EXPECT_EQ(info.debugserver(),"test_gdbserverAddr");
 
@@ -252,6 +257,110 @@ TEST_F(FuncAgentMgrActorTest, QueryDebugInstanceInfos)
     litebus::Terminate(leaseServiceActor->GetAID());
     litebus::Await(leaseServiceActor);
 
+}
+
+TEST_F(FuncAgentMgrActorTest, TenantEventCase2)
+{
+    // same node
+    TenantEvent event1 = {
+        .tenantID = TENANT_ID1,
+        .functionProxyID = "nodeID",
+        .functionAgentID = FUNC_AGENT_ID1,
+        .instanceID = FUNC_INSTANCE_ID1,
+        .agentPodIp = "10.42.1.221",
+        .code = static_cast<int32_t>(InstanceState::RUNNING),
+    };
+    agentMgrActorHelper_->OnTenantUpdateInstance(event1);
+
+    // same tenant on other node
+    TenantEvent event2 = {
+        .tenantID = TENANT_ID1,
+        .functionProxyID = FUNC_PROXY_ID2,
+        .functionAgentID = FUNC_AGENT_ID2,
+        .instanceID = FUNC_INSTANCE_ID2,
+        .agentPodIp = "10.42.2.222",
+        .code = static_cast<int32_t>(InstanceState::RUNNING),
+    };
+    agentMgrActorHelper_->OnTenantUpdateInstance(event2);
+
+    // another instance but same pod in this node
+    TenantEvent event3 = {
+        .tenantID = TENANT_ID1,
+        .functionProxyID = "nodeID",
+        .functionAgentID = FUNC_AGENT_ID1,
+        .instanceID = FUNC_INSTANCE_ID2,
+        .agentPodIp = "10.42.1.221",
+        .code = static_cast<int32_t>(InstanceState::RUNNING),
+    };
+    agentMgrActorHelper_->OnTenantUpdateInstance(event3);
+
+    auto tenantCacheMap = agentMgrActorHelper_->GetTenantCacheMap();
+    auto tenantCache = tenantCacheMap[event1.tenantID];
+    EXPECT_EQ(tenantCache->podIps.size(), 2u);
+
+    agentMgrActorHelper_->OnTenantDeleteInstance(event3);
+    EXPECT_EQ(tenantCache->podIps.size(), 2u);
+
+    agentMgrActorHelper_->OnTenantDeleteInstance(event1);
+    EXPECT_EQ(tenantCache->podIps.size(), 1u);
+    EXPECT_FALSE(tenantCache->functionAgentCacheMap[event1.functionAgentID].isAgentOnThisNode);
+}
+
+TEST_F(FuncAgentMgrActorTest, TenantEventCase3)
+{
+    auto mockAgent = std::make_shared<MockAgentActor>();
+    litebus::Spawn(mockAgent);
+
+    FuncAgentMgrActorHelper::FuncAgentInfo mockAgentInfo;
+    mockAgentInfo.aid = mockAgent->GetAID();
+
+    EXPECT_CALL(*mockAgent, SetNetworkIsolationRequest).WillOnce(Return()).WillOnce(Return()).WillOnce(Return());
+
+    agentMgrActorHelper_->InsertAgent(FUNC_AGENT_ID1, mockAgentInfo);
+    agentMgrActorHelper_->InsertAgent(FUNC_AGENT_ID2, mockAgentInfo);
+
+    // same tenant on other node
+    TenantEvent event2 = {
+        .tenantID = TENANT_ID1,
+        .functionProxyID = FUNC_PROXY_ID2,
+        .functionAgentID = FUNC_AGENT_ID2,
+        .instanceID = FUNC_INSTANCE_ID2,
+        .agentPodIp = "10.42.2.222",
+        .code = static_cast<int32_t>(InstanceState::RUNNING),
+    };
+    agentMgrActorHelper_->OnTenantUpdateInstance(event2);
+
+    // same node
+    TenantEvent event1 = {
+        .tenantID = TENANT_ID1,
+        .functionProxyID = "nodeID",
+        .functionAgentID = FUNC_AGENT_ID1,
+        .instanceID = FUNC_INSTANCE_ID1,
+        .agentPodIp = "10.42.1.221",
+        .code = static_cast<int32_t>(InstanceState::RUNNING),
+    };
+    agentMgrActorHelper_->OnTenantUpdateInstance(event1);
+
+    TenantEvent event3 = {
+        .tenantID = TENANT_ID1,
+        .functionProxyID = "nodeID",
+        .functionAgentID = "fake_agent_id",
+        .instanceID = FUNC_INSTANCE_ID1,
+        .agentPodIp = "10.42.1.221",
+        .code = static_cast<int32_t>(InstanceState::RUNNING),
+    };
+    agentMgrActorHelper_->OnTenantUpdateInstance(event3);
+
+    auto tenantCacheMap = agentMgrActorHelper_->GetTenantCacheMap();
+    auto tenantCache = tenantCacheMap[event1.tenantID];
+    EXPECT_EQ(tenantCache->podIps.size(), 2u);
+
+    agentMgrActorHelper_->OnTenantDeleteInstance(event1);
+    EXPECT_EQ(tenantCache->podIps.size(), 1u);
+    EXPECT_FALSE(tenantCache->functionAgentCacheMap[event2.functionAgentID].isAgentOnThisNode);
+
+    litebus::Terminate(mockAgent->GetAID());
+    litebus::Await(mockAgent->GetAID());
 }
 
 }  // namespace functionsystem::test

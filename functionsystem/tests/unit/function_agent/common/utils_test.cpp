@@ -22,9 +22,9 @@
 #include <iostream>
 #include <nlohmann/json.hpp>
 #include <utils/os_utils.hpp>
-
-#include "logs/logging.h"
-#include "hex/hex.h"
+#include "common/utils/sensitive_value.h"
+#include "common/logs/logging.h"
+#include "common/hex/hex.h"
 #include "function_agent/common/constants.h"
 
 namespace functionsystem::test {
@@ -73,6 +73,8 @@ const std::string PARSED_JSON =
     "lib-dynload:/usr/local/lib/python3.7/dist-packages:/usr/local/lib/python3.7/dist-packages/pip-20.1.1-py3.7.egg:/"
     "usr/lib/python3/dist-packages\",\"func-FAAS_FUNCTION_REGION\":\"cn\",\"func-FAAS_FUNCTION_TIMEZONE\":\"Asia/"
     "Shanghai\",\"func-adminFuncLoad\":\"true\",\"func-stream\":\"true\"}";
+
+const std::string RUNTIME_ENV_PREFIX = "func-";
 
 class FunctionAgentUtilsTest : public ::testing::Test {
 public:
@@ -216,6 +218,11 @@ TEST_F(FunctionAgentUtilsTest, SetRuntimeConfigSuccess)
     EXPECT_EQ(runtimeConfig.subdirectoryconfig().parentdirectory(), "/tmp");
     EXPECT_EQ(runtimeConfig.subdirectoryconfig().quota(), 355);
 
+    // set disk mount point
+    auto diskEnvKey = RUNTIME_ENV_PREFIX + resource_view::DISK_MOUNT_POINT;
+    (*deployInstanceRequest->mutable_createoptions())[diskEnvKey] = "/tmp/abc/";
+    runtimeConfig = function_agent::SetRuntimeConfig(deployInstanceRequest);
+    EXPECT_TRUE(runtimeConfig.userenvs().find(diskEnvKey) != runtimeConfig.userenvs().end());
     (void)litebus::os::Rmdir(resourcePath);
 }
 
@@ -495,6 +502,22 @@ TEST_F(FunctionAgentUtilsTest, AddDefaultEnvWithDELEGATE_ENV_VAR)
     EXPECT_EQ((*runtimeConf2.mutable_posixenvs()).size(), 1);
 }
 
+TEST_F(FunctionAgentUtilsTest, SensitiveValueHashTest)
+{
+    const std::string plaint = "secret-key";
+
+    const auto value = SensitiveValue(plaint);
+
+    ::messages::TenantCredentials credentials;
+    credentials.set_secretkey(value.GetData());
+
+    ::messages::TenantCredentials credentials2;
+    credentials2.set_secretkey(value.GetData(), value.GetSize());
+
+    const auto value_hash = std::hash<std::string>()(value.GetData());
+    EXPECT_EQ(value_hash, std::hash<std::string>()(credentials.secretkey()));
+    EXPECT_EQ(value_hash, std::hash<std::string>()(credentials2.secretkey()));
+}
 TEST_F(FunctionAgentUtilsTest, DecryptDelegateDataTest)
 {
     std::string delegateData = "{\"accessKey\":\"\",\"authToken\":\"\",\"cryptoAlgorithm\":\"NO_CRYPTO\",\"encrypted_user_data\":\"\",\"envKey\":\"\",\"environment\":\"{\\\"key1\\\":\\\"val111\\\",\\\"key2\\\":\\\"val222\\\"}\",\"secretKey\":\"\",\"securityAk\":\"\",\"securitySk\":\"\",\"securityToken\":\"\"}";

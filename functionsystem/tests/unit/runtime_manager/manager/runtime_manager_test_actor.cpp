@@ -17,8 +17,8 @@
 #include "runtime_manager_test_actor.h"
 
 #include "common/constants/actor_name.h"
-#include "heartbeat/ping_pong_driver.h"
-#include "logs/logging.h"
+#include "common/heartbeat/heartbeat_client.h"
+#include "common/logs/logging.h"
 #include "utils/port_helper.h"
 
 namespace functionsystem::runtime_manager {
@@ -106,13 +106,6 @@ void RuntimeManagerTestActor::Finalize()
 uint32_t RuntimeManagerTestActor::GetReceiveTimes()
 {
     return receiveTimes_;
-}
-void RuntimeManagerTestActor::SendPingOnce(const litebus::AID &to)
-{
-    uint16_t port = functionsystem::test::GetPortEnv("LITEBUS_PORT", 8080);
-    litebus::AID dst(RUNTIME_MANAGER_PINGPONG_ACTOR_NAME + PINGPONG_BASENAME, "127.0.0.1:" + std::to_string(port));
-    dst.SetProtocol(litebus::BUS_UDP);
-    Send(dst, "Ping", "");
 }
 
 void RuntimeManagerTestActor::QueryInstanceStatusInfo(const litebus::AID &to, const messages::QueryInstanceStatusRequest &request)

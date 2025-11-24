@@ -26,6 +26,7 @@
 #include "common/trace/trace_actor.h"
 #endif
 #include "function_proxy/common/observer/observer_actor.h"
+#include "mocks/mock_internal_iam.h"
 #include "mocks/mock_data_observer.h"
 #include "mocks/mock_instance_proxy_wrapper.h"
 #include "mocks/mock_shared_client.h"
@@ -60,6 +61,7 @@ public:
         MemoryControlConfig config;
         memoryMonitor_ = std::make_shared<MemoryMonitor>(config);
         InvocationHandler::BindMemoryMonitor(memoryMonitor_);
+        InternalIAM::Param param_{ false, "" };
     }
 
     void TearDown() override
@@ -74,6 +76,7 @@ public:
         mockObserver_ = nullptr;
         etcdSrvDriver_->StopServer();
         etcdSrvDriver_ = nullptr;
+        InvocationHandler::BindInternalIAM(nullptr);
     }
 
 protected:
@@ -148,6 +151,47 @@ TEST_F(InvocationHandlerTest, CallResultAdapter)
     responseFuture = InvocationHandler::CallResultAdapter("from", std::move(request2));
     ASSERT_AWAIT_READY(responseFuture);
     EXPECT_EQ(responseFuture.Get()->callresultack().code(), common::ERR_INNER_COMMUNICATION);
+}
+
+TEST_F(InvocationHandlerTest, AuthorizeTest)
+{
+    InternalIAM::Param param_{ true, "" };
+    auto mockInternalIAM = std::make_shared<MockInternalIAM>(param_);
+    InvocationHandler::BindInternalIAM(mockInternalIAM);
+    EXPECT_CALL(*mockInternalIAM, IsIAMEnabled).WillRepeatedly(Return(true));
+    expectedAid_.SetName("fromIns");
+    // instance actor is null
+    std::unique_ptr<runtime_rpc::StreamingMessage> request = std::make_unique<runtime_rpc::StreamingMessage>();
+    request->mutable_invokereq()->set_instanceid("to");
+    std::shared_ptr<runtime_rpc::StreamingMessage> response = std::make_shared<runtime_rpc::StreamingMessage>();
+    response->mutable_callrsp()->set_code(common::ErrorCode::ERR_NONE);
+    litebus::Future<busproxy::CallerInfo> callerInfoFuture;
+    EXPECT_CALL(*instanceProxy_, Call(expectedAid_, _, _, _, _))
+        .WillOnce(testing::DoAll(FutureArg<1>(&callerInfoFuture), Return(response)));
+    auto responseFuture = InvocationHandler::Invoke("fromIns", std::move(request));
+    ASSERT_AWAIT_READY(responseFuture);
+    EXPECT_EQ(responseFuture.Get()->invokersp().code(), common::ErrorCode::ERR_NONE);
+    ASSERT_AWAIT_READY(callerInfoFuture);
+    EXPECT_TRUE(callerInfoFuture.Get().tenantID.empty());
+    EXPECT_EQ(callerInfoFuture.Get().instanceID, "fromIns");
+
+    // instance actor is not null
+    auto instanceProxy = std::make_shared<busproxy::InstanceProxy>("fromIns", "tenant123");
+    instanceProxy->InitDispatcher();
+    (void)litebus::Spawn(instanceProxy, true);
+    ASSERT_AWAIT_TRUE([&]() { return litebus::GetActor(expectedAid_) != nullptr; });
+
+    litebus::Future<busproxy::CallerInfo> callerInfoFuture1;
+    EXPECT_CALL(*instanceProxy_, Call(expectedAid_, _, _, _, _)).WillOnce(testing::DoAll(FutureArg<1>(&callerInfoFuture1), Return(response)));
+    EXPECT_CALL(*instanceProxy_, GetTenantID).WillOnce(Return("tenant123"));
+    std::unique_ptr<runtime_rpc::StreamingMessage> request1 = std::make_unique<runtime_rpc::StreamingMessage>();
+    request1->mutable_invokereq()->set_instanceid("to");
+    InvocationHandler::Invoke("fromIns", std::move(request1));
+    ASSERT_AWAIT_READY(callerInfoFuture1);
+    EXPECT_EQ(callerInfoFuture1.Get().tenantID, "tenant123");
+    EXPECT_EQ(callerInfoFuture1.Get().instanceID, "fromIns");
+    litebus::Terminate(expectedAid_);
+    litebus::Await(expectedAid_);
 }
 
 }  // namespace functionsystem::test

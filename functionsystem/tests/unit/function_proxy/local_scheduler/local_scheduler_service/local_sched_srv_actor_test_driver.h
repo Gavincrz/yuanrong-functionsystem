@@ -21,8 +21,8 @@
 #include <async/future.hpp>
 
 #include "common/explorer/explorer.h"
-#include "proto/pb/message_pb.h"
-#include "status/status.h"
+#include "common/proto/pb/message_pb.h"
+#include "common/status/status.h"
 
 namespace functionsystem::test {
 class LocalSchedSrvActorTestDriver : public litebus::ActorBase {

@@ -21,15 +21,16 @@
 
 #include <string>
 
-#include "metrics/metrics_adapter.h"
-#include "metrics/metrics_constants.h"
+#include "common/metrics/metrics_adapter.h"
+#include "common/metrics/metrics_constants.h"
 #include "function_proxy/busproxy/instance_view/instance_view.h"
 #include "function_proxy/busproxy/invocation_handler/invocation_handler.h"
 #include "function_proxy/common/observer/data_plane_observer/data_plane_observer.h"
+#include "mocks/mock_internal_iam.h"
 #include "mocks/mock_shared_client.h"
 #include "mocks/mock_shared_client_manager_proxy.h"
 #include "utils/future_test_helper.h"
-#include "metrics/metrics_adapter.h"
+#include "common/metrics/metrics_adapter.h"
 
 namespace functionsystem::test {
 using namespace ::testing;
@@ -63,7 +64,7 @@ public:
 
     Status AsyncDelete(const std::string &instanceID)
     {
-        instanceView_->Delete(instanceID);
+        instanceView_->Delete(instanceID, -1);
         return Status::OK();
     }
 
@@ -179,10 +180,11 @@ public:
         litebus::Await(calleeProxy);
         litebus::Terminate(observer_->GetAID());
         litebus::Await(observer_->GetAID());
-        instanceView_->Delete("callerIns");
-        instanceView_->Delete("calleeIns");
+        instanceView_->Delete("callerIns", -1);
+        instanceView_->Delete("calleeIns", -1);
         instanceInfo_.clear();
         InstanceProxy::BindObserver(nullptr);
+        RequestDispatcher::BindInternalIAM(nullptr);
         RequestDispatcher::BindDataInterfaceClientManager(nullptr);
         instanceView_->BindDataInterfaceClientManager(nullptr);
         instanceView_ = nullptr;
@@ -254,6 +256,7 @@ protected:
                     return msg;
                 }));
         }
+
         if (!isLowReliability) {
             observer_->Update(calleeIns, calleeInfo);
             instanceInfo_[calleeIns] = calleeInfo;
@@ -291,6 +294,7 @@ protected:
 
         // call result
         EXPECT_CALL(*mockSharedClient, NotifyResult(_)).WillRepeatedly(Return(runtime::NotifyResponse()));
+        EXPECT_CALL(*mockSharedClient, IsDone()).WillRepeatedly(Return(false));
 
         auto callResultBeforeCreating =
             litebus::Async(isCalleeLocal ? callerProxy : calleeProxy, &InstanceProxy::CallResult, calleeIns, callerIns,
@@ -352,6 +356,64 @@ TEST_F(InstanceProxyTest, CallLocalTest)
     CallTest(callerIns, calleeIns, true);
 }
 
+TEST_F(InstanceProxyTest, CallLocalWithAuthorizeTest)
+{
+    function_proxy::InternalIAM::Param param_{ true, "" };
+    auto mockInternalIam = std::make_shared<MockInternalIAM>(param_);
+    RequestDispatcher::BindInternalIAM(mockInternalIam);
+    EXPECT_CALL(*mockInternalIam, IsIAMEnabled).WillRepeatedly(Return(true));
+    std::string callerIns = "callerIns";
+    std::string calleeIns = "calleeIns";
+    SetTenantID("tenant123");
+    litebus::Future<function_proxy::AuthorizeParam> authParam;
+    litebus::Future<function_proxy::AuthorizeParam> authParam1;
+    EXPECT_CALL(*mockInternalIam, Authorize).WillOnce(testing::DoAll(FutureArg<0>(&authParam), Return(Status::OK())))
+        .WillOnce(testing::DoAll(FutureArg<0>(&authParam1), Return(Status::OK())));
+    CallTest(callerIns, calleeIns, true);
+    ASSERT_AWAIT_READY(authParam);
+    ASSERT_AWAIT_READY(authParam1);
+    EXPECT_EQ(authParam.Get().callerTenantID, "");
+    EXPECT_EQ(authParam.Get().calleeTenantID, "tenant123");
+    EXPECT_EQ(authParam1.Get().callerTenantID, "tenant123");
+    EXPECT_EQ(authParam1.Get().calleeTenantID, "tenant123");
+}
+
+TEST_F(InstanceProxyTest, CallAuthorizeFailTest)
+{
+    function_proxy::InternalIAM::Param param_{ true, "" };
+    auto mockInternalIam = std::make_shared<MockInternalIAM>(param_);
+    RequestDispatcher::BindInternalIAM(mockInternalIam);
+    EXPECT_CALL(*mockInternalIam, IsIAMEnabled).WillRepeatedly(Return(true));
+    std::string callerIns = "callerIns";
+    std::string calleeIns = "calleeIns";
+    auto mockSharedClient = PrepareCaller(callerIns);
+    litebus::AID callerProxy(callerIns, observer_->GetAID().Url());
+    ASSERT_AWAIT_TRUE([&]() { return litebus::GetActor(callerProxy) != nullptr; });
+    auto calleeInfo = NewInstance(calleeIns, tenantID_);
+    observer_->Update(calleeIns, calleeInfo);
+    litebus::AID calleeProxy(calleeIns, observer_->GetAID().Url());
+
+    EXPECT_CALL(*mockInternalIam, Authorize).WillOnce(Return(Status(StatusCode::FAILED)));
+    UpdateInstance(calleeInfo, calleeIns, (int32_t)InstanceState::RUNNING, local_);
+    auto mockCalleeSharedClient = std::make_shared<MockSharedClient>();
+    EXPECT_CALL(*mockSharedClientManagerProxy_, NewDataInterfacePosixClient(calleeIns, _, _))
+        .WillOnce(Return(mockCalleeSharedClient));
+    EXPECT_CALL(*mockCalleeSharedClient, Call(_))
+        .WillRepeatedly(Invoke([](const SharedStreamMsg &request) -> litebus::Future<SharedStreamMsg> {
+            auto msg = std::make_shared<runtime_rpc::StreamingMessage>();
+            auto callrsp = msg->mutable_callrsp();
+            callrsp->set_code(::common::ErrorCode::ERR_NONE);
+            return msg;
+        }));
+    observer_->Update(calleeIns, calleeInfo);
+    instanceInfo_[calleeIns] = calleeInfo;
+    auto firstCall = litebus::Async(callerProxy, &InstanceProxy::Call,
+                                    busproxy::CallerInfo{ .instanceID = callerIns, .tenantID = tenantID_ }, calleeIns,
+                                    CallRequest(callerIns, calleeIns, "Request-authorize-failed"), nullptr);
+    ASSERT_AWAIT_SET(firstCall);
+    EXPECT_TRUE(firstCall.Get()->has_callrsp() && firstCall.Get()->callrsp().code() == common::ERR_AUTHORIZE_FAILED);
+}
+
 /**
  * Feature: invoke test
  * Description: 模拟 bus proxy invoke 调用
@@ -401,7 +463,6 @@ TEST_F(InstanceProxyTest, CallLowAbilityTest)
     info->isLocal = true;
     info->runtimeID = calleeIns;
     info->proxyID = remote_;
-    info->isLowReliability = true;
     auto mockCalleeSharedClient = std::make_shared<MockSharedClient>();
     info->localClient = mockCalleeSharedClient;
     calleeProxyActor->NotifyChanged(calleeIns, info);
@@ -416,7 +477,6 @@ TEST_F(InstanceProxyTest, CallLowAbilityTest)
 
     CallTest(callerIns, calleeIns, false, true);
 }
-
 
 /**
  * Feature: NotifyChanged test
@@ -451,6 +511,27 @@ TEST_F(InstanceProxyTest, NotifyChanged)
             callrsp->set_code(::common::ErrorCode::ERR_NONE);
             return msg;
         }));
+}
+
+TEST_F(InstanceProxyTest, NotifyRemoteChanged)
+{
+    std::string calleeIns = "calleeIns";
+    auto callerProxyActor = std::make_shared<InstanceProxy>("callerIns", "");
+    callerProxyActor->InitDispatcher();
+    auto info = std::make_shared<InstanceRouterInfo>();
+    info->isReady = true;
+    info->isLocal = false;
+    info->runtimeID = calleeIns;
+    info->proxyID = remote_;
+    litebus::Spawn(callerProxyActor);
+
+    // instance is remote
+    callerProxyActor->NotifyChanged(calleeIns, info);
+    EXPECT_EQ(callerProxyActor->remoteDispatchers_[calleeIns]->remoteAid_.Name(), "");
+    EXPECT_FALSE(callerProxyActor->remoteDispatchers_[calleeIns]->isReady_);
+    info->remote = callerProxyActor->GetAID();
+    callerProxyActor->NotifyChanged(calleeIns, info);
+    EXPECT_TRUE(callerProxyActor->remoteDispatchers_[calleeIns]->isReady_);
 }
 
 /**

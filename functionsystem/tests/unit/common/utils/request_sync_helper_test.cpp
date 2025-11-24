@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "request_sync_helper.h"
+#include "common/utils/request_sync_helper.h"
 
 #include <gtest/gtest.h>
 

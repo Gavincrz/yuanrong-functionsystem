@@ -1,0 +1,3 @@
+aux_source_directory(${CMAKE_CURRENT_LIST_DIR} SCALER_TEST_SRCS)
+
+target_sources(${UNIT_TEST_MODULE} PRIVATE ${SCALER_TEST_SRCS})

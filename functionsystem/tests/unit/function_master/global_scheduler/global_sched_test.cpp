@@ -37,12 +37,16 @@ using namespace global_scheduler;
 using namespace domain_scheduler;
 using namespace ::testing;
 
-const std::string TEST_META_STORE_ADDRESS = "127.0.0.1:32279";
 const std::string TEST_DOMAIN_ACTIVATOR_ACTOR_NAME = "TestDomainActivator";
 const std::string TEST_GLOBAL_SCHEDULER_ACTOR_NAME = "TestGlobalSchedActor";
 
 class GlobalSchedTest : public ::testing::Test {
 public:
+    [[maybe_unused]] static void SetUpTestSuite()
+    {
+        metaStoreAddress_ = "127.0.0.1:" + std::to_string(FindAvailablePort());
+    }
+
     void SetUp() override
     {
         auto domainSchedMgr = std::make_unique<MockDomainSchedMgr>();
@@ -61,9 +65,9 @@ public:
         EXPECT_CALL(*mockLocalSchedMgr_, DelLocalSchedCallback).WillOnce(Return(Status::OK()));
         globalSched_.InitManager(std::move(domainSchedMgr), std::move(localSchedMgr));
 
-        mockMetaStoreClient_ = std::make_shared<MockMetaStoreClient>(TEST_META_STORE_ADDRESS);
+        mockMetaStoreClient_ = std::make_shared<MockMetaStoreClient>(metaStoreAddress_);
 
-        uint16_t port = GetPortEnv("LITEBUS_PORT", 8080);
+        uint16_t port = GetPortEnv("LITEBUS_PORT", 0);
         explorer::Explorer::NewStandAloneExplorerActorForMaster(explorer::ElectionInfo{},
             GetLeaderInfo(litebus::AID("function_master", "127.0.0.1:" + std::to_string(port))));
 
@@ -97,6 +101,7 @@ public:
 
 protected:
     GlobalSched globalSched_;
+    inline static std::string metaStoreAddress_;
     std::shared_ptr<GlobalSchedActor> globalSchedActor_;
     std::shared_ptr<MockMetaStoreClient> mockMetaStoreClient_;
     std::shared_ptr<MockDomainSchedulerLauncher> mockDomainSchedulerLauncher_;
@@ -136,7 +141,7 @@ TEST_F(GlobalSchedTest, StartGlobalScheduler)
     EXPECT_CALL(*localSchedMgr, DelLocalSchedCallback).WillRepeatedly(Return(Status::OK()));
     globalSched.InitManager(std::move(domainSchedMgr), std::move(localSchedMgr));
 
-    auto mockMetaStoreClient = std::make_shared<MockMetaStoreClient>(TEST_META_STORE_ADDRESS);
+    auto mockMetaStoreClient = std::make_shared<MockMetaStoreClient>(metaStoreAddress_);
 
     auto topologyTree = std::make_unique<MockSchedTree>(2, 2);
     auto mockDomainSchedulerLauncher = std::make_shared<MockDomainSchedulerLauncher>();

@@ -22,7 +22,7 @@
 
 #include <gmock/gmock.h>
 
-#include "proto/pb/message_pb.h"
+#include "common/proto/pb/message_pb.h"
 
 namespace functionsystem::test {
 class DomainGroupCtrlActorStub : public litebus::ActorBase {

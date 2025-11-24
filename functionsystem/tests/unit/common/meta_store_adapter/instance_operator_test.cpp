@@ -23,7 +23,7 @@
 #include "common/etcd_service/etcd_service_driver.h"
 #include "meta_store_monitor/meta_store_monitor_factory.h"
 #include "meta_store_client/meta_store_struct.h"
-#include "meta_store_kv_operation.h"
+#include "common/utils/meta_store_kv_operation.h"
 #include "utils/future_test_helper.h"
 #include "utils/grpc_client_helper.h"
 #include "utils/port_helper.h"
@@ -45,7 +45,7 @@ protected:
     inline static std::unique_ptr<meta_store::test::EtcdServiceDriver> etcdSrvDriver_;
     inline static std::string metaStoreServerHost_;
 
-    [[maybe_unused]] static void SetUpTestCase()
+    [[maybe_unused]] static void SetUpTestSuite()
     {
         etcdSrvDriver_ = std::make_unique<meta_store::test::EtcdServiceDriver>();
         int metaStoreServerPort = functionsystem::test::FindAvailablePort();
@@ -53,7 +53,7 @@ protected:
         etcdSrvDriver_->StartServer(metaStoreServerHost_);
     }
 
-    [[maybe_unused]] static void TearDownTestCase()
+    [[maybe_unused]] static void TearDownTestSuite()
     {
         auto client = MetaStoreClient::Create({ .etcdAddress = metaStoreServerHost_ });
         ASSERT_TRUE(client->Delete(INSTANCE_ROUTE_PATH_PREFIX, DeleteOption{ .prevKv = false, .prefix = true })
@@ -119,15 +119,19 @@ TEST_F(InstanceOperatorTest, CreateInstanceExist)
     auto fut = instanceOpt.Create(instancePutInfo, routePutInfo, false);
     EXPECT_AWAIT_READY(fut);
 
+    fut = instanceOpt.Create(instancePutInfo, routePutInfo, false);
+    EXPECT_AWAIT_READY(fut);
+    EXPECT_TRUE(fut.Get().status.IsOk());
+
     const std::string value2 =
         R"({"instanceID":"0ee7cafc-93b9-4be3-ae01-000000000075","requestID":"job-3d8f88d4-task-daf90ea7-f29e-4c9e-ada4-b11cea549201-694d1ff7031c-0","functionProxyID":"siaphis12332-22737"})";
     instancePutInfo->value = value2;
-    routePutInfo->value = value2;
     fut = instanceOpt.Create(instancePutInfo, routePutInfo, false);
     EXPECT_AWAIT_READY(fut);
     EXPECT_TRUE(fut.Get().status.IsError());
 
     instancePutInfo->key = instanceKey;
+    routePutInfo->value = value2;
     fut = instanceOpt.Create(instancePutInfo, routePutInfo, false);
     EXPECT_AWAIT_READY(fut);
     EXPECT_TRUE(fut.Get().status.IsError());
@@ -137,6 +141,30 @@ TEST_F(InstanceOperatorTest, CreateInstanceExist)
     fut = instanceOpt.Create(instancePutInfo, routePutInfo, false);
     EXPECT_AWAIT_READY(fut);
     EXPECT_TRUE(fut.Get().status.IsError());
+}
+
+TEST_F(InstanceOperatorTest, CreateRouteExist)
+{
+    InstanceOperator instanceOpt(metaStoreClient_);
+
+    const std::string value1 =
+        R"({"instanceID":"0ee7cafc-93b9-4be3-ae01-000000000075","requestID":"job-3d8f88d4-task-daf90ea7-f29e-4c9e-ada4-b11cea549201-694d1ff7031c-0","functionProxyID":"siaphis12332-22736"})";
+    std::shared_ptr<StoreInfo> instancePutInfo = std::make_shared<StoreInfo>(key, value1);
+    std::shared_ptr<StoreInfo> routePutInfo = std::make_shared<StoreInfo>(routeKey, value1);
+    auto fut = instanceOpt.Create(instancePutInfo, routePutInfo, false);
+    EXPECT_AWAIT_READY(fut);
+
+    const std::string value2 =
+        R"({"instanceID":"0ee7cafc-93b9-4be3-ae01-000000000075","requestID":"job-3d8f88d4-task-daf90ea7-f29e-4c9e-ada4-b11cea549201-694d1ff7031c-0","functionProxyID":"siaphis12332-22737"})";
+    instancePutInfo->key = "fake_key";
+    routePutInfo->value = value2;
+    fut = instanceOpt.Create(instancePutInfo, routePutInfo, false);
+    EXPECT_AWAIT_READY(fut);
+    EXPECT_TRUE(fut.Get().status.IsError());
+    EXPECT_EQ(fut.Get().status.StatusCode(), StatusCode::INSTANCE_TRANSACTION_WRONG_VERSION);
+
+    InstanceInfo instanceInfoSaved;
+    EXPECT_TRUE(TransToInstanceInfoFromJson(instanceInfoSaved, fut.Get().value));
 }
 
 TEST_F(InstanceOperatorTest, CreateInstanceETCDUnavailable)

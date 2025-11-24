@@ -16,7 +16,7 @@
 
 #include "etcd_watch_srv_actor.h"
 
-#include "logs/logging.h"
+#include "common/logs/logging.h"
 #include "meta_store_common.h"
 
 namespace functionsystem::meta_store::test {

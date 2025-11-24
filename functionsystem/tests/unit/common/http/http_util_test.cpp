@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "http/http_util.h"
+#include "common/http/http_util.h"
 
 #include "gtest/gtest.h"
 

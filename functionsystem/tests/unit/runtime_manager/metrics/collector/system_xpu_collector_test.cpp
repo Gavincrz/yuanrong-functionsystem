@@ -21,7 +21,7 @@
 #include <gtest/gtest.h>
 
 #include "mocks/mock_cmdtool.h"
-#include "files.h"
+#include "common/utils/files.h"
 #include "utils/future_test_helper.h"
 #include "runtime_manager/metrics/collector/heterogeneous_collector/gpu_probe.h"
 #include "runtime_manager/metrics/collector/heterogeneous_collector/npu_probe.h"
@@ -514,20 +514,70 @@ const std::string npuSmiInfo910C = R"(
 +===========================+===============+====================================================+
 )";
 
+const std::string npuSmiInfo310P3 = R"(
++--------------------------------------------------------------------------------------------------------+
+| npu-smi 24.1.0.1                                 Version: 24.1.0.1                                     |
++-------------------------------+-----------------+------------------------------------------------------+
+| NPU     Name                  | Health          | Power(W)     Temp(C)           Hugepages-Usage(page) |
+| Chip    Device                | Bus-Id          | AICore(%)    Memory-Usage(MB)                        |
++===============================+=================+======================================================+
+| 1536    310P3                 | OK              | NA           51                0     / 0             |
+| 0       0                     | 0000:06:00.0    | 0            1596 / 44280                            |
++-------------------------------+-----------------+------------------------------------------------------+
+| 1536    310P3                 | OK              | NA           50                0     / 0             |
+| 1       1                     | 0000:06:00.0    | 0            1325 / 43693                            |
++===============================+=================+======================================================+
+| 1792    310P3                 | OK              | NA           51                0     / 0             |
+| 0       2                     | 0000:07:00.0    | 0            1452 / 44280                            |
++-------------------------------+-----------------+------------------------------------------------------+
+| 1792    310P3                 | OK              | NA           51                0     / 0             |
+| 1       3                     | 0000:07:00.0    | 0            1444 / 43693                            |
++===============================+=================+======================================================+
+| 2048    310P3                 | OK              | NA           50                0     / 0             |
+| 0       4                     | 0000:08:00.0    | 0            1353 / 44280                            |
++-------------------------------+-----------------+------------------------------------------------------+
+| 2048    310P3                 | OK              | NA           49                0     / 0             |
+| 1       5                     | 0000:08:00.0    | 0            1529 / 43693                            |
++===============================+=================+======================================================+
+| 2304    310P3                 | OK              | NA           52                0     / 0             |
+| 0       6                     | 0000:09:00.0    | 0            1656 / 44280                            |
++-------------------------------+-----------------+------------------------------------------------------+
+| 2304    310P3                 | OK              | NA           50                0     / 0             |
+| 1       7                     | 0000:09:00.0    | 0            1278 / 43693                            |
++===============================+=================+======================================================+
++-------------------------------+-----------------+------------------------------------------------------+
+| NPU     Chip                  | Process id      | Process name             | Process memory(MB)        |
++===============================+=================+======================================================+
+| No running processes found in NPU 1536                                                                 |
++===============================+=================+======================================================+
+| No running processes found in NPU 1792                                                                 |
++===============================+=================+======================================================+
+| No running processes found in NPU 2048                                                                 |
++===============================+=================+======================================================+
+| No running processes found in NPU 2304                                                                 |
++===============================+=================+======================================================+
+)";
+
 // npu-smi info
 const std::string wrongNpuSmiInfo1 = R"(
++===========================+===============+====================================================+
+| 0     910B4               | OK            | 85.0        36                0    / 0             |
+| 0                         | 0000:C1:00.0  | 0           0    / 0          22283/ 32768         |
 +===========================+===============+====================================================+
 | 0     910B4               | OK            | 85.0        36                0    / 0             |
 )";
 
 const std::string wrongNpuSmiInfo2 = R"(
-+===========================+===============+====================================================+
-| 0            910          |               | 85.0        36                0    / 0             |
-| 0                         | 0000:C1:00.0  | 0           0    / 0                               |
-+===========================+===============+====================================================+
+| 0     Ascend910           | OK            | 182.0       36                0    / 0             |
+| 0     0                   | 0000:9D:00.0  | 0           0    / 0          3402 / 65536         |
++------------------------------------------------------------------------------------------------+
+| 0     Ascend910           | OK            | -           35                0    / 0             |
 )";
 
 const std::string wrongNpuSmiInfo3 = R"(
++===========================+===============+====================================================+
+| 0     910B4               | OK            | 85.0        36                0    / 0             |
+| 0                         | 0000:C1:00.0  | 0           0    / 0          22283/ 32768         |
 +===========================+===============+====================================================+
 | 0           910B4         | OK            | 85.0        36                0    / 0             |
 | 0                         | 0000:C1:00.0  | 0           0    / 0                               |
@@ -538,10 +588,19 @@ const std::string wrongNpuSmiInfo3 = R"(
 const std::string wrongNpuSmiInfo4 = R"(
 +===========================+===============+====================================================+
 | 0     910B4               | OK            | 85.0        36                0    / 0             |
+| 0                         | 0000:C1:00.0  | 0           0    / 0          22283/ 32768         |
++===========================+===============+====================================================+
+| 0     910B4               | OK            | 85.0        36                0    / 0             |
 | 0                         | 0000:C1:00.0  | 0            4    / 5.s             30759/ 32768      |
 +===========================+===============+====================================================+
 )";
 
+const std::string wrongNpuSmiInfo5 = R"(
+| 1536    310P3                 | OK              | NA           51                0     / 0             |
+| 0       0                     | 0000:06:00.0    | 0            1596 / 44280                            |
++-------------------------------+-----------------+------------------------------------------------------+
+| 1536    310P3                 | OK              | NA           50                0     / 0             |
+)";
 
 // mock ls /dev | grep davinci  910C 1Chip2Npu
 const std::string devDavinciInfo = R"(davinci0
@@ -769,6 +828,11 @@ std::vector<int> expectUseHBM = std::vector<int>{ 22283, 22267, 2818, 2819, 2829
 std::vector<int> expectLimitHBM = std::vector<int>{ 32768, 32768, 32768, 32768, 32768, 32768, 32768, 32768 };
 std::vector<int> expectUseHBM16 = std::vector<int>{ 3402,  3200,  3396,  3205,  3395,  3203,  3395,  3203,
                                                     52553, 52358, 52567, 52345, 52552, 52358, 52554, 52358 };
+
+std::vector<int> expectUseMemory310 = std::vector<int>{ 1596, 1325, 1452, 1444, 1353, 1529, 1656, 1278};
+std::vector<int> expectTotalMemory310 = std::vector<int>{ 44280, 43693, 44280, 43693, 44280, 43693, 44280, 43693};
+
+
 const int expectLimitHBM16 = 65536;
 
 class XpuCollectorTest : public ::testing::Test {};
@@ -788,7 +852,6 @@ TEST_F(XpuCollectorTest, TestNpuProbeOnGetCountNPUInfo)
     // case 1.1 get from /dev successfully
     {
         EXPECT_CALL(*cmdTool.get(), GetCmdResult(testing::_)).WillOnce(testing::Return(stringToVector(devDavinciInfo)));
-        EXPECT_CALL(*cmdTool.get(), GetCmdResult("pip3 list")).WillRepeatedly(testing::Return(PIP_LIST_INFO));
         auto status = probe->OnGetNPUInfo(true);
         EXPECT_TRUE(status.IsOk());
         auto devInfo = probe->GetClusterInfo();
@@ -803,7 +866,6 @@ TEST_F(XpuCollectorTest, TestNpuProbeOnGetCountNPUInfo)
     {
         probe = std::make_shared<runtime_manager::NpuProbe>("co200", tool, cmdTool, params);
         EXPECT_CALL(*cmdTool.get(), GetCmdResult(testing::_)).WillOnce(testing::Return(stringToVector(""))).WillOnce(testing::Return(stringToVector(npuSmiInfo910B)));
-        EXPECT_CALL(*cmdTool.get(), GetCmdResult("pip3 list")).WillRepeatedly(testing::Return(PIP_LIST_INFO));
         auto status = probe->OnGetNPUInfo(true);
         EXPECT_TRUE(status.IsOk());
         auto devInfo = probe->GetClusterInfo();
@@ -832,7 +894,7 @@ TEST_F(XpuCollectorTest, TestNpuProbeOnGetCountNPUInfo)
         EXPECT_CALL(*tool.get(), Read).WillRepeatedly(testing::Return(litebus::Option<std::string>{}));
         status = probe->OnGetNPUInfo(true);
         EXPECT_TRUE(status.IsError());
-        EXPECT_EQ(status.RawMessage(), "can not get npu info from npu-smi info");
+        EXPECT_EQ(status.RawMessage(), "failed to parse npu smi info!");
     }
 }
 
@@ -850,7 +912,6 @@ TEST_F(XpuCollectorTest, TestNpuProbeOnGetNPUSmiInfo)
     // case 2.1 success get from npu-smi info
     {
         EXPECT_CALL(*cmdTool.get(), GetCmdResult(testing::_)).WillOnce(testing::Return(stringToVector(npuSmiInfo910C)));
-        EXPECT_CALL(*cmdTool.get(), GetCmdResult("pip3 list")).WillRepeatedly(testing::Return(PIP_LIST_INFO));
         auto status = probe->OnGetNPUInfo(false);
         EXPECT_TRUE(status.IsOk());
         auto devInfo = probe->GetClusterInfo();
@@ -866,6 +927,37 @@ TEST_F(XpuCollectorTest, TestNpuProbeOnGetNPUSmiInfo)
         EXPECT_EQ("Ascend910", devInfo->devProductModel);
     }
 
+    // case 2.2 success get from npu-smi info for 310P3
+    {
+        EXPECT_CALL(*cmdTool.get(), GetCmdResult(testing::_)).WillOnce(testing::Return(stringToVector(npuSmiInfo310P3)));
+        auto status = probe->OnGetNPUInfo(false);
+        EXPECT_TRUE(status.IsOk());
+        auto devInfo = probe->GetClusterInfo();
+        ASSERT_EQ(devInfo->devIDs.size(), expectID8.size());
+        for (size_t i = 0; i < expectID8.size(); i++) {
+            EXPECT_EQ(expectID8[i], devInfo->devIDs[i]);
+            EXPECT_EQ(expectUseMemory310[i], devInfo->devUsedMemory[i]);
+            EXPECT_EQ(expectTotalMemory310[i], devInfo->devTotalMemory[i]);
+            EXPECT_EQ(expectUseMemory310[i], devInfo->devUsedHBM[i]);
+            EXPECT_EQ(expectTotalMemory310[i], devInfo->devLimitHBMs[i]);
+            EXPECT_EQ(0, devInfo->health[i]);
+        }
+        EXPECT_EQ("310P3", devInfo->devProductModel);
+    }
+}
+
+
+// case 2.1: test for get wrong npu smi info
+TEST_F(XpuCollectorTest, TestNpuProbeOnGetNPUSmiInfoFailed)
+{
+    auto tool = std::make_shared<MockProcFSTools>();
+    auto cmdTool = std::make_shared<MockCmdTools>();
+    auto params = std::make_shared<runtime_manager::XPUCollectorParams>();
+    params->ldLibraryPath = emptyLdLibraryPath;
+    params->deviceInfoPath = "/home/sn/config/topology-info.json";
+    params->collectMode = runtime_manager::NPU_COLLECT_COUNT;
+    auto probe = std::make_shared<runtime_manager::NpuProbe>("co200", tool, cmdTool, params);
+
     // case 2.2 failed get from npu-smi info and get from json
     {
         EXPECT_CALL(*cmdTool.get(), GetCmdResult(testing::_)).WillOnce(testing::Return(stringToVector("AAAAA")));
@@ -873,23 +965,27 @@ TEST_F(XpuCollectorTest, TestNpuProbeOnGetNPUSmiInfo)
         EXPECT_CALL(*cmdTool.get(), GetCmdResult("pip3 list")).WillRepeatedly(testing::Return(PIP_LIST_INFO));
         auto status = probe->OnGetNPUInfo(false);
         EXPECT_TRUE(status.IsError());
-        EXPECT_EQ(status.RawMessage(), "can not get npu info from npu-smi info");
+        EXPECT_EQ(status.RawMessage(), "failed to parse npu smi info!");
         auto devInfo = probe->GetClusterInfo();
         EXPECT_EQ(devInfo->devIDs.size(), 6);
 
         EXPECT_CALL(*cmdTool.get(), GetCmdResult(testing::_)).WillOnce(testing::Return(stringToVector(wrongNpuSmiInfo1)));
         status = probe->OnGetNPUInfo(false);
-        EXPECT_EQ(status.RawMessage(), "parse npu basic info failed, no chip info in following line.");
+        EXPECT_EQ(status.RawMessage(), "parse npu chip info failed.");
 
         EXPECT_CALL(*cmdTool.get(), GetCmdResult(testing::_)).WillOnce(testing::Return(stringToVector(wrongNpuSmiInfo2)));
         status = probe->OnGetNPUInfo(false);
-        EXPECT_EQ(status.RawMessage(), "can not get npu info from npu-smi info");
+        EXPECT_EQ(status.RawMessage(), "parse npu chip info failed.");
 
         EXPECT_CALL(*cmdTool.get(), GetCmdResult(testing::_)).WillOnce(testing::Return(stringToVector(wrongNpuSmiInfo3)));
         status = probe->OnGetNPUInfo(false);
         EXPECT_EQ(status.RawMessage(), "parse npu chip info failed.");
 
         EXPECT_CALL(*cmdTool.get(), GetCmdResult(testing::_)).WillOnce(testing::Return(stringToVector(wrongNpuSmiInfo4)));
+        status = probe->OnGetNPUInfo(false);
+        EXPECT_EQ(status.RawMessage(), "parse npu chip info failed.");
+
+        EXPECT_CALL(*cmdTool.get(), GetCmdResult(testing::_)).WillOnce(testing::Return(stringToVector(wrongNpuSmiInfo5)));
         status = probe->OnGetNPUInfo(false);
         EXPECT_EQ(status.RawMessage(), "parse npu chip info failed.");
     }
@@ -1068,14 +1164,14 @@ TEST_F(XpuCollectorTest, TestGetNPUTopoInfo)
 
 TEST_F(XpuCollectorTest, TestRefreshTopoInfo)
 {
-   auto tool = std::make_shared<MockProcFSTools>();
    std::string nodeID = "co200";
-   auto cmdTool = std::make_shared<MockCmdTools>();
    auto params = std::make_shared<runtime_manager::XPUCollectorParams>();
    params->ldLibraryPath = emptyLdLibraryPath;
    params->deviceInfoPath = "/home/sn/config/topology-info.json";
    // case1: don't get any npu info
    {
+       auto tool = std::make_shared<MockProcFSTools>();
+       auto cmdTool = std::make_shared<MockCmdTools>();
        params->collectMode = "false";
        EXPECT_CALL(*cmdTool.get(), GetCmdResult(testing::_)).Times(0);
        EXPECT_CALL(*tool.get(), Read(testing::_)).Times(0);
@@ -1086,6 +1182,8 @@ TEST_F(XpuCollectorTest, TestRefreshTopoInfo)
 
    // case2: count scene, success get
    {
+       auto tool = std::make_shared<MockProcFSTools>();
+       auto cmdTool = std::make_shared<MockCmdTools>();
        params->collectMode = runtime_manager::NPU_COLLECT_COUNT;
        EXPECT_CALL(*cmdTool.get(), GetCmdResult("ls /dev | grep davinci")).WillOnce(testing::Return(stringToVector(devDavinciInfo)));
        auto probe = std::make_shared<runtime_manager::NpuProbe>(nodeID, tool, cmdTool, params);
@@ -1095,6 +1193,8 @@ TEST_F(XpuCollectorTest, TestRefreshTopoInfo)
 
    // case3: hbm scene, success get
    {
+       auto tool = std::make_shared<MockProcFSTools>();
+       auto cmdTool = std::make_shared<MockCmdTools>();
        params->collectMode = runtime_manager::NPU_COLLECT_HBM;
        EXPECT_CALL(*cmdTool.get(), GetCmdResult("npu-smi info")).WillOnce(testing::Return(stringToVector(npuSmiInfo910B)));
        auto probe = std::make_shared<runtime_manager::NpuProbe>(nodeID, tool, cmdTool, params);
@@ -1104,6 +1204,8 @@ TEST_F(XpuCollectorTest, TestRefreshTopoInfo)
 
    // case4: sfmd scene, success get
    {
+       auto tool = std::make_shared<MockProcFSTools>();
+       auto cmdTool = std::make_shared<MockCmdTools>();
        params->collectMode = runtime_manager::NPU_COLLECT_SFMD;
        EXPECT_CALL(*cmdTool.get(), GetCmdResult("npu-smi info")).WillOnce(testing::Return(stringToVector(npuSmiInfo910C)));
        EXPECT_CALL(*tool.get(), Read("/etc/hccn.conf")).WillOnce(testing::Return(litebus::Option<std::string>{hccn16NpuConf}));
@@ -1114,6 +1216,8 @@ TEST_F(XpuCollectorTest, TestRefreshTopoInfo)
 
    // case5: topo scene, success get
    {
+       auto tool = std::make_shared<MockProcFSTools>();
+       auto cmdTool = std::make_shared<MockCmdTools>();
        params->collectMode = runtime_manager::NPU_COLLECT_TOPO;
        EXPECT_CALL(*cmdTool.get(), GetCmdResult("npu-smi info")).WillOnce(testing::Return(stringToVector(npuSmiInfo910B)));
        EXPECT_CALL(*cmdTool.get(), GetCmdResultWithError("npu-smi info -t topo")).WillOnce(testing::Return(stringToVector(npuSminTopoInfo)));
@@ -1122,8 +1226,10 @@ TEST_F(XpuCollectorTest, TestRefreshTopoInfo)
        EXPECT_TRUE(status.IsOk());
    }
 
-   // case5: off scene or other scene, failed get
+   // case6: off scene or other scene, failed get
    {
+       auto tool = std::make_shared<MockProcFSTools>();
+       auto cmdTool = std::make_shared<MockCmdTools>();
        params->collectMode = "off";
        auto probe = std::make_shared<runtime_manager::NpuProbe>(nodeID, tool, cmdTool, params);
        auto status = probe->RefreshTopo();
@@ -1238,7 +1344,8 @@ TEST_F(XpuCollectorTest, TestUpdateInfo)
        EXPECT_EQ(devInfo->devLimitHBMs.size(), 8);
        EXPECT_EQ(devInfo->devIPs.size(), 8);
        probe->npuNum_ = 4;
-       EXPECT_CALL(*cmdTool.get(), GetCmdResult("npu-smi info -t topo")).WillRepeatedly(testing::Return(topoInfo));
+       EXPECT_CALL(*cmdTool.get(), GetCmdResult("npu-smi info -t topo")).WillOnce(testing::Return(stringToVector(""))).WillRepeatedly(testing::Return(topoInfo));
+       probe->UpdateDevTopo();
        probe->UpdateDevTopo();
        EXPECT_EQ(devInfo->devTopo.size(), 4);
    }
@@ -1315,7 +1422,7 @@ TEST_F(XpuCollectorTest, TestNpuCollectorByCmd)
     params->ldLibraryPath = emptyLdLibraryPath;
     params->deviceInfoPath = "/home/sn/config/topology-info.json";
     params->collectMode = runtime_manager::NPU_COLLECT_COUNT;
-    EXPECT_CALL(*cmdTool.get(), GetCmdResult("ls /dev | grep davinci")).WillOnce(testing::Return(stringToVector(devDavinciInfo)));
+    EXPECT_CALL(*cmdTool.get(), GetCmdResult("ls /dev | grep davinci")).WillRepeatedly(testing::Return(stringToVector(devDavinciInfo)));
     auto probe = std::make_shared<runtime_manager::NpuProbe>(nodeID, tool, cmdTool, params);
     auto npuCollector = runtime_manager::SystemXPUCollector(nodeID, runtime_manager::metrics_type::NPU, tool, params);
     npuCollector.probe_ = probe;

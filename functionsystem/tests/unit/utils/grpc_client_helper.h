@@ -17,7 +17,7 @@
 #ifndef TEST_UNIT_UTILS_GRPC_CLIENT_HELPER_H
 #define TEST_UNIT_UTILS_GRPC_CLIENT_HELPER_H
 
-#include "rpc/client/grpc_client.h"
+#include "common/rpc/client/grpc_client.h"
 #include "etcd/api/etcdserverpb/rpc.grpc.pb.h"
 #include "etcd/server/etcdserver/api/v3election/v3electionpb/v3election.grpc.pb.h"
 

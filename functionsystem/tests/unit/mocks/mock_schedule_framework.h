@@ -19,7 +19,7 @@
 
 #include <gmock/gmock.h>
 
-#include "resource_type.h"
+#include "common/resource_view/resource_type.h"
 #include "common/scheduler_framework/framework/framework.h"
 
 namespace functionsystem::test {

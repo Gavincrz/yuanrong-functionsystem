@@ -99,12 +99,56 @@ TEST_F(PreemptionControllerTest, InvalidParemTest)
     EXPECT_EQ(result.status.StatusCode(), StatusCode::PARAMETER_ERROR);
 }
 
+// test for unable to preempt with cross tenant
+TEST_F(PreemptionControllerTest, UnableToPreemptWithCrossTenant)
+{
+    auto pod1 = view_utils::Get1DResourceUnit("pod1");
+    resourceView_->AddResourceUnit(pod1);
+    auto instance1 = view_utils::Get1DInstance();
+    instance1.set_unitid("pod1");
+    instance1.mutable_scheduleoption()->set_priority(1);
+    instance1.add_labels("tenantId:123456");
+    resourceView_->AddInstances({ { instance1.instanceid(), { instance1, nullptr } } });
+
+    auto scheduledInstance = GetInstanceWithResource("scheduledInstance", 5, 100.1, 100.1);
+    scheduledInstance.add_labels("tenantId:xxxxx");
+    auto preemption = PreemptionController();
+    auto unit = resourceView_->GetResourceView().Get();
+    auto preContext = std::make_shared<schedule_framework::PreAllocatedContext>();
+    auto result = preemption.PreemptDecision(preContext, scheduledInstance, *unit);
+    EXPECT_EQ(result.status.StatusCode(), StatusCode::DOMAIN_SCHEDULER_NO_PREEMPTABLE_INSTANCE);
+}
+
 // test for preemption failed with resource capacity not enough
 TEST_F(PreemptionControllerTest, PreemptionFailedWithCapNotEnough)
 {
     auto pod1 = view_utils::Get1DResourceUnit("pod1");
     resourceView_->AddResourceUnit(pod1);
     auto scheduledInstance = GetInstanceWithResource("scheduledInstance", 5, 2000.1, 2000.1);
+    auto preemption = PreemptionController();
+    auto unit = resourceView_->GetResourceView().Get();
+    auto preContext = std::make_shared<schedule_framework::PreAllocatedContext>();
+    auto result = preemption.PreemptDecision(preContext, scheduledInstance, *unit);
+    EXPECT_EQ(result.status.StatusCode(), StatusCode::DOMAIN_SCHEDULER_NO_PREEMPTABLE_INSTANCE);
+}
+
+// test for preemption failed with instance required anti affinity
+TEST_F(PreemptionControllerTest, PreemptionFailedWithInstanceRequiredAntiAffinity)
+{
+    auto pod1 = view_utils::Get1DResourceUnit("pod1");
+    resourceView_->AddResourceUnit(pod1);
+    auto instance1 = view_utils::Get1DInstance();
+    instance1.set_unitid("pod1");
+    instance1.mutable_scheduleoption()->set_priority(1);
+    instance1.mutable_scheduleoption()->set_preemptedallowed(true);
+    instance1.add_labels("key1");
+    resourceView_->AddInstances({ { instance1.instanceid(), { instance1, nullptr } } });
+
+    auto scheduledInstance = GetInstanceWithResource("scheduledInstance", 5, 100.1, 100.1);
+    scheduledInstance.add_labels("tenantId:xxxxx");
+    auto instanceAffinity = scheduledInstance.mutable_scheduleoption()->mutable_affinity()->mutable_instance();
+    (*instanceAffinity->mutable_requiredantiaffinity()) = Selector(false, { { Exist("key1") } });
+
     auto preemption = PreemptionController();
     auto unit = resourceView_->GetResourceView().Get();
     auto preContext = std::make_shared<schedule_framework::PreAllocatedContext>();
@@ -125,8 +169,9 @@ TEST_F(PreemptionControllerTest, PreemptionFailedWithInstanceRequiredAffinity)
     resourceView_->AddInstances({ { instance1.instanceid(), { instance1, nullptr } } });
 
     auto scheduledInstance = GetInstanceWithResource("scheduledInstance", 5, 100.1, 100.1);
+    scheduledInstance.add_labels("tenantId:xxxxx");
     auto instanceAffinity = scheduledInstance.mutable_scheduleoption()->mutable_affinity()->mutable_instance();
-    (*instanceAffinity->mutable_requiredantiaffinity()) = Selector(false, { { Exist("key1") } });
+    (*instanceAffinity->mutable_requiredaffinity()) = Selector(false, { { Exist("key1") } });
 
     auto preemption = PreemptionController();
     auto unit = resourceView_->GetResourceView().Get();

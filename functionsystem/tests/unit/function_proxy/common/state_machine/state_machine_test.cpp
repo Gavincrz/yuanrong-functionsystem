@@ -18,10 +18,10 @@
 
 #define private public
 #include "common/etcd_service/etcd_service_driver.h"
-#include "logs/logging.h"
-#include "metrics/metrics_adapter.h"
-#include "proto/pb/message_pb.h"
-#include "actor_worker.h"
+#include "common/logs/logging.h"
+#include "common/metrics/metrics_adapter.h"
+#include "common/proto/pb/message_pb.h"
+#include "common/utils/actor_worker.h"
 #include "function_proxy/common/state_machine/instance_state_machine.h"
 #include "function_proxy/local_scheduler/instance_control/instance_ctrl_actor.h"
 #include "mocks/mock_instance_operator.h"
@@ -38,7 +38,8 @@ const std::string TEST_NODE_ID = "test node id";
 
 class InstanceStateMachineTest : public ::testing::Test {
 protected:
-    static void SetUpTestCase() {
+    [[maybe_unused]] static void SetUpTestSuite()
+    {
         etcdSrvDriver_ = std::make_unique<meta_store::test::EtcdServiceDriver>();
         int metaStoreServerPort = functionsystem::test::FindAvailablePort();
         metaStoreServerHost_ = "127.0.0.1:" + std::to_string(metaStoreServerPort);
@@ -47,9 +48,10 @@ protected:
             { functionsystem::metrics::YRInstrument::YR_INSTANCE_RUNNING_DURATION });
     }
 
-    static void TearDownTestCase()
+    [[maybe_unused]] static void TearDownTestSuite()
     {
         etcdSrvDriver_->StopServer();
+        InstanceStateMachine::UnBindControlPlaneObserver();
         metrics::MetricsAdapter::GetInstance().GetMetricsContext().SetEnabledInstruments({});
     }
 
@@ -89,13 +91,14 @@ TEST_F(InstanceStateMachineTest, LowReliabilityTypeTransitionStateToRunning)
     scheduleReq->mutable_instance()->mutable_instancestatus()->set_code(0);
     scheduleReq->mutable_instance()->set_function(function);
     scheduleReq->mutable_instance()->mutable_createoptions()->operator[](functionsystem::RELIABILITY_TYPE) = "low";
+    scheduleReq->mutable_instance()->set_lowreliability(true);
     auto context = std::make_shared<InstanceContext>(scheduleReq);
     auto instanceStateMachine = std::make_shared<InstanceStateMachine>(TEST_NODE_ID, context, false);
 
     auto mockControlPlaneObserver = std::make_shared<MockObserver>();
     instanceStateMachine->BindControlPlaneObserver(mockControlPlaneObserver);
     EXPECT_CALL(*mockControlPlaneObserver, WatchInstance).Times(1).WillRepeatedly(Return());
-    EXPECT_CALL(*mockControlPlaneObserver, PutInstanceEvent).Times(1).WillRepeatedly(Return());
+    EXPECT_CALL(*mockControlPlaneObserver, PutInstanceEvent).Times(2).WillRepeatedly(Return());
 
     auto mockInstanceOpt = std::make_shared<MockInstanceOperator>();
     instanceStateMachine->instanceOpt_ = mockInstanceOpt;
@@ -529,7 +532,7 @@ TEST_F(InstanceStateMachineTest, DelInstanceFailed)
 
     auto res = instanceStateMachine->DelInstance(instanceID);
     EXPECT_TRUE(res.Get().IsError());
-    EXPECT_EQ(instanceStateMachine->lastSaveFailedState_, static_cast<int32_t>(InstanceState::EXITED));
+    EXPECT_EQ(instanceStateMachine->lastSaveFailedState_.first, static_cast<int32_t>(InstanceState::EXITED));
 
     context = nullptr;
     instanceStateMachine->UpdateInstanceContext(context);
@@ -623,7 +626,8 @@ TEST_F(InstanceStateMachineTest, ScheduleMutableSetters)
     EXPECT_EQ(resources.at(name).vectors().values().at(resource_view::HETEROGENEOUS_MEM_KEY)
                   .vectors().at("uuid").values().at(0), 1010);
 
-    ASSERT_TRUE(instanceStateMachine.GetScheduleRequest()->instance().createoptions().at("func-NPU-DEVICE-IDS") == "0,2,5");
+    ASSERT_TRUE(instanceStateMachine.GetScheduleRequest()->instance().createoptions().at("func-NPU-DEVICE-IDS")
+                == "0,2,5");
 
     instanceStateMachine.SetRuntimeAddress("runtime-address-0");
     ASSERT_TRUE(instanceStateMachine.GetScheduleRequest()->mutable_instance()->runtimeaddress() == "runtime-address-0");
@@ -833,7 +837,7 @@ TEST_F(InstanceStateMachineTest, TransitionStateFatalFromRunning)
 {
     const std::string instanceId = "instanceID";
     std::map<std::string, std::string> createOptions = {};
-    metrics::MetricsAdapter::GetInstance().GetMetricsContext().InitBillingInstance(instanceId, createOptions);
+    metrics::MetricsAdapter::GetInstance().GetMetricsContext().InitBillingInstance(instanceId, "", createOptions);
 
     auto scheduleReq = std::make_shared<messages::ScheduleRequest>();
     scheduleReq->mutable_instance()->mutable_instancestatus()->set_code(0);
@@ -856,7 +860,7 @@ TEST_F(InstanceStateMachineTest, TransitionStateFailedFromRunning)
 {
     const std::string instanceId = "instanceID";
     std::map<std::string, std::string> createOptions = {};
-    metrics::MetricsAdapter::GetInstance().GetMetricsContext().InitBillingInstance(instanceId, createOptions);
+    metrics::MetricsAdapter::GetInstance().GetMetricsContext().InitBillingInstance(instanceId, "", createOptions);
 
     auto scheduleReq = std::make_shared<messages::ScheduleRequest>();
     scheduleReq->mutable_instance()->mutable_instancestatus()->set_code(0);
@@ -906,7 +910,7 @@ TEST_F(InstanceStateMachineTest, ForceDelInstance)
 
     res = instanceStateMachine->ForceDelInstance();
     EXPECT_TRUE(res.Get().IsError());
-    EXPECT_EQ(instanceStateMachine->lastSaveFailedState_, static_cast<int32_t>(InstanceState::EXITED));
+    EXPECT_EQ(instanceStateMachine->lastSaveFailedState_.first, static_cast<int32_t>(InstanceState::EXITED));
 }
 
 TEST_F(InstanceStateMachineTest, TransitionStateFailedAfterForceDelInstance)
@@ -968,5 +972,20 @@ TEST_F(InstanceStateMachineTest, TestTagStop)
     instanceStateMachine->TagStop();
     stop = instanceStateMachine->IsStopped();
     EXPECT_EQ(stop, true);
+}
+
+TEST_F(InstanceStateMachineTest, TestTagSaved)
+{
+    const std::string instanceId = "instanceID";
+    auto scheduleReq = std::make_shared<messages::ScheduleRequest>();
+    auto context = std::make_shared<InstanceContext>(scheduleReq);
+    auto instanceStateMachine = std::make_shared<InstanceStateMachine>(TEST_NODE_ID, context, false);
+    instanceStateMachine->NewSavingPomise();
+    EXPECT_EQ(instanceStateMachine->IsSaving(), true);
+    auto saving = instanceStateMachine->GetSavingFuture();
+    EXPECT_EQ(saving.IsInit(), true);
+    instanceStateMachine->TagSaved();
+    EXPECT_EQ(saving.IsInit(), false);
+    EXPECT_EQ(instanceStateMachine->IsSaving(), false);
 }
 }  // namespace functionsystem::test

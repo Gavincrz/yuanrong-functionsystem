@@ -16,18 +16,19 @@
 #include <gtest/gtest.h>
 
 #include "async/async.hpp"
-#include "meta_store_client/key_value/etcd_kv_client_strategy.h"
-#include "meta_store_client/meta_store_client.h"
-#include "proto/pb/message_pb.h"
+#include "common/proto/pb/message_pb.h"
 #include "kv_service_accessor_actor.h"
 #include "kv_service_actor.h"
 #include "lease_service_actor.h"
+#include "meta_store_client/key_value/etcd_kv_client_strategy.h"
+#include "meta_store_client/meta_store_client.h"
 #include "meta_store_driver.h"
-#include "watch_service_actor.h"
+#include "meta_store_monitor/meta_store_monitor_factory.h"
 #include "mock_store_client.h"
 #include "mocks/mock_etcd_kv_service.h"
 #include "utils/future_test_helper.h"
 #include "utils/port_helper.h"
+#include "watch_service_actor.h"
 
 namespace functionsystem::meta_store::test {
 using namespace functionsystem::test;
@@ -37,7 +38,7 @@ using ::testing::Return;
 
 class MetaStoreTest : public ::testing::Test {
 public:
-    static void SetUpTestCase()
+    [[maybe_unused]] static void SetUpTestSuite()
     {
         etcdKvService_ = std::make_shared<MockEtcdKvService>();
         int metaStoreServerPort = functionsystem::test::FindAvailablePort();
@@ -62,10 +63,10 @@ public:
         localAddress_ = "127.0.0.1:" + std::to_string(port);
     }
 
-    static void TearDownTestCase()
+    [[maybe_unused]] static void TearDownTestSuite()
     {
         if (etcdServer_ != nullptr) {
-            etcdServer_->Shutdown();
+            etcdServer_->Shutdown(std::chrono::system_clock::now());
             etcdServer_ = nullptr;
         }
     }
@@ -94,8 +95,8 @@ TEST_F(MetaStoreTest, MetaStoreWithETCDPutTest)  // NOLINT
 {
     auto persistAID =
         litebus::Spawn(std::make_shared<EtcdKvClientStrategy>("Persist", etcdAddress_, MetaStoreTimeoutOption{}));
-    auto backupAID = litebus::Spawn(std::make_shared<BackupActor>("backupActor", persistAID));
-    litebus::AID kvServerAID = litebus::Spawn(std::make_shared<KvServiceActor>(backupAID));
+    auto backAID = litebus::Spawn(std::make_shared<BackupActor>("backupActor", persistAID));
+    litebus::AID kvServerAID = litebus::Spawn(std::make_shared<KvServiceActor>(backAID));
     litebus::AID kvServerAccessorAID = litebus::Spawn(std::make_shared<KvServiceAccessorActor>(kvServerAID));
     MetaStoreClient client(MetaStoreConfig{ .etcdAddress = etcdAddress_,
                                             .metaStoreAddress = kvServerAccessorAID.Url(),
@@ -141,21 +142,21 @@ TEST_F(MetaStoreTest, MetaStoreWithETCDPutTest)  // NOLINT
         EXPECT_CALL(*etcdKvService_, Txn)  // test persistence
             .WillOnce(Invoke([&](::grpc::ServerContext *, const ::etcdserverpb::TxnRequest *request,
                                  ::etcdserverpb::TxnResponse *response) -> ::grpc::Status {
-                EXPECT_TRUE(request->compare_size() == 0);
                 EXPECT_TRUE(request->success_size() == 1);
+                EXPECT_TRUE(request->compare_size() == 0);
 
                 const auto &cmp = request->success(0);
                 EXPECT_TRUE(cmp.request_case() == etcdserverpb::RequestOp::kRequestPut);
-                const auto &putRequest = cmp.request_put();
-                EXPECT_TRUE(putRequest.key() == std::string("/metastore/kv/") + key);
+                const auto &putReq = cmp.request_put();
+                EXPECT_TRUE(putReq.key() == std::string("/metastore/kv/") + key);
 
-                const auto &val = putRequest.value();
+                const auto &val = putReq.value();
                 ::mvccpb::KeyValue kv;
                 EXPECT_TRUE(kv.ParseFromString(val));
-                EXPECT_TRUE(putRequest.key() == std::string("/metastore/kv/") + kv.key());
+                EXPECT_TRUE(putReq.key() == std::string("/metastore/kv/") + kv.key());
 
-                EXPECT_TRUE(kv.key() == key);
                 EXPECT_TRUE(kv.value() == "mock-value-x");
+                EXPECT_TRUE(kv.key() == key);
                 *response = ::etcdserverpb::TxnResponse{};
                 response->mutable_header()->set_revision(1);
                 finished = true;
@@ -174,8 +175,8 @@ TEST_F(MetaStoreTest, MetaStoreWithETCDPutTest)  // NOLINT
 
     litebus::Terminate(kvServerAID);
     litebus::Await(kvServerAID);
-    litebus::Terminate(backupAID);
-    litebus::Await(backupAID);
+    litebus::Terminate(backAID);
+    litebus::Await(backAID);
     litebus::Terminate(persistAID);
     litebus::Await(persistAID);
 }
@@ -199,7 +200,7 @@ TEST_F(MetaStoreTest, MetaStoreWithETCDDeleteTest)  // NOLINT
     bool finished = false;
     EXPECT_CALL(*etcdKvService_, Txn)  // test persistence
         .WillOnce(Invoke([&](::grpc::ServerContext *, const ::etcdserverpb::TxnRequest *request,
-                             ::etcdserverpb::TxnResponse *response) -> ::grpc::Status {
+                             ::etcdserverpb::TxnResponse *resp) -> ::grpc::Status {
             EXPECT_TRUE(request->compare_size() == 0);
             EXPECT_TRUE(request->success_size() == 1);
             const auto &cmp = request->success(0);
@@ -214,8 +215,8 @@ TEST_F(MetaStoreTest, MetaStoreWithETCDDeleteTest)  // NOLINT
             EXPECT_TRUE(putRequest.key() == std::string("/metastore/kv/") + kv1.key());
             EXPECT_TRUE(kv1.key() == key);
             EXPECT_TRUE(kv1.value() == value);
-            *response = ::etcdserverpb::TxnResponse{};
-            response->mutable_header()->set_revision(1);
+            *resp = ::etcdserverpb::TxnResponse{};
+            resp->mutable_header()->set_revision(1);
             return ::grpc::Status::OK;
         }))
         .WillOnce(Invoke([&](::grpc::ServerContext *, const ::etcdserverpb::TxnRequest *request,
@@ -234,7 +235,7 @@ TEST_F(MetaStoreTest, MetaStoreWithETCDDeleteTest)  // NOLINT
             return ::grpc::Status::OK;
         }));
 
-    auto fut = client.Put(key, value, PutOption{ .leaseId = 0, .prevKv = false, .asyncBackup = false });
+    auto fut = client.Put(key, value, PutOption{ .asyncBackup = false });
     EXPECT_AWAIT_READY(fut);
 
     auto future = client.Delete(key, DeleteOption{ .prevKv = true, .prefix = true, .asyncBackup = false });
@@ -246,22 +247,22 @@ TEST_F(MetaStoreTest, MetaStoreWithETCDDeleteTest)  // NOLINT
 
     EXPECT_AWAIT_TRUE([&]() { return finished; });
 
-    litebus::Terminate(kvServerAccessorAID);
-    litebus::Await(kvServerAccessorAID);
     litebus::Terminate(kvServerAID);
     litebus::Await(kvServerAID);
+    litebus::Terminate(kvServerAccessorAID);
+    litebus::Await(kvServerAccessorAID);
 
-    litebus::Terminate(backupAID);
-    litebus::Await(backupAID);
     litebus::Terminate(persistAID);
     litebus::Await(persistAID);
+    litebus::Terminate(backupAID);
+    litebus::Await(backupAID);
 }
 
 TEST_F(MetaStoreTest, MetaStoreWithETCDTxnTest)  // NOLINT
 {
-    auto persistAID =
+    auto persist =
         litebus::Spawn(std::make_shared<EtcdKvClientStrategy>("Persist", etcdAddress_, MetaStoreTimeoutOption{}));
-    auto backupAID = litebus::Spawn(std::make_shared<BackupActor>("BackupActor3", persistAID));
+    auto backupAID = litebus::Spawn(std::make_shared<BackupActor>("BackupActor3", persist));
     litebus::AID kvServerAID = litebus::Spawn(std::make_shared<KvServiceActor>(backupAID));
     litebus::AID kvServerAccessorAID = litebus::Spawn(std::make_shared<KvServiceAccessorActor>(kvServerAID));
     MetaStoreClient client(MetaStoreConfig{ .etcdAddress = etcdAddress_,
@@ -291,6 +292,8 @@ TEST_F(MetaStoreTest, MetaStoreWithETCDTxnTest)  // NOLINT
             EXPECT_TRUE(putRequest.key() == std::string("/metastore/kv/") + kv.key());
             EXPECT_TRUE(kv.value() == value);
             EXPECT_TRUE(kv.key() == key);
+            *response = ::etcdserverpb::TxnResponse{};
+            response->mutable_header()->set_revision(1);
             return ::grpc::Status::OK;
         }))
         .WillOnce(Invoke([&](::grpc::ServerContext *, const ::etcdserverpb::TxnRequest *request,
@@ -308,7 +311,7 @@ TEST_F(MetaStoreTest, MetaStoreWithETCDTxnTest)  // NOLINT
             return ::grpc::Status::OK;
         }));
 
-    auto fut = client.Put(key, value, PutOption{.leaseId = 0, .prevKv = false, .asyncBackup = false });
+    auto fut = client.Put(key, value, PutOption{ .asyncBackup = false });
     EXPECT_AWAIT_READY(fut);
 
     auto transaction = client.BeginTransaction();
@@ -328,8 +331,200 @@ TEST_F(MetaStoreTest, MetaStoreWithETCDTxnTest)  // NOLINT
     litebus::Terminate(backupAID);
     litebus::Await(backupAID);
 
+    litebus::Terminate(persist);
+    litebus::Await(persist);
+}
+
+TEST_F(MetaStoreTest, MetaStoreWithETCDPutErrorTest)  // NOLINT
+{
+    auto persistAID =
+        litebus::Spawn(std::make_shared<EtcdKvClientStrategy>("Persist", etcdAddress_,
+            MetaStoreTimeoutOption{
+                .operationRetryIntervalLowerBound = 100,
+                .operationRetryIntervalUpperBound = 200,
+                .operationRetryTimes = 1,
+                .grpcTimeout = GRPC_TIMEOUT_SECONDS}));
+    auto backAID = litebus::Spawn(std::make_shared<BackupActor>("backupActor5", persistAID));
+    litebus::AID kvServerAID = litebus::Spawn(std::make_shared<KvServiceActor>(backAID));
+    litebus::AID kvServerAccessorAID = litebus::Spawn(std::make_shared<KvServiceAccessorActor>(kvServerAID));
+    MetaStoreClient client(MetaStoreConfig{ .etcdAddress = etcdAddress_,
+                                            .metaStoreAddress = kvServerAccessorAID.Url(),
+                                            .enableMetaStore = true },{}, MetaStoreTimeoutOption{});
+    client.Init();
+
+    const std::string value = "mock-value5";
+    const std::string key = "mock-key5";
+
+    EXPECT_CALL(*etcdKvService_, Txn)  // test persistence
+        .WillRepeatedly(Return(::grpc::Status(::grpc::StatusCode::UNAVAILABLE, "etcd is unavailable ...")));
+
+    // failed to put key: <mock-key5, mock-value5>
+    auto future = client.Put(key, value, PutOption{ .leaseId = 0, .prevKv = true, .asyncBackup = false });
+    EXPECT_AWAIT_READY(future);
+    EXPECT_TRUE(future.Get()->status.IsError());
+
+    // get key: <mock-key5, mock-value5>, expected: get nothing
+    auto getFut = client.Get(key, GetOption{ .prefix = true });
+    EXPECT_AWAIT_READY(getFut);
+    EXPECT_TRUE(getFut.Get()->status.IsOk());
+    EXPECT_EQ(getFut.Get()->count, 0);
+    EXPECT_EQ(getFut.Get()->kvs.size(), 0);
+
+    litebus::Terminate(kvServerAccessorAID);
+    litebus::Await(kvServerAccessorAID);
+
+    litebus::Terminate(kvServerAID);
+    litebus::Await(kvServerAID);
+    litebus::Terminate(backAID);
+    litebus::Await(backAID);
     litebus::Terminate(persistAID);
     litebus::Await(persistAID);
+}
+
+TEST_F(MetaStoreTest, MetaStoreWithETCDDeleteErrorTest)  // NOLINT
+{
+    auto persistAID =
+        litebus::Spawn(std::make_shared<EtcdKvClientStrategy>("Persist", etcdAddress_,
+            MetaStoreTimeoutOption{
+                .operationRetryIntervalLowerBound = 100,
+                .operationRetryIntervalUpperBound = 200,
+                .operationRetryTimes = 1,
+                .grpcTimeout = GRPC_TIMEOUT_SECONDS}));
+    auto backupAID = litebus::Spawn(std::make_shared<BackupActor>("BackupActor6", persistAID));
+    litebus::AID kvServerAID = litebus::Spawn(std::make_shared<KvServiceActor>(backupAID));
+    litebus::AID kvServerAccessorAID = litebus::Spawn(std::make_shared<KvServiceAccessorActor>(kvServerAID));
+    MetaStoreClient client(MetaStoreConfig{ .etcdAddress = etcdAddress_,
+                                            .metaStoreAddress = kvServerAccessorAID.Url(),
+                                            .enableMetaStore = true },{}, MetaStoreTimeoutOption{});
+    client.Init();
+
+    const std::string key = "mock-key6";
+    const std::string value = "mock-value6";
+
+    EXPECT_CALL(*etcdKvService_, Txn)  // test persistence
+        .WillOnce(Invoke([&](::grpc::ServerContext *, const ::etcdserverpb::TxnRequest *request,
+                             ::etcdserverpb::TxnResponse *resp) -> ::grpc::Status {
+            EXPECT_TRUE(request->compare_size() == 0);
+            EXPECT_TRUE(request->success_size() == 1);
+            const auto &cmp = request->success(0);
+
+            EXPECT_TRUE(cmp.request_case() == etcdserverpb::RequestOp::kRequestPut);
+            const auto &putRequest = cmp.request_put();
+            EXPECT_TRUE(putRequest.key() == std::string("/metastore/kv/") + key);
+            const auto &val = putRequest.value();
+
+            ::mvccpb::KeyValue kv1;
+            EXPECT_TRUE(kv1.ParseFromString(val));
+            EXPECT_TRUE(putRequest.key() == std::string("/metastore/kv/") + kv1.key());
+            EXPECT_TRUE(kv1.key() == key);
+            EXPECT_TRUE(kv1.value() == value);
+            *resp = ::etcdserverpb::TxnResponse{};
+            resp->mutable_header()->set_revision(1);
+            return ::grpc::Status::OK;
+        }))
+        .WillRepeatedly(Return(::grpc::Status(::grpc::StatusCode::UNAVAILABLE, "etcd is unavailable ...")));
+
+    // put key: <mock-key6, mock-value6>
+    auto fut = client.Put(key, value, PutOption{ .asyncBackup = false });
+    EXPECT_AWAIT_READY(fut);
+
+    // failed to delete key: <mock-key6, mock-value6>
+    auto future = client.Delete(key, DeleteOption{ .prevKv = true, .prefix = true, .asyncBackup = false });
+    EXPECT_AWAIT_READY(future);
+    EXPECT_TRUE(future.Get()->status.IsError());
+    EXPECT_EQ(future.Get()->deleted, 1);
+    EXPECT_EQ(future.Get()->prevKvs.at(0).key(), key);
+    EXPECT_EQ(future.Get()->prevKvs.at(0).value(), value);
+
+    // get key: <mock-key6, mock-value6>
+    auto getFut = client.Get(key, GetOption{ .prefix = true });
+    EXPECT_AWAIT_READY(getFut);
+    EXPECT_TRUE(getFut.Get()->status.IsOk());
+    EXPECT_EQ(getFut.Get()->count, 1);
+    EXPECT_EQ(getFut.Get()->kvs.at(0).key(), key);
+    EXPECT_EQ(getFut.Get()->kvs.at(0).value(), value);
+
+    litebus::Terminate(kvServerAID);
+    litebus::Await(kvServerAID);
+    litebus::Terminate(kvServerAccessorAID);
+    litebus::Await(kvServerAccessorAID);
+
+    litebus::Terminate(persistAID);
+    litebus::Await(persistAID);
+    litebus::Terminate(backupAID);
+    litebus::Await(backupAID);
+}
+
+TEST_F(MetaStoreTest, MetaStoreWithETCDTxnErrorTest)  // NOLINT
+{
+    auto persist =
+        litebus::Spawn(std::make_shared<EtcdKvClientStrategy>("Persist", etcdAddress_,
+            MetaStoreTimeoutOption{
+                .operationRetryIntervalLowerBound = 100,
+                .operationRetryIntervalUpperBound = 200,
+                .operationRetryTimes = 1,
+                .grpcTimeout = GRPC_TIMEOUT_SECONDS}));
+    auto backupAID = litebus::Spawn(std::make_shared<BackupActor>("BackupActor7", persist));
+    litebus::AID kvServerAID = litebus::Spawn(std::make_shared<KvServiceActor>(backupAID));
+    litebus::AID kvServerAccessorAID = litebus::Spawn(std::make_shared<KvServiceAccessorActor>(kvServerAID));
+    MetaStoreClient client(MetaStoreConfig{ .etcdAddress = etcdAddress_,
+                                            .metaStoreAddress = kvServerAccessorAID.Url(),
+                                            .enableMetaStore = true },{}, MetaStoreTimeoutOption{});
+    client.Init();
+
+    const std::string key = "mock-key7";
+    const std::string value = "mock-value7";
+
+    EXPECT_CALL(*etcdKvService_, Txn)  // test persistence
+        .WillOnce(Invoke([&](::grpc::ServerContext *, const ::etcdserverpb::TxnRequest *request,
+                             ::etcdserverpb::TxnResponse *response) -> ::grpc::Status {
+            EXPECT_TRUE(request->compare_size() == 0);
+            EXPECT_TRUE(request->success_size() == 1);
+            const auto &cmp = request->success(0);
+            EXPECT_TRUE(cmp.request_case() == etcdserverpb::RequestOp::kRequestPut);
+            const auto &putRequest = cmp.request_put();
+            EXPECT_TRUE(putRequest.key() == std::string("/metastore/kv/") + key);
+            const auto &val = putRequest.value();
+
+            ::mvccpb::KeyValue kv;
+            EXPECT_TRUE(kv.ParseFromString(val));
+            EXPECT_TRUE(putRequest.key() == std::string("/metastore/kv/") + kv.key());
+            EXPECT_TRUE(kv.value() == value);
+            EXPECT_TRUE(kv.key() == key);
+            *response = ::etcdserverpb::TxnResponse{};
+            response->mutable_header()->set_revision(1);
+            return ::grpc::Status::OK;
+        }))
+        .WillRepeatedly(Return(::grpc::Status(::grpc::StatusCode::UNAVAILABLE, "etcd is unavailable ...")));
+
+    // put key: <mock-key7, mock-value7>
+    auto fut = client.Put(key, value, PutOption{ .asyncBackup = false });
+    EXPECT_AWAIT_READY(fut);
+
+    // txn key: <mock-key7, mock-value7>
+    auto transaction = client.BeginTransaction();
+    transaction->If(TxnCompare::OfValue(key, CompareOperator::EQUAL, value));
+    transaction->Then(TxnOperation::Create(key, DeleteOption{ true, false, false }));
+    std::shared_ptr<TxnResponse> txnResponse = transaction->Commit().Get();
+    EXPECT_TRUE(txnResponse->status.IsError());
+
+    // get key: <mock-key7, mock-value7>
+    auto getFut = client.Get(key, GetOption{ .prefix = true });
+    EXPECT_AWAIT_READY(getFut);
+    EXPECT_TRUE(getFut.Get()->status.IsOk());
+    EXPECT_EQ(getFut.Get()->count, 1);
+    EXPECT_EQ(getFut.Get()->kvs.at(0).key(), key);
+    EXPECT_EQ(getFut.Get()->kvs.at(0).value(), value);
+
+    litebus::Terminate(kvServerAccessorAID);
+    litebus::Await(kvServerAccessorAID);
+    litebus::Terminate(kvServerAID);
+    litebus::Await(kvServerAID);
+    litebus::Terminate(backupAID);
+    litebus::Await(backupAID);
+
+    litebus::Terminate(persist);
+    litebus::Await(persist);
 }
 
 TEST_F(MetaStoreTest, MetaStoreWithETCDGetTest)  // NOLINT
@@ -353,15 +548,15 @@ TEST_F(MetaStoreTest, MetaStoreWithETCDGetTest)  // NOLINT
     EXPECT_CALL(*etcdKvService_, Txn)  // test persistence
         .WillOnce(Invoke([&](::grpc::ServerContext *, const ::etcdserverpb::TxnRequest *request,
                              ::etcdserverpb::TxnResponse *response) -> ::grpc::Status {
-            EXPECT_TRUE(request->compare_size() == 0);
             EXPECT_TRUE(request->success_size() == 1);
+            EXPECT_TRUE(request->compare_size() == 0);
             const auto &cmp = request->success(0);
             EXPECT_TRUE(cmp.request_case() == etcdserverpb::RequestOp::kRequestPut);
             const auto &putRequest = cmp.request_put();
             EXPECT_TRUE(putRequest.key() == std::string("/metastore/kv/") + key);
 
-            const auto &val = putRequest.value();
             ::mvccpb::KeyValue kv;
+            const auto &val = putRequest.value();
             EXPECT_TRUE(kv.ParseFromString(val));
             EXPECT_TRUE(putRequest.key() == std::string("/metastore/kv/") + kv.key());
             EXPECT_TRUE(kv.key() == key);
@@ -372,7 +567,7 @@ TEST_F(MetaStoreTest, MetaStoreWithETCDGetTest)  // NOLINT
             return ::grpc::Status::OK;
         }));
 
-    auto fut = client.Put(key, value, PutOption{.leaseId = 0, .prevKv = false, .asyncBackup = false });
+    auto fut = client.Put(key, value, PutOption{ .asyncBackup = false });
     EXPECT_AWAIT_READY(fut);
 
     auto future = client.Get(key, GetOption{ .prefix = true });
@@ -587,7 +782,9 @@ TEST_F(MetaStoreTest, MetaStoreClientAndMetaStoreServiceTest)  // NOLINT
         return true;
     };
 
-    auto syncer = []() -> litebus::Future<SyncResult> { return SyncResult{ Status::OK(), 0 }; };
+    auto syncer = [](const std::shared_ptr<GetResponse> &) -> litebus::Future<SyncResult> {
+        return SyncResult{ Status::OK() };
+    };
     functionsystem::WatchOption watchOption{};
     watchOption.prevKv = true;
     auto watcher1 = metaStoreClient->Watch("key", watchOption, func, syncer);
@@ -964,8 +1161,8 @@ TEST_F(MetaStoreTest, RangeObserverCacheTest)
         messages::MetaStoreRequest req;
         req.set_requestid(litebus::uuid_generator::UUID::GetRandomUUID().ToString());
         auto request = std::make_shared<etcdserverpb::DeleteRangeRequest>();
-        request->set_key(INSTANCE_ROUTE_PATH_PREFIX);
         request->set_range_end(StringPlusOne(INSTANCE_ROUTE_PATH_PREFIX));
+        request->set_key(INSTANCE_ROUTE_PATH_PREFIX);
         req.set_requestmsg(request->SerializeAsString());
         kvAccessorActor->AsyncDelete(client->GetAID(), "Delete", req.SerializeAsString());
     }
@@ -1034,31 +1231,33 @@ TEST_F(MetaStoreTest, GetAndWatchTest)
             put = true;
         }));
 
+    bool isPut = false;
     EXPECT_CALL(*client, MockOnWatch)
-        .WillOnce(Invoke([](const litebus::AID &from, std::string name, std::string msg) {  // OnPut
-            etcdserverpb::WatchResponse response;
-            EXPECT_TRUE(ParseWatchResponse(response, msg));
-            EXPECT_EQ(response.events_size(), 1);
-            auto &event = response.events(0);
+        .WillOnce(Invoke([&isPut](const litebus::AID &from, std::string name, std::string msg) {  // OnPut
+            etcdserverpb::WatchResponse resp;
+            EXPECT_TRUE(ParseWatchResponse(resp, msg));
+            EXPECT_EQ(resp.events_size(), 1);
+            auto &event = resp.events(0);
             EXPECT_EQ(event.type(), ::mvccpb::Event_EventType::Event_EventType_PUT);
-            EXPECT_EQ(event.kv().key(), "key");
             EXPECT_EQ(event.kv().value(), "2.0");
+            EXPECT_EQ(event.kv().key(), "key");
+            isPut = true;
         }))
         .WillOnce(Invoke([&deleted](const litebus::AID &from, std::string name, std::string msg) {  // OnDelete
             etcdserverpb::WatchResponse response;
             EXPECT_TRUE(ParseWatchResponse(response, msg));
             EXPECT_EQ(response.events_size(), 1);
             auto &event = response.events(0);
-            EXPECT_EQ(event.type(), ::mvccpb::Event_EventType::Event_EventType_DELETE);
             EXPECT_EQ(event.prev_kv().value(), "2.0");
+            EXPECT_EQ(event.type(), ::mvccpb::Event_EventType::Event_EventType_DELETE);
             deleted = true;
         }));
 
     {
         messages::MetaStore::PutRequest request;
         request.set_requestid(litebus::uuid_generator::UUID::GetRandomUUID().ToString());
-        request.set_key("key");
         request.set_value("1.0");
+        request.set_key("key");
         kvAccessorActor->AsyncPut(client->GetAID(), "Put", request.SerializeAsString());
     }
 
@@ -1067,18 +1266,17 @@ TEST_F(MetaStoreTest, GetAndWatchTest)
     auto *args = request->mutable_create_request();
     args->set_key("key");
     args->set_prev_kv(true);  // prefix
-    args->set_range_end(StringPlusOne("key"));
     args->set_start_revision(0);
-    req.set_requestid(uuid);
+    args->set_range_end(StringPlusOne("key"));
     req.set_requestmsg(request->SerializeAsString());
+    req.set_requestid(uuid);
     kvAccessorActor->AsyncGetAndWatch(client->GetAID(), "GetAndWatch", req.SerializeAsString());
 
     ASSERT_AWAIT_TRUE([&]() -> bool { return put; });
 
     // Put
     {
-        bool isPut = false;
-        EXPECT_CALL(*client, MockOnPut).WillOnce(DoAll(testing::Assign(&isPut, true), Return()));
+        EXPECT_CALL(*client, MockOnPut).WillOnce(Return());
         messages::MetaStore::PutRequest request;
         request.set_requestid(litebus::uuid_generator::UUID::GetRandomUUID().ToString());
         request.set_key("key");
@@ -1092,8 +1290,8 @@ TEST_F(MetaStoreTest, GetAndWatchTest)
         messages::MetaStoreRequest req;
         req.set_requestid(litebus::uuid_generator::UUID::GetRandomUUID().ToString());
         auto request = std::make_shared<etcdserverpb::DeleteRangeRequest>();
-        request->set_key("key");
         request->set_range_end("kez");  // delete [key, kez)
+        request->set_key("key");
 
         req.set_requestmsg(request->SerializeAsString());
         kvAccessorActor->AsyncDelete(client->GetAID(), "Delete", req.SerializeAsString());
@@ -1339,8 +1537,7 @@ TEST_F(MetaStoreTest, BackupTest)
 
     {
         auto transaction = client.BeginTransaction();
-        transaction->Then(
-            TxnOperation::Create("key1", "value1", PutOption{ .leaseId = 0, .prevKv = false, .asyncBackup = false }));
+        transaction->Then(TxnOperation::Create("key1", "value1", PutOption{ .asyncBackup = false }));
         transaction->Then(TxnOperation::Create("key2", "value2", PutOption{}));
         transaction->Then(TxnOperation::Create("key3", "value3", PutOption{}));
         transaction->Then(TxnOperation::Create(frontendKey, frontendVal, PutOption{}));
@@ -1351,20 +1548,21 @@ TEST_F(MetaStoreTest, BackupTest)
     }
     {
         auto transaction = client.BeginTransaction();
-        transaction->Then(
-            TxnOperation::Create("key", DeleteOption{ .prevKv = false, .prefix = true, .asyncBackup = false }));
-        transaction->Then(TxnOperation::Create("/sn/instance",
-                                               DeleteOption{ .prevKv = false, .prefix = true, .asyncBackup = false }));
+        transaction->Then(TxnOperation::Create("key", DeleteOption{ .prefix = true, .asyncBackup = false }));
+        transaction->Then(TxnOperation::Create("/sn/instance", DeleteOption{ .prefix = true, .asyncBackup = false }));
         transaction->Commit().Get();
     }
 
-    litebus::Terminate(kvServerAccessorAID);
-    litebus::Await(kvServerAccessorAID);
+
     litebus::Terminate(kvServerAID);
     litebus::Await(kvServerAID);
 
+    litebus::Terminate(kvServerAccessorAID);
+    litebus::Await(kvServerAccessorAID);
+
     litebus::Terminate(backupAID);
     litebus::Await(backupAID);
+
     litebus::Terminate(persistAID);
     litebus::Await(persistAID);
 }
@@ -1374,39 +1572,39 @@ TEST_F(MetaStoreTest, SlowBackupTest)
     auto persistAID =
         litebus::Spawn(std::make_shared<EtcdKvClientStrategy>("Persist", etcdAddress_, MetaStoreTimeoutOption{}));
     auto backupAID = litebus::Spawn(std::make_shared<BackupActor>("BackupActor", persistAID));
-    litebus::AID kvServerAID = litebus::Spawn(std::make_shared<KvServiceActor>(backupAID));
-
-    litebus::AID kvServerAccessorAID = litebus::Spawn(std::make_shared<KvServiceAccessorActor>(kvServerAID));
+    litebus::AID kvAID = litebus::Spawn(std::make_shared<KvServiceActor>(backupAID));
+    litebus::AID kvAccessorAID = litebus::Spawn(std::make_shared<KvServiceAccessorActor>(kvAID));
     MetaStoreClient client(MetaStoreConfig{ .etcdAddress = etcdAddress_,
-                                            .metaStoreAddress = kvServerAccessorAID.Url(),
+                                            .metaStoreAddress = kvAccessorAID.Url(),
                                             .enableMetaStore = true },
                            {}, MetaStoreTimeoutOption{});
     client.Init();
 
     EXPECT_CALL(*etcdKvService_, Txn)  // test persistence
         .WillRepeatedly(Invoke([&](::grpc::ServerContext *, const ::etcdserverpb::TxnRequest *request,
-                                   ::etcdserverpb::TxnResponse *response) -> ::grpc::Status {
+                                   ::etcdserverpb::TxnResponse *resp) -> ::grpc::Status {
             TimeLoop(1);
-            *response = ::etcdserverpb::TxnResponse{};
-            response->mutable_header()->set_revision(1);
+            *resp = ::etcdserverpb::TxnResponse{};
+            resp->mutable_header()->set_revision(1);
             return ::grpc::Status::OK;
         }));
 
     std::vector<litebus::Future<std::shared_ptr<TxnResponse>>> futures;
     for (int i = 0; i < 10; i++) {
-        auto transaction = client.BeginTransaction();
-        transaction->Then(TxnOperation::Create("key" + std::to_string(i), "value" + std::to_string(i),
-                                               PutOption{ .leaseId = 0, .prevKv = false, .asyncBackup = false }));
-        futures.emplace_back(transaction->Commit());
+        auto txn = client.BeginTransaction();
+        txn->Then(TxnOperation::Create("key" + std::to_string(i), "value" + std::to_string(i),
+                                       PutOption{ .asyncBackup = false }));
+        futures.emplace_back(txn->Commit());
     }
+
     for (auto &fut : futures) {
         ASSERT_AWAIT_READY(fut);
     }
 
-    litebus::Terminate(kvServerAccessorAID);
-    litebus::Await(kvServerAccessorAID);
-    litebus::Terminate(kvServerAID);
-    litebus::Await(kvServerAID);
+    litebus::Terminate(kvAccessorAID);
+    litebus::Await(kvAccessorAID);
+    litebus::Terminate(kvAID);
+    litebus::Await(kvAID);
 
     litebus::Terminate(backupAID);
     litebus::Await(backupAID);
@@ -1420,8 +1618,7 @@ TEST_F(MetaStoreTest, BackupFlushBelowMaxConcurrency)
         litebus::Spawn(std::make_shared<EtcdKvClientStrategy>("Persist", etcdAddress_, MetaStoreTimeoutOption{}));
     auto backupAID = litebus::Spawn(std::make_shared<BackupActor>(
         "BackupActor", persistAID,
-        MetaStoreBackupOption{ .enableSyncSysFunc = false, .metaStoreMaxFlushConcurrency = 10,
-                               .metaStoreMaxFlushBatchSize = 1 }));
+        MetaStoreBackupOption{ .metaStoreMaxFlushConcurrency = 10, .metaStoreMaxFlushBatchSize = 1 }));
     litebus::AID kvServerAID = litebus::Spawn(std::make_shared<KvServiceActor>(backupAID));
 
     litebus::AID kvServerAccessorAID = litebus::Spawn(std::make_shared<KvServiceAccessorActor>(kvServerAID));
@@ -1433,18 +1630,17 @@ TEST_F(MetaStoreTest, BackupFlushBelowMaxConcurrency)
 
     EXPECT_CALL(*etcdKvService_, Txn)  // test persistence
         .WillRepeatedly(Invoke([&](::grpc::ServerContext *, const ::etcdserverpb::TxnRequest *request,
-                                   ::etcdserverpb::TxnResponse *response) -> ::grpc::Status {
+                                   ::etcdserverpb::TxnResponse *txnResponse) -> ::grpc::Status {
             TimeLoop(1);
-            *response = ::etcdserverpb::TxnResponse{};
-            response->mutable_header()->set_revision(1);
+            *txnResponse = ::etcdserverpb::TxnResponse{};
+            txnResponse->mutable_header()->set_revision(1);
             return ::grpc::Status::OK;
         }));
     auto start = std::chrono::steady_clock::now();
     std::vector<litebus::Future<std::shared_ptr<TxnResponse>>> futures;
     for (int i = 0; i < 10; i++) {
         auto transaction = client.BeginTransaction();
-        transaction->Then(TxnOperation::Create("key" + std::to_string(i), "value" + std::to_string(i),
-                                               PutOption{ .leaseId = 0, .prevKv = false, .asyncBackup = false }));
+        transaction->Then(TxnOperation::Create("key" + std::to_string(i), "value1" + std::to_string(i), PutOption{ .asyncBackup = false }));
         futures.emplace_back(transaction->Commit());
     }
     for (auto &fut : futures) {
@@ -1453,13 +1649,13 @@ TEST_F(MetaStoreTest, BackupFlushBelowMaxConcurrency)
     auto end = std::chrono::steady_clock::now();
     EXPECT_TRUE(std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() <= 10);
     litebus::Terminate(kvServerAccessorAID);
-    litebus::Await(kvServerAccessorAID);
     litebus::Terminate(kvServerAID);
-    litebus::Await(kvServerAID);
-
     litebus::Terminate(backupAID);
-    litebus::Await(backupAID);
     litebus::Terminate(persistAID);
+
+    litebus::Await(kvServerAccessorAID);
+    litebus::Await(kvServerAID);
+    litebus::Await(backupAID);
     litebus::Await(persistAID);
 }
 
@@ -1469,22 +1665,22 @@ TEST_F(MetaStoreTest, BackupFlushAboveMaxConcurrency)
         litebus::Spawn(std::make_shared<EtcdKvClientStrategy>("Persist", etcdAddress_, MetaStoreTimeoutOption{}));
     auto backupAID = litebus::Spawn(std::make_shared<BackupActor>(
         "BackupActor", persistAID,
-        MetaStoreBackupOption{ .enableSyncSysFunc = false, .metaStoreMaxFlushConcurrency = 2, .metaStoreMaxFlushBatchSize = 1 }));
+        MetaStoreBackupOption{ .metaStoreMaxFlushConcurrency = 2, .metaStoreMaxFlushBatchSize = 1 }));
     litebus::AID kvServerAID = litebus::Spawn(std::make_shared<KvServiceActor>(backupAID));
 
-    litebus::AID kvServerAccessorAID = litebus::Spawn(std::make_shared<KvServiceAccessorActor>(kvServerAID));
+    litebus::AID accessorAID = litebus::Spawn(std::make_shared<KvServiceAccessorActor>(kvServerAID));
     MetaStoreClient client(MetaStoreConfig{ .etcdAddress = etcdAddress_,
-                                            .metaStoreAddress = kvServerAccessorAID.Url(),
+                                            .metaStoreAddress = accessorAID.Url(),
                                             .enableMetaStore = true },
                            {}, MetaStoreTimeoutOption{});
     client.Init();
 
     EXPECT_CALL(*etcdKvService_, Txn)  // test persistence
         .WillRepeatedly(Invoke([&](::grpc::ServerContext *, const ::etcdserverpb::TxnRequest *request,
-                                   ::etcdserverpb::TxnResponse *response) -> ::grpc::Status {
+                                   ::etcdserverpb::TxnResponse *rsp) -> ::grpc::Status {
             TimeLoop(1);
-            *response = ::etcdserverpb::TxnResponse{};
-            response->mutable_header()->set_revision(1);
+            *rsp = ::etcdserverpb::TxnResponse{};
+            rsp->mutable_header()->set_revision(1);
             return ::grpc::Status::OK;
         }));
     auto start = std::chrono::steady_clock::now();
@@ -1492,7 +1688,7 @@ TEST_F(MetaStoreTest, BackupFlushAboveMaxConcurrency)
     for (int i = 0; i < 10; i++) {
         auto transaction = client.BeginTransaction();
         transaction->Then(TxnOperation::Create("key" + std::to_string(i), "value" + std::to_string(i),
-                                               PutOption{ .leaseId = 0, .prevKv = false, .asyncBackup = false }));
+                                               PutOption{ .asyncBackup = false }));
         futures.emplace_back(transaction->Commit());
     }
     for (auto &fut : futures) {
@@ -1500,8 +1696,8 @@ TEST_F(MetaStoreTest, BackupFlushAboveMaxConcurrency)
     }
     auto end = std::chrono::steady_clock::now();
     EXPECT_TRUE(std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() >= 4);
-    litebus::Terminate(kvServerAccessorAID);
-    litebus::Await(kvServerAccessorAID);
+    litebus::Terminate(accessorAID);
+    litebus::Await(accessorAID);
     litebus::Terminate(kvServerAID);
     litebus::Await(kvServerAID);
 
@@ -1517,7 +1713,7 @@ TEST_F(MetaStoreTest, BackupFlushAsyncBack)
         litebus::Spawn(std::make_shared<EtcdKvClientStrategy>("Persist", etcdAddress_, MetaStoreTimeoutOption{}));
     auto backupAID = litebus::Spawn(std::make_shared<BackupActor>(
         "BackupActor", persistAID,
-        MetaStoreBackupOption{ .enableSyncSysFunc = false, .metaStoreMaxFlushConcurrency = 5, .metaStoreMaxFlushBatchSize = 2 }));
+        MetaStoreBackupOption{ .metaStoreMaxFlushConcurrency = 5, .metaStoreMaxFlushBatchSize = 2 }));
     litebus::AID kvServerAID = litebus::Spawn(std::make_shared<KvServiceActor>(backupAID));
 
     litebus::AID kvServerAccessorAID = litebus::Spawn(std::make_shared<KvServiceAccessorActor>(kvServerAID));
@@ -1539,11 +1735,11 @@ TEST_F(MetaStoreTest, BackupFlushAsyncBack)
     for (int i = 0; i < 10; i++) {
         auto transaction = client.BeginTransaction();
         transaction->Then(TxnOperation::Create("key" + std::to_string(i), "value" + std::to_string(i),
-                                               PutOption{ .leaseId = 0, .prevKv = false, .asyncBackup = true }));
+                                               PutOption{ .asyncBackup = true }));
         transaction->Then(TxnOperation::Create("key1" + std::to_string(i), "value" + std::to_string(i),
-                                               PutOption{ .leaseId = 0, .prevKv = false, .asyncBackup = true }));
+                                               PutOption{ .asyncBackup = true }));
         transaction->Then(TxnOperation::Create("key2" + std::to_string(i), "value" + std::to_string(i),
-                                               PutOption{ .leaseId = 0, .prevKv = false, .asyncBackup = true }));
+                                               PutOption{ .asyncBackup = true }));
         futures.emplace_back(transaction->Commit());
         auto transaction1 = client.BeginTransaction();
         transaction1->Then(
@@ -1562,10 +1758,10 @@ TEST_F(MetaStoreTest, BackupFlushAsyncBack)
     litebus::Terminate(kvServerAID);
     litebus::Await(kvServerAID);
 
-    litebus::Terminate(backupAID);
-    litebus::Await(backupAID);
     litebus::Terminate(persistAID);
     litebus::Await(persistAID);
+    litebus::Terminate(backupAID);
+    litebus::Await(backupAID);
 }
 
 TEST_F(MetaStoreTest, BackupFlushRequestWithError)
@@ -1574,7 +1770,7 @@ TEST_F(MetaStoreTest, BackupFlushRequestWithError)
         litebus::Spawn(std::make_shared<EtcdKvClientStrategy>("Persist", etcdAddress_, MetaStoreTimeoutOption{}));
     auto backupActor = std::make_shared<BackupActor>(
         "BackupActor", persistAID,
-        MetaStoreBackupOption{ .enableSyncSysFunc = false, .metaStoreMaxFlushConcurrency = 10, .metaStoreMaxFlushBatchSize = 1 });
+        MetaStoreBackupOption{ .metaStoreMaxFlushConcurrency = 10, .metaStoreMaxFlushBatchSize = 1 });
     auto backupAID = litebus::Spawn(backupActor);
     litebus::AID kvServerAID = litebus::Spawn(std::make_shared<KvServiceActor>(backupAID));
 
@@ -1592,7 +1788,7 @@ TEST_F(MetaStoreTest, BackupFlushRequestWithError)
     for (int i = 0; i < 10; i++) {
         auto transaction = client.BeginTransaction();
         transaction->Then(TxnOperation::Create("key" + std::to_string(i), "value" + std::to_string(i),
-                                               PutOption{ .leaseId = 0, .prevKv = false, .asyncBackup = false }));
+                                               PutOption{ .asyncBackup = false }));
         futures.emplace_back(transaction->Commit());
     }
     for (auto &fut : futures) {
@@ -1612,12 +1808,8 @@ TEST_F(MetaStoreTest, BackupFlushRequestWithError)
 
 TEST_F(MetaStoreTest, BackupFailTest)
 {
-    auto persistAID = litebus::Spawn(
-        std::make_shared<EtcdKvClientStrategy>("Persist", etcdAddress_,
-                                               MetaStoreTimeoutOption{ .operationRetryIntervalLowerBound = 100,
-                                                                       .operationRetryIntervalUpperBound = 500,
-                                                                       .operationRetryTimes = 1,
-                                                                       .grpcTimeout = 0 }));
+    auto persistAID = litebus::Spawn(std::make_shared<EtcdKvClientStrategy>(
+        "Persist", etcdAddress_, MetaStoreTimeoutOption{ .operationRetryTimes = 1, .grpcTimeout = 0 }));
     auto backupAID = litebus::Spawn(std::make_shared<BackupActor>("BackupActor", persistAID));
     litebus::AID kvServerAID = litebus::Spawn(std::make_shared<KvServiceActor>(backupAID));
 
@@ -1636,8 +1828,7 @@ TEST_F(MetaStoreTest, BackupFailTest)
 
     {
         auto transaction = client.BeginTransaction();
-        transaction->Then(
-            TxnOperation::Create("key1", "value1", PutOption{ .leaseId = 0, .prevKv = false, .asyncBackup = false }));
+        transaction->Then(TxnOperation::Create("key1", "value1", PutOption{ .asyncBackup = false }));
         transaction->Commit().Get();
     }
 
@@ -1800,9 +1991,76 @@ TEST_F(MetaStoreTest, MetaStoreDriverest)  // NOLINT
 
     // start with persist
     metaStoreDriver = std::make_shared<meta_store::MetaStoreDriver>();
-    metaStoreDriver->Start(localAddress_);
+    metaStoreDriver->Start({localAddress_});
 
     EXPECT_TRUE(metaStoreDriver->Stop().IsOk());
     metaStoreDriver->Await();
+    auto monitor = MetaStoreMonitorFactory::GetInstance().GetMonitor(localAddress_);
+    litebus::Future<bool> fut = monitor->ClearObservers();
+    ASSERT_AWAIT_READY(fut);
+
+    // start with passthrough
+    metaStoreDriver = std::make_shared<meta_store::MetaStoreDriver>();
+
+    EXPECT_TRUE(metaStoreDriver->Stop().IsOk());
+    metaStoreDriver->Await();
+}
+
+TEST_F(MetaStoreTest, KvServiceActorDuplicateOngoingTest)
+{
+    auto kvActor = std::make_shared<meta_store::KvServiceActor>();
+
+    // Put
+    {
+        etcdserverpb::PutRequest request;
+        request.set_key("key");
+        request.set_value("1");
+        etcdserverpb::PutResponse response;
+
+        // check
+        EXPECT_TRUE(kvActor->CheckUniqueOngoingValid(request.key()));
+        // try run
+        auto puts = kvActor->TryPut(&request, &response);
+        auto kv = puts.first;
+        auto preKv = puts.second;
+        EXPECT_EQ(kv.key(), request.key());
+        EXPECT_EQ(kv.value(), request.value());
+        // insert
+        kvActor->InsertUniqueOngoing(etcdserverpb::RequestOp::RequestCase::kRequestPut, kv, preKv);
+        // check failed: duplicate key
+        EXPECT_FALSE(kvActor->CheckUniqueOngoingValid(request.key()));
+        // callback
+        kvActor->OnTryPutCache(request.key(), Status::OK());
+        // check
+        EXPECT_TRUE(kvActor->CheckUniqueOngoingValid(request.key()));
+    }
+
+    // Delete
+    {
+        etcdserverpb::PutRequest putRequest;
+        putRequest.set_key("key2");
+        putRequest.set_value("2");
+        etcdserverpb::PutResponse getResponse;
+        kvActor->Put(&putRequest, &getResponse);
+
+        etcdserverpb::DeleteRangeRequest request;
+        request.set_key("key2");
+        etcdserverpb::DeleteRangeResponse response;
+        // try run
+        auto deletes = kvActor->TryDeleteRange(&request, &response);
+        EXPECT_EQ(deletes->size(), static_cast<uint32_t>(1));
+        EXPECT_EQ(deletes->front().key(), request.key());
+
+        // check
+        EXPECT_TRUE(kvActor->CheckDeletesOngoingValid(deletes));
+        // insert
+        kvActor->InsertDeleteOngoing(deletes);
+        // check failed: duplicate ongoing
+        EXPECT_FALSE(kvActor->CheckUniqueOngoingValid(deletes->front().key()));
+        // callbak
+        kvActor->OnTryDeleteRange(deletes, Status::OK());
+        // check
+        EXPECT_TRUE(kvActor->CheckDeletesOngoingValid(deletes));
+    }
 }
 }  // namespace functionsystem::meta_store::test

@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "status/status.h"
+#include "common/status/status.h"
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>

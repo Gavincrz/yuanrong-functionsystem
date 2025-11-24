@@ -22,8 +22,8 @@
 
 #include "actor/actor.hpp"
 #include "common/constants/actor_name.h"
-#include "logs/logging.h"
-#include "proto/pb/message_pb.h"
+#include "common/logs/logging.h"
+#include "common/proto/pb/message_pb.h"
 
 namespace functionsystem::test {
 

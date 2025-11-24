@@ -19,8 +19,8 @@
 
 #include <httpd/http_connect.hpp>
 
-#include "http/api_router_register.h"
-#include "http/http_server.h"
+#include "common/http/api_router_register.h"
+#include "common/http/http_server.h"
 #include "utils/future_test_helper.h"
 #include "utils/port_helper.h"
 
@@ -50,14 +50,14 @@ public:
 
 class HttpTest : public ::testing::Test {
 protected:
-    static void SetUpTestCase()
+    [[maybe_unused]] static void SetUpTestSuite()
     {
         httpServer_->RegisterRoute(testActor_);
         litebus::Spawn(testActor_);
         litebus::Spawn(httpServer_);
     }
 
-    static void TearDownTestCase()
+    [[maybe_unused]] static void TearDownTestSuite()
     {
         litebus::Terminate(httpServer_->GetAID());
         litebus::Await(httpServer_->GetAID());

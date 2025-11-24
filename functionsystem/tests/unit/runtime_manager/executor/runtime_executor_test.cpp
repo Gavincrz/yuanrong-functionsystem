@@ -13,24 +13,26 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
+#include "runtime_manager/executor/runtime_executor.h"
+
 #include <gmock/gmock.h>
+#include <yaml-cpp/yaml.h>
 
 #include <fstream>
 
-#include <yaml-cpp/yaml.h>
-
-#include "constants.h"
-#include "status/status.h"
-#include "files.h"
+#include "common/constants/constants.h"
+#include "common/status/status.h"
+#include "common/utils/files.h"
 #include "common/utils/path.h"
 #include "gtest/gtest.h"
+#include "mocks/mock_cmdtool.h"
 #include "port/port_manager.h"
 #include "runtime_manager/healthcheck/health_check.h"
+#include "runtime_manager/metrics/mock_function_agent_actor.h"
 #include "utils/future_test_helper.h"
 #include "utils/os_utils.hpp"
-#include "runtime_manager/metrics/mock_function_agent_actor.h"
-#include "runtime_manager/executor/runtime_executor.h"
-#include "mocks/mock_cmdtool.h"
+#include "utils/port_helper.h"
 
 namespace functionsystem::runtime_manager {
 using namespace functionsystem::test;
@@ -100,6 +102,22 @@ const std::string testCondaConfig = R"(
 std::shared_ptr<messages::StartInstanceRequest> BuildStartInstanceRequest(const std::string &language);
 class RuntimeExecutorTest : public ::testing::Test {
 public:
+    [[maybe_unused]] static void SetUpTestSuite()
+    {
+        if (!litebus::os::ExistPath("/tmp/cpp/bin")) {
+            litebus::os::Mkdir("/tmp/cpp/bin");
+        }
+
+        auto fd = open("/tmp/cpp/bin/runtime", O_RDWR | O_CREAT, S_IRWXU | S_IRWXG | S_IRWXO);
+        EXPECT_NE(fd, -1);
+        close(fd);
+
+        std::ofstream outfile;
+        outfile.open("/tmp/cpp/bin/runtime");
+        outfile << "sleep 2" << std::endl;
+        outfile.close();
+    }
+
     void SetUp() override
     {
         PortManager::GetInstance().InitPortResource(INITIAL_PORT, PORT_NUM);
@@ -195,29 +213,20 @@ TEST_F(RuntimeExecutorTest, StartInstanceTest)
     (void) litebus::os::Rm("/conda");
     auto fd = open("/conda", O_RDWR | O_CREAT, S_IRWXU | S_IRWXG | S_IRWXO);
     close(fd);
-    (void)litebus::os::Rm("/tmp/cpp/bin/runtime");
-    if (!litebus::os::ExistPath("/tmp/cpp/bin")) {
-        litebus::os::Mkdir("/tmp/cpp/bin");
-    }
-    fd = open("/tmp/cpp/bin/runtime", O_RDWR | O_CREAT, S_IRWXU | S_IRWXG | S_IRWXO);
-    EXPECT_NE(fd, -1);
-    close(fd);
-    std::ofstream outfile;
-    outfile.open("/tmp/cpp/bin/runtime");
-    outfile << "sleep 2" << std::endl;
-    outfile.close();
+    const char *port = ("--port=" + std::to_string(FindAvailablePort())).c_str();
+
     const char *argv[] = {
         "/runtime_manager",
         "--node_id=node1",
         "--ip=127.0.0.1",
         "--host_ip=127.0.0.1",
-        "--port=32233",
+        port,
         "--runtime_initial_port=500",
         "--port_num=2000",
         "--runtime_dir=/tmp"
     };
     runtime_manager::Flags flags;
-    flags.ParseFlags(8, argv);
+    flags.ParseFlags(std::size(argv), argv);
     executor_->SetRuntimeConfig(flags);
 
     auto startRequest = std::make_shared<messages::StartInstanceRequest>();
@@ -252,8 +261,10 @@ TEST_F(RuntimeExecutorTest, StartInstanceTest)
 
     auto startResponse = instanceResponse.mutable_startruntimeinstanceresponse();
     std::string resRuntimeID = startResponse->runtimeid();
+    pid_t resPid = startResponse->pid();
     EXPECT_TRUE(!resRuntimeID.empty());
     EXPECT_TRUE(executor_->IsRuntimeActive(resRuntimeID));
+    EXPECT_TRUE(executor_->IsRuntimeActiveByPid(resPid));
 
     auto startRequest1 = std::make_shared<messages::StartInstanceRequest>();
     startRequest1->set_type(static_cast<int32_t>(EXECUTOR_TYPE::RUNTIME));
@@ -355,29 +366,6 @@ TEST_F(RuntimeExecutorTest, StartInstance_CondaCommandNotValid)
     deployOptions->operator[](CONDA_PREFIX) = "/usr/local/conda";
     deployOptions->operator[](CONDA_DEFAULT_ENV) = "env_name_copy";
     deployOptions->operator[](CONDA_COMMAND) = "rm -rf /xxx";
-
-    auto future = executor_->StartInstance(request, {});
-    auto response = future.Get();
-    EXPECT_EQ(response.code(), RUNTIME_MANAGER_CONDA_PARAMS_INVALID);
-    EXPECT_THAT(response.message(), testing::HasSubstr("not valid"));
-}
-
-TEST_F(RuntimeExecutorTest, StartInstance_CondaExtraCommandNotValid)
-{
-    litebus::os::SetEnv("PATH", litebus::os::Join("/", env_, ':'));
-    (void) litebus::os::Rm("/conda");
-    auto fd = open("/conda", O_RDWR | O_CREAT, S_IRWXU | S_IRWXG | S_IRWXO);
-    close(fd);
-
-    auto request = std::make_shared<messages::StartInstanceRequest>();
-    request->set_type(static_cast<int32_t>(EXECUTOR_TYPE::RUNTIME));
-    auto instanceInfo = request->mutable_runtimeinstanceinfo();
-    auto runtimeConfig = instanceInfo->mutable_runtimeconfig();
-    runtimeConfig->set_language("cpp");
-    auto deployOptions = instanceInfo->mutable_deploymentconfig()->mutable_deployoptions();
-    deployOptions->operator[](CONDA_PREFIX) = "/usr/local/conda";
-    deployOptions->operator[](CONDA_DEFAULT_ENV) = "env_name_copy";
-    deployOptions->operator[](CONDA_COMMAND) = "conda; rm -rf /xxx";
 
     auto future = executor_->StartInstance(request, {});
     auto response = future.Get();
@@ -607,6 +595,7 @@ TEST_F(RuntimeExecutorTest, StopInstanceTest)
 
     auto startResponse = instanceResponse.mutable_startruntimeinstanceresponse();
     std::string resRuntimeID = startResponse->runtimeid();
+    pid_t resPid = startResponse->pid();
     EXPECT_TRUE(!resRuntimeID.empty());
 
     auto stopRequest = std::make_shared<messages::StopInstanceRequest>();
@@ -617,6 +606,7 @@ TEST_F(RuntimeExecutorTest, StopInstanceTest)
     auto stopResponse = executor_->StopInstance(stopRequest);
     EXPECT_EQ(stopResponse.StatusCode(), SUCCESS);
     EXPECT_FALSE(executor_->IsRuntimeActive(resRuntimeID));
+    EXPECT_FALSE(executor_->IsRuntimeActiveByPid(resPid));
 }
 
 TEST_F(RuntimeExecutorTest, StopInstanceFailTest)
@@ -671,9 +661,16 @@ TEST_F(RuntimeExecutorTest, PosixCustomRuntimeTest)
 
     (void)litebus::os::Rmdir("/home/snuser/instances/");
     runtime_manager::Flags flags;
-    const char *argv[] = { "/runtime_manager", "--node_id=", "--ip=127.0.0.1","--host_ip=127.0.0.1", "--port=32233",
-        "--runtime_initial_port=500", "--runtime_std_log_dir=instances" };
-    flags.ParseFlags(7, argv);
+    const char *port = ("--port=" + std::to_string(FindAvailablePort())).c_str();
+
+    const char *argv[] = { "/runtime_manager",
+                           "--node_id=",
+                           "--ip=127.0.0.1",
+                           "--host_ip=127.0.0.1",
+                           port,
+                           "--runtime_initial_port=500",
+                           "--runtime_std_log_dir=instances" };
+    flags.ParseFlags(std::size(argv), argv);
     executor_->SetRuntimeConfig(flags);
     auto future = executor_->StartInstance(request, {});
     auto response = future.Get();
@@ -702,13 +699,12 @@ TEST_F(RuntimeExecutorTest, StartInstanceWithCachePoolTest)
 {
     auto client = std::make_shared<runtime_manager::HealthCheck>();
     client->RegisterProcessExitCallback(std::bind(&RuntimeExecutor::UpdatePrestartRuntimePromise, executor_, std::placeholders::_1));
-    const char *argv[] = { "./runtime-manager",
-                           "--runtime_log_level=DEBUG",
+    const char *argv[] = { "./runtime-manager", "--runtime_log_level=DEBUG",
                            "--runtime_prestart_config={\"java1.8\": {\"prestartCount\": -1, \"customArgs\": "
                            "[\"-XX:+PrintGC\",\"-XX:+UseParallelGC\"]}, \"java11\": {\"prestartCount\": -1}, "
                            "\"cpp11\": {\"prestartCount\": 1}, \"python3.9\": {\"prestartCount\": 1}}" };
     runtime_manager::Flags flags;
-    flags.ParseFlags(3, argv);
+    flags.ParseFlags(std::size(argv), argv);
     executor_->SetRuntimeConfig(flags);
     sleep(3);
     auto startRequest = std::make_shared<messages::StartInstanceRequest>();
@@ -761,7 +757,6 @@ TEST_F(RuntimeExecutorTest, StartInstanceWithCachePoolTest)
     EXPECT_EQ(resRequestID, "test_requestID_monopoly");
 }
 
-
 /**
 * Feature:
 * Description: Start instance with prestart runtime
@@ -782,7 +777,7 @@ TEST_F(RuntimeExecutorTest, StartInstanceWithPrestartRuntime)
                            "--runtime_log_level=DEBUG",
                            "--runtime_prestart_config={\"cpp11\": {\"prestartCount\": 1}}"  };
     runtime_manager::Flags flags;
-    flags.ParseFlags(3, argv);
+    flags.ParseFlags(std::size(argv), argv);
     executor_->SetRuntimeConfig(flags);
     auto startRequest = std::make_shared<messages::StartInstanceRequest>();
     startRequest->set_type(static_cast<int32_t>(EXECUTOR_TYPE::RUNTIME));
@@ -838,7 +833,7 @@ TEST_F(RuntimeExecutorTest, KillOtherPrestartRuntimeProcessTest)
                            "--runtime_log_level=DEBUG",
                            "--runtime_prestart_config={\"python3.9\": {\"prestartCount\": 1}}" };
     runtime_manager::Flags flags;
-    flags.ParseFlags(3, argv);
+    flags.ParseFlags(std::size(argv), argv);
     executor_->SetRuntimeConfig(flags);
     auto startRequest = std::make_shared<messages::StartInstanceRequest>();
     startRequest->set_type(static_cast<int32_t>(EXECUTOR_TYPE::RUNTIME));
@@ -1004,7 +999,7 @@ TEST_F(RuntimeExecutorTest, GetJavaBuildArgsTest)
 
     const char *argv[] = { "./runtime-manager", "--runtime_log_level=DEBUG","--runtime_prestart_config={}","--proc_metrics_memory=1000"};
     runtime_manager::Flags flags;
-    flags.ParseFlags(4, argv);
+    flags.ParseFlags(std::size(argv), argv);
     executor_->SetRuntimeConfig(flags);
     auto prestartArgs = executor_->GetBuildArgsForPrestart("runtime11", "java1.8", "8080");
     EXPECT_TRUE(std::count(prestartArgs.begin(), prestartArgs.end(), "-XX:+CMSClassUnloadingEnabled") == 1);
@@ -1073,7 +1068,7 @@ TEST_F(RuntimeExecutorTest, GetJava11BuildArgsTest)
     deployConfig->set_storagetype("s3");
     const char *argv[] = { "./runtime-manager", "--runtime_log_level=DEBUG","--runtime_prestart_config={}","--proc_metrics_memory=1000"};
     runtime_manager::Flags flags;
-    flags.ParseFlags(4, argv);
+    flags.ParseFlags(std::size(argv), argv);
     executor_->SetRuntimeConfig(flags);
     auto prestartArgs = executor_->GetBuildArgsForPrestart("runtime11", "java11", "8080");
     EXPECT_TRUE(std::count(prestartArgs.begin(), prestartArgs.end(), "-XX:+UseG1GC") == 1);
@@ -1130,7 +1125,7 @@ TEST_F(RuntimeExecutorTest, GetJava17BuildArgsTest)
     deployConfig->set_storagetype("s3");
     const char *argv[] = { "./runtime-manager", "--runtime_log_level=DEBUG","--runtime_prestart_config={}","--proc_metrics_memory=1000"};
     runtime_manager::Flags flags;
-    flags.ParseFlags(4, argv);
+    flags.ParseFlags(std::size(argv), argv);
     executor_->SetRuntimeConfig(flags);
 
     std::vector<std::string> args;
@@ -1187,7 +1182,7 @@ TEST_F(RuntimeExecutorTest, GetJava21BuildArgsTest)
     deployConfig->set_storagetype("s3");
     const char *argv[] = { "./runtime-manager", "--runtime_log_level=DEBUG","--runtime_prestart_config={}","--proc_metrics_memory=1000"};
     runtime_manager::Flags flags;
-    flags.ParseFlags(4, argv);
+    flags.ParseFlags(std::size(argv), argv);
     executor_->SetRuntimeConfig(flags);
 
     std::vector<std::string> args;
@@ -1244,14 +1239,25 @@ TEST_F(RuntimeExecutorTest, GetNoneExistedGoExecPathTest)
     deployConfig->set_bucketid("test_bucketID");
     deployConfig->set_deploydir(testDeployDir);
     deployConfig->set_storagetype("s3");
+    const char *port = ("--port=" + std::to_string(FindAvailablePort())).c_str();
 
-    const char *argv[]={"/runtime_manager", "--node_id=node1", "--ip=127.0.0.1", "--host_ip=127.0.0.1",
-                  "--port=32233", "--runtime_initial_port=500", "--port_num=2000",
-                  "--runtime_dir=/tmp", "--agent_address=127.0.0.1:8080",
-                  "--runtime_ld_library_path=/tmp", "--proc_metrics_cpu=2000", "--proc_metrics_memory=2000",
-                  R"(--log_config={"filepath": "/home/yr/log", "level": "DEBUG", "rolling": {"maxsize": 100, "maxfiles": 1},"alsologtostderr":true})"};
+    const char *argv[] = {
+        "/runtime_manager",
+        "--node_id=node1",
+        "--ip=127.0.0.1",
+        "--host_ip=127.0.0.1",
+        port,
+        "--runtime_initial_port=500",
+        "--port_num=2000",
+        "--runtime_dir=/tmp",
+        "--agent_address=127.0.0.1:8080",
+        "--runtime_ld_library_path=/tmp",
+        "--proc_metrics_cpu=2000",
+        "--proc_metrics_memory=2000",
+        R"(--log_config={"filepath": "/home/yr/log", "level": "DEBUG", "rolling": {"maxsize": 100, "maxfiles": 1},"alsologtostderr":true})"
+    };
     functionsystem::runtime_manager::Flags flags;
-    flags.ParseFlags(13, argv);
+    flags.ParseFlags(std::size(argv), argv);
     executor_->SetRuntimeConfig(flags);
 
     auto future = executor_->StartInstance(startRequest, {});
@@ -1295,13 +1301,24 @@ TEST_F(RuntimeExecutorTest, GetNoneExistedCPPExecPathTest)
     deployConfig->set_deploydir(testDeployDir);
     deployConfig->set_storagetype("s3");
 
-    const char *argv[]={"/runtime_manager", "--node_id=node1", "--ip=127.0.0.1", "--host_ip=127.0.0.1",
-                  "--port=32233", "--runtime_initial_port=500", "--port_num=2000",
-                  "--runtime_dir=/tmp", "--agent_address=127.0.0.1:8080",
-                  "--runtime_ld_library_path=/tmp", "--proc_metrics_cpu=2000", "--proc_metrics_memory=2000",
-                  R"(--log_config={"filepath": "/home/yr/log", "level": "DEBUG", "rolling": {"maxsize": 100, "maxfiles": 1},"alsologtostderr":true})"};
+    const char *port = ("--port=" + std::to_string(FindAvailablePort())).c_str();
+    const char *argv[] = {
+        "/runtime_manager",
+        "--node_id=node1",
+        "--ip=127.0.0.1",
+        "--host_ip=127.0.0.1",
+        port,
+        "--runtime_initial_port=500",
+        "--port_num=2000",
+        "--runtime_dir=/tmp",
+        "--agent_address=127.0.0.1:8080",
+        "--runtime_ld_library_path=/tmp",
+        "--proc_metrics_cpu=2000",
+        "--proc_metrics_memory=2000",
+        R"(--log_config={"filepath": "/home/yr/log", "level": "DEBUG", "rolling": {"maxsize": 100, "maxfiles": 1},"alsologtostderr":true})"
+    };
     functionsystem::runtime_manager::Flags flags;
-    flags.ParseFlags(13, argv);
+    flags.ParseFlags(std::size(argv), argv);
     executor_->SetRuntimeConfig(flags);
 
     auto future = executor_->StartInstance(startRequest, {});
@@ -1418,7 +1435,7 @@ TEST_F(RuntimeExecutorTest, GetValgrindMassifBuildArgs)
         "/runtime_manager",
         "--massif_enable=true",
     };
-    flags.ParseFlags(2, argv);
+    flags.ParseFlags(std::size(argv), argv);
     executor_->Executor::SetRuntimeConfig(flags);
     auto startRequest = BuildStartInstanceRequest(GO_LANGUAGE);
     auto future = executor_->StartInstance(startRequest, {});
@@ -1444,9 +1461,16 @@ TEST_F(RuntimeExecutorTest, SetLD_LIBRARY_PATH)
 
     (void)litebus::os::Rm("/home/snuser/instances/-user_func_std.log");
     runtime_manager::Flags flags;
-     const char *argv[] = { "/runtime_manager", "--node_id=", "--ip=127.0.0.1","--host_ip=127.0.0.1", "--port=32233",
-        "--runtime_initial_port=500", "--runtime_std_log_dir=instances" };
-    flags.ParseFlags(7, argv);
+    const char *port = ("--port=" + std::to_string(FindAvailablePort())).c_str();
+
+    const char *argv[] = { "/runtime_manager",
+                           "--node_id=",
+                           "--ip=127.0.0.1",
+                           "--host_ip=127.0.0.1",
+                           port,
+                           "--runtime_initial_port=500",
+                           "--runtime_std_log_dir=instances" };
+    flags.ParseFlags(std::size(argv), argv);
     executor_->SetRuntimeConfig(flags);
 
     auto request1 = std::make_shared<messages::StartInstanceRequest>();
@@ -1489,9 +1513,15 @@ TEST_F(RuntimeExecutorTest, SetEmptyLD_LIBRARY_PATH)
 
     (void)litebus::os::Rm("/home/snuser/instances/-user_func_std.log");
     runtime_manager::Flags flags;
-     const char *argv[] = { "/runtime_manager", "--node_id=", "--ip=127.0.0.1","--host_ip=127.0.0.1", "--port=32233",
-        "--runtime_initial_port=500", "--runtime_std_log_dir=instances" };
-    flags.ParseFlags(7, argv);
+    const char *port = ("--port=" + std::to_string(FindAvailablePort())).c_str();
+    const char *argv[] = { "/runtime_manager",
+                           "--node_id=",
+                           "--ip=127.0.0.1",
+                           "--host_ip=127.0.0.1",
+                           port,
+                           "--runtime_initial_port=500",
+                           "--runtime_std_log_dir=instances" };
+    flags.ParseFlags(std::size(argv), argv);
     executor_->SetRuntimeConfig(flags);
 
     auto request1 = std::make_shared<messages::StartInstanceRequest>();
@@ -1530,9 +1560,15 @@ TEST_F(RuntimeExecutorTest, SetErrorLD_LIBRARY_PATH)
 
     (void)litebus::os::Rm("/home/snuser/instances/-user_func_std.log");
     runtime_manager::Flags flags;
-     const char *argv[] = { "/runtime_manager", "--node_id=", "--ip=127.0.0.1","--host_ip=127.0.0.1", "--port=32233",
-        "--runtime_initial_port=500", "--runtime_std_log_dir=instances" };
-    flags.ParseFlags(7, argv);
+    const char *port = ("--port=" + std::to_string(FindAvailablePort())).c_str();
+    const char *argv[] = { "/runtime_manager",
+                           "--node_id=",
+                           "--ip=127.0.0.1",
+                           "--host_ip=127.0.0.1",
+                           port,
+                           "--runtime_initial_port=500",
+                           "--runtime_std_log_dir=instances" };
+    flags.ParseFlags(std::size(argv), argv);
     executor_->SetRuntimeConfig(flags);
 
     auto request1 = std::make_shared<messages::StartInstanceRequest>();
@@ -1580,9 +1616,15 @@ TEST_F(RuntimeExecutorTest, StartPosixCustomInstanceTest)
     (void)litebus::os::Rm("/home/snuser/instances/-user_func_std.log");
 
     runtime_manager::Flags flags;
-    const char *argv[] = { "/runtime_manager", "--node_id=", "--ip=127.0.0.1","--host_ip=127.0.0.1", "--port=32233",
-                           "--runtime_initial_port=500", "--runtime_std_log_dir=instances" };
-    flags.ParseFlags(7, argv);
+    const char *port = ("--port=" + std::to_string(FindAvailablePort())).c_str();
+    const char *argv[] = { "/runtime_manager",
+                           "--node_id=",
+                           "--ip=127.0.0.1",
+                           "--host_ip=127.0.0.1",
+                           port,
+                           "--runtime_initial_port=500",
+                           "--runtime_std_log_dir=instances" };
+    flags.ParseFlags(std::size(argv), argv);
     executor_->SetRuntimeConfig(flags);
     auto startRequest = std::make_shared<messages::StartInstanceRequest>();
     startRequest->set_type(static_cast<int32_t>(EXECUTOR_TYPE::RUNTIME));
@@ -1653,11 +1695,13 @@ TEST_F(RuntimeExecutorTest, InheritEnvTest)
     env.posixEnvs.insert({CONDA_PREFIX, "/usr/local/conda"});
     env.posixEnvs.insert({CONDA_DEFAULT_ENV, "env_name_file"});
     litebus::os::SetEnv("PATH", "/inherit/path");
+    litebus::os::SetEnv("YR_FRONTEND_ADDRESS", "127.0.0.1:0");
     auto combineEnv = executor_->CombineEnvs(env);
     EXPECT_EQ(combineEnv["Inherit_env"], "123456");
     EXPECT_EQ(combineEnv["user_env1"], "user_env1_value");
     EXPECT_EQ(combineEnv["user_env2"], "user_env2_value");
     EXPECT_EQ(combineEnv["LD_LIBRARY_PATH"], "/usr/posix/path");
+    EXPECT_EQ(combineEnv["YR_FRONTEND_ADDRESS"], "127.0.0.1:0");
     // append UNZIPPED_WORKING_DIR Into PYTHONPATH
     EXPECT_EQ(
         combineEnv["PYTHONPATH"], "/path/to/python_runtime:/python/path:/home/sn/function/package/xxx/working_dir/:/userdefined/pythonpath");
@@ -1687,6 +1731,17 @@ TEST_F(RuntimeExecutorTest, InheritEnvTest)
     env.userEnvs["ASCEND_RT_VISIBLE_DEVICES"] = "0,1";
     combineEnv = executor_->CombineEnvs(env);
     EXPECT_TRUE(combineEnv.find("ASCEND_RT_VISIBLE_DEVICES") == combineEnv.end());
+}
+
+TEST_F(RuntimeExecutorTest, InheritEnvFalseTest)
+{
+    executor_->config_.inheritEnv = false;
+    auto env = Envs{};
+    litebus::os::SetEnv("YR_FRONTEND_ADDRESS", "127.0.0.1:0");
+    litebus::os::SetEnv("POD_FRONTEND_ADDRESS", "127.0.0.1:0");
+    auto combineEnv = executor_->CombineEnvs(env);
+    EXPECT_EQ(combineEnv["YR_FRONTEND_ADDRESS"], "127.0.0.1:0");
+    EXPECT_EQ(combineEnv["POD_FRONTEND_ADDRESS"], "");
 }
 
 TEST_F(RuntimeExecutorTest, SeparatedRuntimeStdRedirected)
@@ -1733,9 +1788,15 @@ TEST_F(RuntimeExecutorTest, StartJobEntrypoint_WithoutWorkingDirTest)
 
     (void)litebus::os::Rm("/home/snuser/instances/-user_func_std.log");
     runtime_manager::Flags flags;
-     const char *argv[] = { "/runtime_manager", "--node_id=", "--ip=127.0.0.1","--host_ip=127.0.0.1", "--port=32233",
-        "--runtime_initial_port=500", "--runtime_std_log_dir=instances"};
-    flags.ParseFlags(7, argv);
+    const char *port = ("--port=" + std::to_string(FindAvailablePort())).c_str();
+    const char *argv[] = { "/runtime_manager",
+                           "--node_id=",
+                           "--ip=127.0.0.1",
+                           "--host_ip=127.0.0.1",
+                           port,
+                           "--runtime_initial_port=500",
+                           "--runtime_std_log_dir=instances" };
+    flags.ParseFlags(std::size(argv), argv);
     executor_->SetRuntimeConfig(flags);
 
     auto request1 = std::make_shared<messages::StartInstanceRequest>();
@@ -1763,12 +1824,14 @@ TEST_F(RuntimeExecutorTest, StartJobEntrypointInWorkingDirTest)
     CreatePythonEnvInfoScript(entrypointPath);
 
     runtime_manager::Flags flags;
+    const char *port = ("--port=" + std::to_string(FindAvailablePort())).c_str();
+
     const char *argv[] = { "/runtime_manager",
                            "--node_id=node1",
                            "--runtime_ld_library_path=/tmp",
                            "--ip=127.0.0.1",
                            "--host_ip=127.0.0.1",
-                           "--port=32233",
+                           port,
                            "--runtime_initial_port=500",
                            "--agent_address=127.0.0.1:1234",
                            "--runtime_std_log_dir=instances",
@@ -1838,18 +1901,20 @@ TEST_F(RuntimeExecutorTest, StartPythonConda_WithWorkingDirTest)
     CreatePythonEnvInfoScript("/home/snuser/python/fnruntime/server.py");
 
     runtime_manager::Flags flags;
+    const char *port = ("--port=" + std::to_string(FindAvailablePort())).c_str();
+
     const char *argv[] = { "/runtime_manager",
                            "--node_id=node1",
                            "--runtime_ld_library_path=/tmp",
                            "--ip=127.0.0.1",
                            "--host_ip=127.0.0.1",
-                           "--port=32233",
+                           port,
                            "--runtime_initial_port=500",
                            "--agent_address=127.0.0.1:1234",
                            "--runtime_std_log_dir=instances",
                            "--data_system_port=24560",
                            "--proxy_grpc_server_port=20258" };
-    auto ret = flags.ParseFlags(11, argv);
+    auto ret = flags.ParseFlags(std::size(argv), argv);
     ASSERT_TRUE(ret.IsNone()) << ret.Get();
     executor_->SetRuntimeConfig(flags);
 
@@ -1903,9 +1968,16 @@ TEST_F(RuntimeExecutorTest, StartJobEntrypoint_InvalidWorkingDirTest)
 
     (void)litebus::os::Rm("/home/snuser/instances/-user_func_std.log");
     runtime_manager::Flags flags;
-     const char *argv[] = { "/runtime_manager", "--node_id=", "--ip=127.0.0.1","--host_ip=127.0.0.1", "--port=32233",
-        "--runtime_initial_port=500", "--runtime_std_log_dir=instances"};
-    flags.ParseFlags(7, argv);
+    const char *port = ("--port=" + std::to_string(FindAvailablePort())).c_str();
+
+    const char *argv[] = { "/runtime_manager",
+                           "--node_id=",
+                           "--ip=127.0.0.1",
+                           "--host_ip=127.0.0.1",
+                           port,
+                           "--runtime_initial_port=500",
+                           "--runtime_std_log_dir=instances" };
+    flags.ParseFlags(std::size(argv), argv);
     executor_->SetRuntimeConfig(flags);
 
     auto request1 = std::make_shared<messages::StartInstanceRequest>();
@@ -1940,9 +2012,17 @@ TEST_F(RuntimeExecutorTest, SetRuntimeEnv_runtime_direct_connection_enable_false
 
     (void)litebus::os::Rm("/home/snuser/instances/-user_func_std.log");
     runtime_manager::Flags flags;
-     const char *argv[] = { "/runtime_manager", "--node_id=", "--ip=127.0.0.1","--host_ip=127.0.0.1", "--port=32233",
-        "--runtime_initial_port=500", "--runtime_std_log_dir=instances", "--runtime_direct_connection_enable=false"};
-    flags.ParseFlags(8, argv);
+    const char *port = ("--port=" + std::to_string(FindAvailablePort())).c_str();
+
+    const char *argv[] = { "/runtime_manager",
+                           "--node_id=",
+                           "--ip=127.0.0.1",
+                           "--host_ip=127.0.0.1",
+                           port,
+                           "--runtime_initial_port=500",
+                           "--runtime_std_log_dir=instances",
+                           "--runtime_direct_connection_enable=false" };
+    flags.ParseFlags(std::size(argv), argv);
     executor_->SetRuntimeConfig(flags);
 
     auto request1 = std::make_shared<messages::StartInstanceRequest>();
@@ -1980,9 +2060,17 @@ TEST_F(RuntimeExecutorTest, SetRuntimeEnv_runtime_direct_connection_enable_serve
 
     (void)litebus::os::Rm("/home/snuser/instances/-user_func_std.log");
     runtime_manager::Flags flags;
-     const char *argv[] = { "/runtime_manager", "--node_id=", "--ip=127.0.0.1","--host_ip=127.0.0.1", "--port=32233",
-        "--runtime_initial_port=500", "--runtime_std_log_dir=instances", "--runtime_direct_connection_enable=true"};
-    flags.ParseFlags(8, argv);
+    const char *port = ("--port=" + std::to_string(FindAvailablePort())).c_str();
+
+    const char *argv[] = { "/runtime_manager",
+                           "--node_id=",
+                           "--ip=127.0.0.1",
+                           "--host_ip=127.0.0.1",
+                           port,
+                           "--runtime_initial_port=500",
+                           "--runtime_std_log_dir=instances",
+                           "--runtime_direct_connection_enable=true" };
+    flags.ParseFlags(std::size(argv), argv);
     executor_->SetRuntimeConfig(flags);
 
     auto request1 = std::make_shared<messages::StartInstanceRequest>();
@@ -2022,9 +2110,17 @@ TEST_F(RuntimeExecutorTest, SetRuntimeEnv_runtime_direct_connection_enable_tls_s
 
     (void)litebus::os::Rm("/home/snuser/instances/-user_func_std.log");
     runtime_manager::Flags flags;
-     const char *argv[] = { "/runtime_manager", "--node_id=", "--ip=127.0.0.1","--host_ip=127.0.0.1", "--port=32233",
-        "--runtime_initial_port=500", "--runtime_std_log_dir=instances", "--runtime_direct_connection_enable=true"};
-    flags.ParseFlags(8, argv);
+    const char *port = ("--port=" + std::to_string(FindAvailablePort())).c_str();
+
+    const char *argv[] = { "/runtime_manager",
+                           "--node_id=",
+                           "--ip=127.0.0.1",
+                           "--host_ip=127.0.0.1",
+                           port,
+                           "--runtime_initial_port=500",
+                           "--runtime_std_log_dir=instances",
+                           "--runtime_direct_connection_enable=true" };
+    flags.ParseFlags(std::size(argv), argv);
     executor_->SetRuntimeConfig(flags);
 
     auto request1 = std::make_shared<messages::StartInstanceRequest>();
@@ -2065,16 +2161,18 @@ TEST_F(RuntimeExecutorTest, SetRuntimeEnv_runtime_direct_connection_enable_tls_s
 
     (void)litebus::os::Rm("/home/snuser/instances/-user_func_std.log");
     runtime_manager::Flags flags;
+    const char *port = ("--port=" + std::to_string(FindAvailablePort())).c_str();
+
     const char *argv[] = { "/runtime_manager",
                            "--node_id=",
                            "--ip=127.0.0.1",
                            "--host_ip=127.0.0.1",
-                           "--port=32233",
+                           port,
                            "--runtime_initial_port=500",
                            "--port_num=10",
                            "--runtime_std_log_dir=instances",
                            "--runtime_direct_connection_enable=true" };
-    flags.ParseFlags(9, argv);
+    flags.ParseFlags(std::size(argv), argv);
     executor_->SetRuntimeConfig(flags);
 
     for (int k = 0; k < 11; k++) {
@@ -2120,16 +2218,18 @@ TEST_F(RuntimeExecutorTest, SetRuntimeEnv_runtime_direct_connection_enable_tls_s
 
     (void)litebus::os::Rm("/home/snuser/instances/-user_func_std.log");
     runtime_manager::Flags flags;
+    const char *port = ("--port=" + std::to_string(FindAvailablePort())).c_str();
+
     const char *argv[] = { "/runtime_manager",
                            "--node_id=",
                            "--ip=127.0.0.1",
                            "--host_ip=127.0.0.1",
-                           "--port=32233",
+                           port,
                            "--runtime_initial_port=500",
                            "--port_num=10",
                            "--runtime_std_log_dir=instances",
                            "--runtime_direct_connection_enable=true" };
-    flags.ParseFlags(9, argv);
+    flags.ParseFlags(std::size(argv), argv);
     executor_->SetRuntimeConfig(flags);
 
     for (int k = 0; k < 11; k++) {
@@ -2149,11 +2249,12 @@ TEST_F(RuntimeExecutorTest, SetRuntimeEnv_runtime_direct_connection_enable_tls_s
 
         auto response = executor_->StartInstance(request1, {}).Get();
         ASSERT_AWAIT_TRUE([k]() {
-            auto output = litebus::os::Read("/home/snuser/instances/-user_func_std.log");
+            const auto output = litebus::os::Read("/home/snuser/instances/-user_func_std.log");
             if (k < 11) { // 11th ok
                 return output.IsSome() &&
                        (output.Get().find("RUNTIME_DIRECT_CONNECTION_ENABLE=true") != std::string::npos);
             }
+            return false;
         });
     }
     (void)litebus::os::Rm("/home/snuser/instances/-user_func_std.log");

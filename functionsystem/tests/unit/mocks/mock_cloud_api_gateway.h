@@ -22,8 +22,8 @@
 
 #include <httpd/http_connect.hpp>
 
-#include "http/api_router_register.h"
-#include "http/http_server.h"
+#include "common/http/api_router_register.h"
+#include "common/http/http_server.h"
 #include "utils/future_test_helper.h"
 
 namespace functionsystem::test {

@@ -49,6 +49,8 @@ public:
 
     MOCK_METHOD(litebus::Future<bool>, IsSystemFunction, (const std::string &function), (const, override));
 
+    MOCK_METHOD(litebus::Future<function_proxy::InstanceInfoMap>, GetAllInstanceInfos, (), (const, override));
+
     MOCK_METHOD(void, PutInstanceEvent,
                 (const resource_view::InstanceInfo &instanceInfo, bool synced, int64_t modRevision),
                 (override));
@@ -57,7 +59,8 @@ public:
                 (const resource_view::InstanceInfo &instanceInfo, bool synced, int64_t modRevision),
                 (override));
 
-    MOCK_METHOD(litebus::Future<Status>, DelInstanceEvent, (const std::string &instanceID), (override));
+    MOCK_METHOD(litebus::Future<Status>, DelInstanceEvent, (const std::string &instanceID, int64_t modRevision),
+                (override));
 
     MOCK_METHOD(litebus::Future<std::vector<std::string>>, GetLocalInstances, (), (override));
 
@@ -78,7 +81,12 @@ public:
 
     MOCK_METHOD(void, WatchInstance, (const std::string &instanceID, int64_t revision), (override));
 
+    MOCK_METHOD(litebus::Future<bool>, IsInstanceWatched, (const std::string &instanceID), (override));
+
     MOCK_METHOD(litebus::Future<resource_view::InstanceInfo>, GetAndWatchInstance, (const std::string &instanceID),
+                (override));
+
+    MOCK_METHOD(litebus::Future<resource_view::InstanceInfo>, GetOrWatchInstance, (const std::string &instanceID),
                 (override));
 
     MOCK_METHOD(void, CancelWatchInstance, (const std::string &instanceID), (override));

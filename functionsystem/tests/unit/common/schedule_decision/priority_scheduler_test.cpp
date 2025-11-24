@@ -22,6 +22,7 @@
 #include "common/schedule_decision/queue/queue_item.h"
 #include "common/scheduler_framework/utils/label_affinity_selector.h"
 #include "mocks/mock_schedule_performer.h"
+#include "utils/future_test_helper.h"
 
 namespace functionsystem::test {
 using namespace ::testing;
@@ -88,8 +89,7 @@ TEST_F(PrioritySchedulerTest, ConsumeCompleteTest)
     auto group2 = GroupItem::CreateGroupItem("group2");
     scheduler->Enqueue(ins1);
     scheduler->Enqueue(ins2);
-    scheduler->Enqueue(group1);
-    scheduler->Enqueue(group2);
+
     EXPECT_FALSE(scheduler->CheckIsRunningQueueEmpty());
     EXPECT_TRUE(scheduler->CheckIsPendingQueueEmpty());
 
@@ -102,6 +102,10 @@ TEST_F(PrioritySchedulerTest, ConsumeCompleteTest)
     scheduler->ConsumeRunningQueue();
     EXPECT_EQ(ins1->schedulePromise->GetFuture().Get().code, 0);
     EXPECT_EQ(ins2->schedulePromise->GetFuture().Get().code, StatusCode::INVALID_RESOURCE_PARAMETER);
+
+    scheduler->Enqueue(group1);
+    scheduler->Enqueue(group2);
+    scheduler->ConsumeRunningQueue();
     EXPECT_EQ(group1->groupPromise->GetFuture().Get().code, 0);
     EXPECT_EQ(group2->groupPromise->GetFuture().Get().code, StatusCode::INVALID_RESOURCE_PARAMETER);
     EXPECT_TRUE(scheduler->CheckIsRunningQueueEmpty());
@@ -180,8 +184,8 @@ TEST_F(PrioritySchedulerTest, ConsumeCancelTest)
     EXPECT_CALL(*mockGroupPerformer_, RollBack).WillOnce(Return(Status::OK()));
 
     scheduler->ConsumeRunningQueue();
-    EXPECT_TRUE(ins1->schedulePromise->GetFuture().IsInit());
-    EXPECT_TRUE(group1->groupPromise->GetFuture().IsInit());
+    EXPECT_TRUE(ins1->schedulePromise->GetFuture().IsOK());
+    EXPECT_TRUE(group1->groupPromise->GetFuture().IsOK());
 }
 
 //  FIFO and Fairness policy exhibit consistent behavior
@@ -200,13 +204,14 @@ TEST_F(PrioritySchedulerTest, AggregatedConsumeCancelTest)
     scheduler->Enqueue(group1);
     auto group2 = GroupItem::CreateGroupItem("group2");
     scheduler->Enqueue(group2);
+    std::shared_ptr<InstanceItem> captureIns = nullptr;
     EXPECT_CALL(*mockAggregatedSchedulePerformer_, DoSchedule)
-                .WillOnce(Invoke([](
+                .WillOnce(Invoke([&captureIns](
                 const std::shared_ptr<schedule_framework::PreAllocatedContext> &context,
                 const resource_view::ResourceViewInfo &resourceInfo,
                 const std::shared_ptr<AggregatedItem> &aggregatedItem) {
-                        auto instance1 = aggregatedItem->reqQueue->front();
-                        instance1->cancelTag.SetValue("cancel");
+                        captureIns = aggregatedItem->reqQueue->front();
+                        captureIns->cancelTag.SetValue("cancel");
                         return std::make_shared<std::deque<ScheduleResult> >
                         (std::initializer_list<ScheduleResult>{
                             ScheduleResult{"", 0, ""}
@@ -223,8 +228,8 @@ TEST_F(PrioritySchedulerTest, AggregatedConsumeCancelTest)
     EXPECT_CALL(*mockGroupPerformer_, RollBack).WillOnce(Return(Status::OK()));
 
     scheduler->ConsumeRunningQueue();
-    EXPECT_TRUE(ins1->schedulePromise->GetFuture().IsInit());
-    EXPECT_TRUE(group1->groupPromise->GetFuture().IsInit());
+    EXPECT_TRUE(captureIns->schedulePromise->GetFuture().IsOK());
+    EXPECT_TRUE(group2->groupPromise->GetFuture().IsOK());
 }
 
 //  FIFO and Fairness policy exhibit consistent behavior

@@ -14,17 +14,14 @@
  * limitations under the License.
  */
 
-#include "gtest/gtest.h"
+#include "runtime_manager/executor/executor.h"
 
-#include "constants.h"
-#include "status/status.h"
-#include "files.h"
+#include "common/utils/files.h"
 #include "gtest/gtest.h"
 #include "port/port_manager.h"
-#include "runtime_manager/executor/executor.h"
 #include "runtime_manager/executor/runtime_executor.h"
-#include "utils/os_utils.hpp"
 #include "runtime_manager/metrics/mock_function_agent_actor.h"
+#include "utils/os_utils.hpp"
 
 using namespace functionsystem::runtime_manager;
 

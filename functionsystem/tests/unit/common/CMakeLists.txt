@@ -37,6 +37,7 @@ aux_source_directory(${CMAKE_CURRENT_LIST_DIR}/yaml_tool YAML_TOOL_SRCS)
 aux_source_directory(${CMAKE_CURRENT_LIST_DIR}/service_json SERVICE_JSON_SRCS)
 aux_source_directory(${CMAKE_CURRENT_LIST_DIR}/http HTTP_TEST_SRCS)
 aux_source_directory(${CMAKE_CURRENT_LIST_DIR}/metrics METRICS_TEST_SRCS)
+aux_source_directory(${CMAKE_CURRENT_LIST_DIR}/kube_client KUBE_TEST_SRCS)
 aux_source_directory(${CMAKE_CURRENT_LIST_DIR}/common_flags COMMON_FLAGS_SRCS)
 aux_source_directory(${CMAKE_CURRENT_LIST_DIR}/leader LEADER_SRCS)
 aux_source_directory(${CMAKE_CURRENT_LIST_DIR}/explorer EXPLORER_SRCS)
@@ -46,6 +47,7 @@ aux_source_directory(${CMAKE_CURRENT_LIST_DIR}/observability
                      OBSERVABILITY_TEST_SRCS)
 aux_source_directory(${CMAKE_CURRENT_LIST_DIR}/file_monitor FILE_MONITOR_TEST_SRCS)
 aux_source_directory(${CMAKE_CURRENT_LIST_DIR}/network NETWORK_TEST_SRCS)
+aux_source_directory(${CMAKE_CURRENT_LIST_DIR}/resource_lock RESOURCE_LOCK_SRCS)
 aux_source_directory(${CMAKE_CURRENT_LIST_DIR}/aksk AKSK_TEST_SRCS)
 aux_source_directory(${CMAKE_CURRENT_LIST_DIR}/profile PROFILE_TEST_SRCS)
 
@@ -74,6 +76,7 @@ target_sources(
           ${TRACE_SRCS}
           ${HTTP_TEST_SRCS}
           ${METRICS_TEST_SRCS}
+          ${KUBE_TEST_SRCS}
           ${COMMON_FLAGS_SRCS}
           ${LEADER_SRCS}
           ${EXPLORER_SRCS}
@@ -82,6 +85,7 @@ target_sources(
           ${OBSERVABILITY_TEST_SRCS}
           ${FILE_MONITOR_TEST_SRCS}
           ${NETWORK_TEST_SRCS}
+          ${RESOURCE_LOCK_SRCS}
           ${AKSK_TEST_SRCS}
           ${PROFILE_TEST_SRCS}
           ${SCHEDULE_PLUGIN_SRCS})

@@ -22,7 +22,7 @@
 #include <async/async.hpp>
 #include <litebus.hpp>
 
-#include "heartbeat/ping_pong_driver.h"
+#include "common/heartbeat/heartbeat_client.h"
 #include "domain_scheduler/underlayer_scheduler_manager/underlayer_sched_mgr_actor.h"
 
 namespace functionsystem::test {
@@ -82,7 +82,14 @@ public:
 
     void ClosePingPong()
     {
+        pingpong_->Stop();
         pingpong_ = nullptr;
+    }
+
+    void StartPingPong()
+    {
+        (void)pingpong_->Start(
+            litebus::AID(HEARTBEAT_OBSERVER_BASENAME + DOMAIN_UNDERLAYER_SCHED_MGR_ACTOR_NAME, GetAID().Url()));
     }
 
     void DeletePodResponse(const litebus::AID &from, std::string &&name, std::string &&msg)
@@ -117,13 +124,11 @@ protected:
         Receive("ResponseNotifyWorkerStatus", &MockUnderlayer::ResponseNotifyWorkerStatus);
         Receive("DeletePodResponse", &MockUnderlayer::DeletePodResponse);
         Receive("PreemptInstances", &MockUnderlayer::PreemptInstance);
-        pingpong_ = std::make_unique<PingPongDriver>(GetAID().Name(), 6000,
-                                                     // while connection lost, try to register
-                                                     [this](const litebus::AID &lostDst, HeartbeatConnection) {});
+        pingpong_ = std::make_unique<HeartbeatClientDriver>(GetAID().Name(), [this](const litebus::AID &lostDst) {});
     }
 
 private:
-    std::unique_ptr<PingPongDriver> pingpong_;
+    std::unique_ptr<HeartbeatClientDriver> pingpong_;
 };
 
 class MockLocalGroupCtrl : public litebus::ActorBase {
@@ -170,6 +175,6 @@ protected:
         Receive("UnBind", &MockLocalGroupCtrl::UnBind);
     }
 };
-}
+}  // namespace functionsystem::test
 
 #endif  // TEST_UNIT_DOMAIN_SCHEDULER_UNDERLAYER_SCHEDULER_MANAGER_UNDERLAYER_STUB_H

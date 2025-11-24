@@ -20,11 +20,11 @@
 #include "common/constants/actor_name.h"
 #include "common/constants/signal.h"
 #include "common/etcd_service/etcd_service_driver.h"
-#include "logs/logging.h"
-#include "metadata/metadata.h"
-#include "proto/pb/message_pb.h"
-#include "proto/pb/posix_pb.h"
-#include "resource_type.h"
+#include "common/logs/logging.h"
+#include "common/metadata/metadata.h"
+#include "common/proto/pb/message_pb.h"
+#include "common/proto/pb/posix_pb.h"
+#include "common/resource_view/resource_type.h"
 #include "common/resource_view/view_utils.h"
 #include "common/utils/generate_message.h"
 #include "function_proxy/common/posix_client/shared_client/shared_client_manager.h"
@@ -37,6 +37,7 @@
 #include "mocks/mock_instance_control_view.h"
 #include "mocks/mock_instance_operator.h"
 #include "mocks/mock_instance_state_machine.h"
+#include "mocks/mock_internal_iam.h"
 #include "mocks/mock_local_instance_ctrl_actor.h"
 #include "mocks/mock_local_sched_srv.h"
 #include "mocks/mock_meta_store_client.h"
@@ -168,9 +169,14 @@ public:
         auto sharedPosixClientManager = std::make_shared<PosixStreamManagerProxy>(sharedClientMgr_->GetAID());
         auto metaClient = MetaStoreClient::Create({ .etcdAddress = metaStoreServerHost_ });
         metaStorageAccessor_ = std::make_shared<MetaStorageAccessor>(metaClient);
+        InternalIAM::Param internalIAM_Param;
+        internalIAM_Param.isEnableIAM = false;
         observerActor_ = std::make_shared<function_proxy::ObserverActor>(
             FUNCTION_PROXY_OBSERVER_ACTOR_NAME, nodeID_, metaStorageAccessor_, function_proxy::ObserverParam{});
+        mockInternalIAM_ = std::make_shared<MockInternalIAM>(internalIAM_Param);
         observerActor_->BindDataInterfaceClientManager(sharedPosixClientManager);
+        observerActor_->BindInternalIAM(mockInternalIAM_);
+        EXPECT_CALL(*mockInternalIAM_, IsSystemTenant).WillRepeatedly(testing::Return(false));
         litebus::Spawn(observerActor_);
 
         litebus::Async(observerActor_->GetAID(), &function_proxy::ObserverActor::Register);
@@ -188,6 +194,7 @@ public:
         instanceCtrl_->BindObserver(observer_);
         instanceCtrl_->BindFunctionAgentMgr(funcAgentMgr_);
         instanceCtrl_->BindResourceView(resourceViewMgr_);
+        instanceCtrl_->BindInternalIAM(mockInternalIAM_);
         mockSharedClientManagerProxy_ = std::make_shared<MockSharedClientManagerProxy>();
         instanceCtrl_->BindControlInterfaceClientManager(mockSharedClientManagerProxy_);
 
@@ -196,6 +203,7 @@ public:
         instanceCtrlWithMockObserver_->BindInstanceControlView(instanceControlView_);
         instanceCtrlWithMockObserver_->Start(funcAgentMgr_, resourceViewMgr_, mockObserver_);
         instanceCtrlWithMockObserver_->BindControlInterfaceClientManager(mockSharedClientManagerProxy_);
+        instanceCtrlWithMockObserver_->BindInternalIAM(mockInternalIAM_);
         resource_view::Resources metaResources;
         resource_view::Resource resource;
         resource.set_type(resource_view::ValueType::Value_Type_SCALAR);
@@ -238,13 +246,14 @@ public:
         observer_ = nullptr;
         mockObserver_ = nullptr;
         funcAgentMgr_ = nullptr;
+        mockInternalIAM_ = nullptr;
         mockResourceViewMgr_ = nullptr;
         primary_ = nullptr;
         virtual_ = nullptr;
     }
 
 protected:
-    [[maybe_unused]] static void SetUpTestCase()
+    [[maybe_unused]] static void SetUpTestSuite()
     {
         etcdSrvDriver_ = std::make_unique<meta_store::test::EtcdServiceDriver>();
         int metaStoreServerPort = functionsystem::test::FindAvailablePort();
@@ -253,7 +262,7 @@ protected:
         InstanceCtrlActor::SetGetLocalInterval(100);
     }
 
-    [[maybe_unused]] static void TearDownTestCase()
+    [[maybe_unused]] static void TearDownTestSuite()
     {
         etcdSrvDriver_->StopServer();
     }
@@ -267,6 +276,7 @@ protected:
     std::shared_ptr<MockResourceView> primary_;
     std::shared_ptr<MockResourceView> virtual_;
     std::shared_ptr<MockSharedClientManagerProxy> mockSharedClientManagerProxy_;
+    std::shared_ptr<MockInternalIAM> mockInternalIAM_;
     std::shared_ptr<SharedClientManager> sharedClientMgr_;
     std::shared_ptr<MetaStorageAccessor> metaStorageAccessor_;
     std::shared_ptr<function_proxy::ControlPlaneObserver> observer_;
@@ -400,6 +410,72 @@ TEST_F(InstanceCtrlTest, ScheduleInvalidRequest)
     }
 }
 
+TEST_F(InstanceCtrlTest, ScheduleValidDiskRequest)
+{
+    auto actor = std::make_shared<InstanceCtrlActor>("InstanceCtrlActor", "nodeID", instanceCtrlConfig);
+    auto instanceCtrl = InstanceCtrl(actor);
+    auto observer = std::make_shared<MockObserver>();
+    instanceCtrl.Start(nullptr, mockResourceViewMgr_, observer);
+    ASSERT_TRUE(observer != nullptr);
+    EXPECT_CALL(*observer, GetFuncMeta).WillRepeatedly(Return(FunctionMeta{}));
+
+    EXPECT_CALL(*observer, IsSystemFunction).WillRepeatedly(Return(false));
+
+    auto scheduleReq = std::make_shared<messages::ScheduleRequest>();
+    (*scheduleReq->mutable_instance()) = view_utils::Get1DInstance();
+    auto runtimePromise = std::make_shared<litebus::Promise<messages::ScheduleResponse>>();
+
+    // a valid request -- disk zise is +100
+
+    resources::Resource validDisk;
+    validDisk.mutable_scalar()->set_value(100);
+    scheduleReq->mutable_instance()->mutable_resources()->mutable_resources()->operator[](DISK_RESOURCE_NAME) =
+        validDisk;
+    runtimePromise = std::make_shared<litebus::Promise<messages::ScheduleResponse>>();
+    auto result = instanceCtrl.Schedule(scheduleReq, runtimePromise);
+    ASSERT_AWAIT_READY(result);
+    EXPECT_EQ(result.Get().message(), "resources is invalid");
+}
+
+TEST_F(InstanceCtrlTest, ScheduleInvalidDiskRequest)
+{
+    auto actor = std::make_shared<InstanceCtrlActor>("InstanceCtrlActor", "nodeID", instanceCtrlConfig);
+    auto instanceCtrl = InstanceCtrl(actor);
+    auto observer = std::make_shared<MockObserver>();
+    instanceCtrl.Start(nullptr, mockResourceViewMgr_, observer);
+    ASSERT_TRUE(observer != nullptr);
+    EXPECT_CALL(*observer, GetFuncMeta).WillRepeatedly(Return(FunctionMeta{}));
+
+    EXPECT_CALL(*observer, IsSystemFunction).WillRepeatedly(Return(false));
+
+    auto scheduleReq = std::make_shared<messages::ScheduleRequest>();
+    (*scheduleReq->mutable_instance()) = view_utils::Get1DInstance();
+    auto runtimePromise = std::make_shared<litebus::Promise<messages::ScheduleResponse>>();
+
+    // a invalid request -- disk zise is 0
+    {
+        resources::Resource invalidDisk;
+        invalidDisk.mutable_scalar()->set_value(0);
+        scheduleReq->mutable_instance()->mutable_resources()->mutable_resources()->operator[](DISK_RESOURCE_NAME) =
+            invalidDisk;
+        runtimePromise = std::make_shared<litebus::Promise<messages::ScheduleResponse>>();
+        auto result = instanceCtrl.Schedule(scheduleReq, runtimePromise);
+        ASSERT_AWAIT_READY(result);
+        EXPECT_EQ(result.Get().message(), "resources is invalid");
+    }
+    // a invalid request -- disk zise is -100
+    {
+        resources::Resource invalidDisk;
+        invalidDisk.mutable_scalar()->set_value(-100);
+        scheduleReq->mutable_instance()->mutable_resources()->mutable_resources()->operator[](DISK_RESOURCE_NAME) =
+            invalidDisk;
+        runtimePromise = std::make_shared<litebus::Promise<messages::ScheduleResponse>>();
+        auto result = instanceCtrl.Schedule(scheduleReq, runtimePromise);
+        ASSERT_AWAIT_READY(result);
+        EXPECT_EQ(result.Get().message(), "resources is invalid");
+    }
+}
+
 TEST_F(InstanceCtrlTest, ScheduleExistInstance)
 {
     auto actor = std::make_shared<InstanceCtrlActor>("InstanceCtrlActor", "nodeID", instanceCtrlConfig);
@@ -416,6 +492,7 @@ TEST_F(InstanceCtrlTest, ScheduleExistInstance)
     auto stateMachine = std::make_shared<MockInstanceStateMachine>("nodeID");
     auto &mockStateMachine = *stateMachine;
     EXPECT_CALL(*instanceControlView, GetInstance).WillRepeatedly(Return(stateMachine));
+    EXPECT_CALL(mockStateMachine, GetOwner()).WillRepeatedly(Return("nodeID"));
 
     auto scheduleReq = std::make_shared<messages::ScheduleRequest>();
     scheduleReq->mutable_instance()->set_instanceid("123");
@@ -483,6 +560,7 @@ TEST_F(InstanceCtrlTest, DeployInstanceRetry)
     auto observer = std::make_shared<MockObserver>();
     auto instanceCtrl = std::make_shared<InstanceCtrl>(actor);
     instanceCtrl->Start(nullptr, mockResourceViewMgr_, observer);
+    instanceCtrl->BindInternalIAM(mockInternalIAM_);
     litebus::Future<std::string> agentIdFut;
     {
         InSequence s;
@@ -529,7 +607,7 @@ TEST_F(InstanceCtrlTest, DeployInstanceRetry)
     auto failedAllocated = std::make_shared<litebus::Promise<Status>>();
     failedAllocated->SetValue(Status(StatusCode::FAILED));
     EXPECT_CALL(*scheduler, ScheduleDecision(_))
-        .WillOnce(Return(ScheduleResult{ "", StatusCode::SUCCESS, "", {}, "", {}, failedAllocated}))
+        .WillOnce(Return(ScheduleResult{ "", StatusCode::SUCCESS, "", {}, "", {}, {}, failedAllocated}))
         .WillOnce(Return(ScheduleResult{ "", StatusCode::SUCCESS, "" }));
     EXPECT_CALL(*scheduler, ScheduleConfirm).WillOnce(Return(Status::OK())).WillOnce(Return(Status::OK()));
     instanceCtrl->BindScheduler(scheduler);
@@ -594,13 +672,17 @@ TEST_F(InstanceCtrlTest, ScheduleCancelAfterScheduling)
     EXPECT_CALL(*instanceControlView, TryGenerateNewInstance).WillOnce(Return(genStates));
     EXPECT_CALL(*instanceControlView, GetInstance).WillRepeatedly(Return(stateMachine));
     EXPECT_CALL(mockStateMachine, IsSaving()).WillRepeatedly(Return(false));
+    EXPECT_CALL(mockStateMachine, GetInstanceState())
+        .WillOnce(Return(InstanceState::SCHEDULING))
+        .WillOnce(Return(InstanceState::SCHEDULING));
     EXPECT_CALL(mockStateMachine, TransitionToImpl).WillOnce(Return(NEW_RESULT)).WillOnce(Return(FAILED_RESULT));
     auto cancelFuture = litebus::Future<std::string>();
     cancelFuture.SetValue("cancel");
     EXPECT_CALL(mockStateMachine, GetCancelFuture).WillOnce(Return(cancelFuture));
 
     auto scheduler = std::make_shared<MockScheduler>();
-    EXPECT_CALL(*scheduler, ScheduleDecision(_)).WillOnce(Return(ScheduleResult{ "", StatusCode::RESOURCE_NOT_ENOUGH, ""}));
+    EXPECT_CALL(*scheduler, ScheduleDecision(_))
+        .WillOnce(Return(ScheduleResult{ "", StatusCode::RESOURCE_NOT_ENOUGH, "" }));
     instanceCtrl.BindScheduler(scheduler);
 
     auto scheduleReq = std::make_shared<messages::ScheduleRequest>();
@@ -620,6 +702,7 @@ TEST_F(InstanceCtrlTest, ScheduleCancelAfterCreating)
     instanceCtrl->Start(nullptr, mockResourceViewMgr_, observer);
     ASSERT_TRUE(observer != nullptr);
     EXPECT_CALL(*observer, GetFuncMeta).WillOnce(Return(functionMeta_));
+    instanceCtrl->BindInternalIAM(mockInternalIAM_);
     instanceCtrl->BindFunctionAgentMgr(funcAgentMgr_);
 
     auto stateMachine = std::make_shared<MockInstanceStateMachine>("nodeID");
@@ -686,10 +769,12 @@ TEST_F(InstanceCtrlTest, CreateInstanceFailedForResourceNotEnough)
     ASSERT_TRUE(observer != nullptr);
 
     EXPECT_CALL(*observer, GetFuncMeta).WillRepeatedly(Return(functionMeta_)); // mock get function successfully
+    instanceCtrl->BindInternalIAM(mockInternalIAM_); // mock iam successfully
 
     auto scheduler = std::make_shared<MockScheduler>();
     // mock schedule failed
-    EXPECT_CALL(*scheduler, ScheduleDecision(_)).WillOnce(Return(ScheduleResult{ "", StatusCode::RESOURCE_NOT_ENOUGH, "" }));
+    EXPECT_CALL(*scheduler, ScheduleDecision(_))
+        .WillOnce(Return(ScheduleResult{ "", StatusCode::RESOURCE_NOT_ENOUGH, "" }));
     instanceCtrl->BindScheduler(scheduler);
 
     auto metaClient = MetaStoreClient::Create({ .etcdAddress = metaStoreServerHost_ });
@@ -709,7 +794,9 @@ TEST_F(InstanceCtrlTest, CreateInstanceFailedForResourceNotEnough)
     ASSERT_AWAIT_READY(result);
     EXPECT_EQ(result.Get().code(), StatusCode::RESOURCE_NOT_ENOUGH);
 
-    ASSERT_AWAIT_TRUE([&]() { return scheduleReq->instance().instancestatus().code() == static_cast<int32_t>(InstanceState::SCHEDULE_FAILED); });
+    ASSERT_AWAIT_TRUE([&]() {
+        return scheduleReq->instance().instancestatus().code() == static_cast<int32_t>(InstanceState::SCHEDULE_FAILED);
+    });
     auto machine = instanceControlView->GetInstance("DesignatedInstanceID");
     ASSERT_AWAIT_TRUE([&]() { return machine->GetInstanceState() == InstanceState::SCHEDULE_FAILED; });
 
@@ -756,6 +843,7 @@ TEST_F(InstanceCtrlTest, CreateInstanceFailedForDeployInstanceFailed)
     instanceCtrl->Start(nullptr, mockResourceViewMgr_, observer);
     ASSERT_TRUE(observer != nullptr);
     EXPECT_CALL(*observer, GetFuncMeta).WillRepeatedly(Return(functionMeta_));
+    instanceCtrl->BindInternalIAM(mockInternalIAM_);
 
     auto scheduler = std::make_shared<MockScheduler>();
     EXPECT_CALL(*scheduler, ScheduleDecision(_)).WillOnce(Return(ScheduleResult{ "", StatusCode::SUCCESS, "" }));
@@ -834,6 +922,8 @@ TEST_F(InstanceCtrlTest, CreateInstanceFailedForInitRuntimeFailed)
     instanceCtrl->Start(nullptr, mockResourceViewMgr_, observer);
     ASSERT_TRUE(observer != nullptr);
     EXPECT_CALL(*observer, GetFuncMeta).WillRepeatedly(Return(functionMeta_)); // mock get function successfully
+
+    instanceCtrl->BindInternalIAM(mockInternalIAM_); // mock iam successfully
 
     auto scheduler = std::make_shared<MockScheduler>();
     EXPECT_CALL(*scheduler, ScheduleDecision(_)).WillOnce(Return(ScheduleResult{ "", StatusCode::SUCCESS, "" }));
@@ -927,10 +1017,11 @@ TEST_F(InstanceCtrlTest, CreateInstanceSuccess)
     instanceCtrl->Start(nullptr, mockResourceViewMgr_, observer);
     ASSERT_TRUE(observer != nullptr);
     EXPECT_CALL(*observer, GetFuncMeta).WillRepeatedly(Return(functionMeta_)); // mock get function successfully
+    instanceCtrl->BindInternalIAM(mockInternalIAM_); // mock iam successfully
 
     auto scheduler = std::make_shared<MockScheduler>();
     EXPECT_CALL(*scheduler, ScheduleDecision(_))
-        .WillOnce(Return(ScheduleResult{ "agent", StatusCode::SUCCESS, "", {}, "", {}, nullptr, "bundleUnit" }));
+        .WillOnce(Return(ScheduleResult{ "agent", StatusCode::SUCCESS, "", {}, "", {}, {}, nullptr, "bundleUnit" }));
     EXPECT_CALL(*scheduler, ScheduleConfirm).Times(1); // mock schedule successfully
     instanceCtrl->BindScheduler(scheduler);
 
@@ -982,6 +1073,7 @@ TEST_F(InstanceCtrlTest, CreateInstanceSuccess)
     ASSERT_AWAIT_TRUE([&]() { return machine->GetInstanceState() == InstanceState::RUNNING; });
     ASSERT_AWAIT_TRUE([&]() { return scheduleReq->instance().unitid() == "bundleUnit"; });
     ASSERT_AWAIT_TRUE([&]() { return machine->GetInstanceInfo().unitid() == "bundleUnit"; });
+    EXPECT_TRUE(mockInternalIAM_->VerifyInstance("DesignatedInstanceID"));
 
     litebus::Terminate(stateActor->GetAID());
     litebus::Await(stateActor->GetAID());
@@ -1011,6 +1103,7 @@ TEST_F(InstanceCtrlTest, ScheduleSuccess)
     instanceCtrl->Start(nullptr, mockResourceViewMgr_, observer);
     ASSERT_TRUE(observer != nullptr);
     EXPECT_CALL(*observer, GetFuncMeta).WillRepeatedly(Return(functionMeta_));
+    instanceCtrl->BindInternalIAM(mockInternalIAM_);
     resources::InstanceInfo instanceInfo;
     instanceInfo.set_parentfunctionproxyaid(actor->GetAID());
     instanceInfo.set_parentid("parent");
@@ -1137,6 +1230,7 @@ TEST_F(InstanceCtrlTest, ScheduleRecoverInstanceSuccess)
     instanceCtrl->Start(nullptr, mockResourceViewMgr_, observer);
     ASSERT_TRUE(observer != nullptr);
     EXPECT_CALL(*observer, GetFuncMeta).WillRepeatedly(Return(functionMeta_));
+    instanceCtrl->BindInternalIAM(mockInternalIAM_);
     resources::InstanceInfo instanceInfo;
     instanceInfo.set_functionproxyid("nodeID");
     instanceInfo.set_instanceid("DesignatedInstanceID");
@@ -1701,7 +1795,6 @@ TEST_F(InstanceCtrlTest, ForwardCustomSignalRequestDuplicate)
     instanceCtrlActor->ToReady();
     litebus::Spawn(instanceCtrlActor);
     auto stateMachine = std::make_shared<MockInstanceStateMachine>("proxyID1");
-    auto &mockStateMachine = *stateMachine;
     EXPECT_CALL(*instanceControlView_, GetInstance).WillRepeatedly(Return(stateMachine));
 
     const std::string srcInstance = "srcInstance";
@@ -1755,7 +1848,7 @@ TEST_F(InstanceCtrlTest, SendForwardCustomSignalRequestDuplicate)
     litebus::Spawn(instanceCtrlActor);
 
     auto killReq = GenKillRequest(instanceID1, customSignal);
-    auto requestID(killReq->instanceid() + "-" + std::to_string(killReq->signal()));
+    auto requestID(killReq->requestid() + "-" + std::to_string(killReq->signal()));
 
     auto notifyPromise = std::make_shared<litebus::Promise<KillResponse>>();
     instanceCtrlActor->forwardCustomSignalNotifyPromise_.emplace(requestID, notifyPromise); // mock promise is exist, don't execute
@@ -2259,6 +2352,7 @@ TEST_F(InstanceCtrlTest, CreateInstanceClientTest)
     auto observer = std::make_shared<MockObserver>();
     auto instanceCtrl = std::make_shared<InstanceCtrl>(actor);
     instanceCtrl->Start(nullptr, mockResourceViewMgr_, mockObserver_);
+    instanceCtrl->BindInternalIAM(mockInternalIAM_);
     instanceCtrl->BindFunctionAgentMgr(funcAgentMgr_);
     scheduleReqA->mutable_instance()->set_parentfunctionproxyaid(actor->GetAID());
 
@@ -2539,8 +2633,12 @@ TEST_F(InstanceCtrlTest, SyncInstanceRecoverFailed)
  * 2. send request of sync instances.
  * Expectation: invoke Recover method second times and check consistency successfully.
  */
-TEST_F(InstanceCtrlTest, DISABLED_SyncInstanceRecoverSuccess)
+TEST_F(InstanceCtrlTest, SyncInstanceRecoverSuccess)
 {
+    InternalIAM::Param internalIAM_Param;
+    internalIAM_Param.isEnableIAM = true;
+    auto mockInternalIAM = std::make_shared<MockInternalIAM>(internalIAM_Param);
+    instanceCtrlWithMockObserver_->BindInternalIAM(mockInternalIAM);
     function_proxy::InstanceInfoMap instanceInfoMap;
     resource_view::InstanceInfo instanceInfo;
     instanceInfo.set_instanceid("instance1");
@@ -2585,7 +2683,8 @@ TEST_F(InstanceCtrlTest, DISABLED_SyncInstanceRecoverSuccess)
     EXPECT_CALL(*localSchedSrv, ForwardSchedule).WillRepeatedly(Return(scheduleResponse));
     instanceCtrlWithMockObserver_->BindLocalSchedSrv(localSchedSrv);
     EXPECT_CALL(*funcAgentMgr_.get(), KillInstance(testing::_, testing::_, testing::_))
-        .WillRepeatedly(Return(GenKillInstanceResponse(StatusCode::SUCCESS, "kill instance successfully", "requestID")));
+        .WillRepeatedly(
+            Return(GenKillInstanceResponse(StatusCode::SUCCESS, "kill instance successfully", "requestID")));
     EXPECT_CALL(*distributedCacheClient, Get(Matcher<const std::string &>("instance1"), Matcher<std::string &>(Eq(""))))
         .WillRepeatedly(DoAll(SetArgReferee<1>(state), Return(Status::OK())));
 
@@ -2834,6 +2933,7 @@ TEST_F(InstanceCtrlTest, RescheduleTest)
     instanceCtrl->Start(nullptr, mockResourceViewMgr_, observer);
     ASSERT_TRUE(observer != nullptr);
     functionMeta_.codeMetaData.storageType = "S3";
+    instanceCtrl->BindInternalIAM(mockInternalIAM_);
     auto resourceViewMgr = std::make_shared<resource_view::ResourceViewMgr>();
     auto primary = MockResourceView::CreateMockResourceView();
     resourceViewMgr->primary_ = primary;
@@ -3006,6 +3106,7 @@ TEST_F(InstanceCtrlTest, CreateLocalNotEnoughAndRemoteNotEnough)
     ASSERT_IF_NULL(instanceCtrl);
 
     instanceCtrl->Start(nullptr, resourceViewMgr, observer);
+    instanceCtrl->BindInternalIAM(mockInternalIAM_);
 
     auto localSchedSrv = std::make_shared<MockLocalSchedSrv>();
     messages::ScheduleResponse scheduleResponse;
@@ -3026,6 +3127,9 @@ TEST_F(InstanceCtrlTest, CreateLocalNotEnoughAndRemoteNotEnough)
         .WillRepeatedly(testing::DoAll(SaveArg<0>(&mockStateMachineState),
                                        SaveArg<1>(&mockStateMachineInstanceStatusMsg), Return(NEW_RESULT)));
 
+    EXPECT_CALL(mockStateMachine, GetInstanceState())
+        .WillOnce(Return(InstanceState::SCHEDULING))
+        .WillOnce(Return(InstanceState::SCHEDULING));
     EXPECT_CALL(mockStateMachine, ReleaseOwner).WillRepeatedly(Return());
     EXPECT_CALL(mockStateMachine, GetCancelFuture).WillRepeatedly(Return(litebus::Future<std::string>()));
 
@@ -3108,6 +3212,7 @@ TEST_F(InstanceCtrlTest, CreateLocalNotEnoughAndRemoteEnough)
     auto instanceCtrl = std::make_shared<InstanceCtrl>(actor);
     ASSERT_IF_NULL(instanceCtrl);
     instanceCtrl->Start(nullptr, resourceViewMgr, observer);
+    instanceCtrl->BindInternalIAM(mockInternalIAM_);
 
     instanceCtrl->BindLocalSchedSrv(localSchedSrv);
     auto stateMachine = std::make_shared<MockInstanceStateMachine>("nodeN");
@@ -3190,6 +3295,7 @@ TEST_F(InstanceCtrlTest, CreateLocalNotEnoughButNotForward)
     auto instanceCtrl = std::make_shared<InstanceCtrl>(actor);
     ASSERT_IF_NULL(instanceCtrl);
     instanceCtrl->Start(nullptr, resourceViewMgr, observer);
+    instanceCtrl->BindInternalIAM(mockInternalIAM_);
 
     auto localSchedSrv = std::make_shared<MockLocalSchedSrv>();
     EXPECT_CALL(*localSchedSrv, ForwardSchedule).Times(0);
@@ -3252,6 +3358,7 @@ TEST_F(InstanceCtrlTest, NewInstanceWithDuplicate)
     EXPECT_CALL(*observer, IsSystemFunction).WillRepeatedly(Return(false));
 
     instanceCtrl->Start(nullptr, mockResourceViewMgr_, observer);
+    instanceCtrl->BindInternalIAM(mockInternalIAM_);
 
     auto stateMachine = std::make_shared<MockInstanceStateMachine>("nodeID");
     auto &mockStateMachine = *stateMachine;
@@ -3331,6 +3438,7 @@ TEST_F(InstanceCtrlTest, SchedulingWithDuplicate)
     ASSERT_IF_NULL(instanceCtrl);
 
     instanceCtrl->Start(nullptr, resourceViewMgr, observer);
+    instanceCtrl->BindInternalIAM(mockInternalIAM_);
 
     auto stateMachine = std::make_shared<MockInstanceStateMachine>("nodeN");
 
@@ -3604,6 +3712,10 @@ TEST_F(InstanceCtrlTest, CheckLowReliabilityNoRecover)
 
     auto res3 = actor->CheckSchedRequestValid(req);
     EXPECT_EQ(res3.StatusCode(), StatusCode::ERR_PARAM_INVALID);
+    (*instanceInfo.mutable_createoptions())["RecoverRetryTimes"] = "0";
+    (*instanceInfo.mutable_createoptions())["DELEGATE_POD_LABELS"] = "{}";
+    res3 = actor->CheckSchedRequestValid(req);
+    EXPECT_EQ(res3.StatusCode(), StatusCode::ERR_PARAM_INVALID);
 }
 
 /**
@@ -3658,6 +3770,43 @@ TEST_F(InstanceCtrlTest, CheckHeteroResourceValid)
     (*req->mutable_instance()) = view_utils::Get1DInstanceWithNpuResource(1, 1, 1, "NPU/Ascend910.*");
     res = actor->CheckHeteroResourceValid(req);
     EXPECT_TRUE(res);
+}
+
+/**
+ * Feature: instance ctrl.
+ * Description: CheckHeteroResourceValid.
+ * Steps:
+ * Expectation: return bool.
+ */
+TEST_F(InstanceCtrlTest, CheckDiskResourceValid)
+{
+    auto actor = std::make_shared<InstanceCtrlActor>("InstanceCtrlActor", "nodeID", instanceCtrlConfig);
+    auto req = std::make_shared<messages::ScheduleRequest>();
+    req->set_requestid("rq1");
+    req->set_traceid("id1");
+
+    // a valid request -- disk size is 100
+    resources::Resource validDisk;
+    validDisk.mutable_scalar()->set_value(100);
+    req->mutable_instance()->mutable_resources()->mutable_resources()->operator[](DISK_RESOURCE_NAME) =
+        validDisk;
+    auto res = actor->CheckHeteroResourceValid(req);
+    EXPECT_FALSE(res);
+
+    // a invalid request -- disk size is 0
+    validDisk.mutable_scalar()->set_value(0);
+    req->mutable_instance()->mutable_resources()->mutable_resources()->operator[](DISK_RESOURCE_NAME) =
+        validDisk;
+    res = actor->CheckHeteroResourceValid(req);
+    EXPECT_FALSE(res);
+
+    // a invalid request -- disk size is -100
+    validDisk.mutable_scalar()->set_value(-100);
+    req->mutable_instance()->mutable_resources()->mutable_resources()->operator[](DISK_RESOURCE_NAME) =
+        validDisk;
+    res = actor->CheckHeteroResourceValid(req);
+    EXPECT_FALSE(res);
+
 }
 
 /**
@@ -3905,6 +4054,7 @@ TEST_F(InstanceCtrlTest, HandleHeartbeatLostQueryExceptionSuccess)
     resourceViewMgr->primary_ = primary;
     resourceViewMgr->virtual_ = MockResourceView::CreateMockResourceView();
     actor->BindResourceView(resourceViewMgr);
+    actor->BindInternalIAM(mockInternalIAM_);
     litebus::Spawn(actor);
     actor->AddHeartbeatTimer("instanceid");
     EXPECT_CALL(*mockSharedClientManagerProxy_, GetControlInterfacePosixClient).WillOnce(Return(nullptr));
@@ -3945,6 +4095,55 @@ TEST_F(InstanceCtrlTest, HandleHeartbeatLostQueryExceptionSuccess)
     litebus::Await(actor->GetAID());
 }
 
+TEST_F(InstanceCtrlTest, HandleHeartbeatLostQueryExceptionFailed)
+{
+    auto actor = std::make_shared<InstanceCtrlActor>("InstanceCtrlActor", "nodeID", instanceCtrlConfig);
+    actor->BindFunctionAgentMgr(funcAgentMgr_);
+    actor->BindInstanceControlView(instanceControlView_);
+    actor->BindControlInterfaceClientManager(mockSharedClientManagerProxy_);
+    auto resourceViewMgr = std::make_shared<resource_view::ResourceViewMgr>();
+    auto primary = MockResourceView::CreateMockResourceView();
+    resourceViewMgr->primary_ = primary;
+    resourceViewMgr->virtual_ = MockResourceView::CreateMockResourceView();
+    actor->BindResourceView(resourceViewMgr);
+    actor->BindInternalIAM(mockInternalIAM_);
+    litebus::Spawn(actor);
+    actor->AddHeartbeatTimer("instanceid");
+    EXPECT_CALL(*mockSharedClientManagerProxy_, GetControlInterfacePosixClient).WillOnce(Return(nullptr));
+    auto stateMachine = std::make_shared<MockInstanceStateMachine>("nodeID");
+    auto &mockStateMachine = *stateMachine;
+    EXPECT_CALL(*instanceControlView_, GetInstance).WillRepeatedly(Return(stateMachine));
+
+    litebus::Promise<messages::InstanceStatusInfo> instanceStatusInfoPromise;
+    EXPECT_CALL(*funcAgentMgr_, QueryInstanceStatusInfo("functionAgentID", "instanceid", "runtimeid"))
+        .WillOnce(Return(instanceStatusInfoPromise.GetFuture()));
+    resource_view::InstanceInfo instanceInfo;
+    instanceInfo.set_instanceid("instanceid");
+    instanceInfo.set_runtimeid("runtimeid");
+    instanceInfo.set_functionagentid("functionAgentID");
+    EXPECT_CALL(mockStateMachine, GetInstanceInfo).WillRepeatedly(Return(instanceInfo));
+    litebus::Future<std::vector<std::string>> deleteInstance;
+    InstanceState mockStateMachineState;
+    int32_t errCode;
+    EXPECT_CALL(mockStateMachine, GetOwner).WillRepeatedly(Return("nodeID"));
+    EXPECT_CALL(mockStateMachine, IsSaving()).WillRepeatedly(Return(false));
+    EXPECT_CALL(mockStateMachine, TransitionToImpl)
+        .WillRepeatedly(testing::DoAll(SaveArg<0>(&mockStateMachineState), SaveArg<4>(&errCode), Return(NEW_RESULT)));
+    EXPECT_CALL(*mockSharedClientManagerProxy_, DeleteClient(_)).WillOnce(Return(Status::OK()));
+    EXPECT_CALL(*funcAgentMgr_, KillInstance(testing::_, testing::_, testing::_))
+        .WillRepeatedly(
+            Return(GenKillInstanceResponse(StatusCode::SUCCESS, "kill instance successfully", "requestID")));
+    EXPECT_CALL(*primary, DeleteInstances)
+        .WillRepeatedly(DoAll(FutureArg<0>(&deleteInstance), Return(Status::OK())));
+    litebus::Async(actor->GetAID(), &InstanceCtrlActor::HandleRuntimeHeartbeatLost, "instanceid", "runtimeid");
+    instanceStatusInfoPromise.SetFailed(-1);
+    ASSERT_AWAIT_READY(deleteInstance);
+    EXPECT_EQ(mockStateMachineState, InstanceState::FATAL);
+    EXPECT_EQ(errCode, common::ErrorCode::ERR_INSTANCE_EXITED);
+    litebus::Terminate(actor->GetAID());
+    litebus::Await(actor->GetAID());
+}
+
 /**
  * Feature: instance ctrl.
  * Description: HandleHeartbeatLost instance info change
@@ -3960,6 +4159,7 @@ TEST_F(InstanceCtrlTest, HandleHeartbeatLostInstanceInfoChange)
     resourceViewMgr->primary_ = primary;
     resourceViewMgr->virtual_ = MockResourceView::CreateMockResourceView();
     actor->BindResourceView(resourceViewMgr);
+    actor->BindInternalIAM(mockInternalIAM_);
     litebus::Spawn(actor);
     actor->AddHeartbeatTimer("instanceidA");
     EXPECT_CALL(*mockSharedClientManagerProxy_, GetControlInterfacePosixClient).WillOnce(Return(nullptr));
@@ -4332,6 +4532,7 @@ TEST_F(InstanceCtrlTest, RescheduleAfterJudgeRecoverableTest)
     resourceViewMgr->primary_ = primary;
     resourceViewMgr->virtual_ = MockResourceView::CreateMockResourceView();
     actor->BindResourceView(resourceViewMgr);
+    actor->BindInternalIAM(mockInternalIAM_);
     actor->BindControlInterfaceClientManager(mockSharedClientManagerProxy_);
     actor->BindFunctionAgentMgr(funcAgentMgr_);
     EXPECT_CALL(*mockSharedClientManagerProxy_, DeleteClient(_)).WillRepeatedly(Return(Status::OK()));
@@ -4380,7 +4581,9 @@ TEST_F(InstanceCtrlTest, DeleteDriverClient)
     auto actor = std::make_shared<InstanceCtrlActor>("InstanceCtrlActor", "nodeID", instanceCtrlConfig);
     actor->BindObserver(mockObserver_);
     actor->BindControlInterfaceClientManager(mockSharedClientManagerProxy_);
+    actor->BindInternalIAM(mockInternalIAM_);
     EXPECT_CALL(*mockObserver_, DelInstance).WillOnce(Return(Status::OK()));
+    EXPECT_CALL(*mockInternalIAM_, IsIAMEnabled).WillRepeatedly(Return(true));
     auto localSchedSrv = std::make_shared<MockLocalSchedSrv>();
     actor->BindLocalSchedSrv(localSchedSrv);
 
@@ -4403,7 +4606,9 @@ TEST_F(InstanceCtrlTest, GracefulShutdown)
     auto actor = std::make_shared<InstanceCtrlActor>("InstanceCtrlActor", "nodeID", instanceCtrlConfig);
     actor->BindObserver(mockObserver_);
     actor->BindControlInterfaceClientManager(mockSharedClientManagerProxy_);
+    actor->BindInternalIAM(mockInternalIAM_);
     EXPECT_CALL(*mockObserver_, DelInstance).WillRepeatedly(Return(Status::OK()));
+    EXPECT_CALL(*mockInternalIAM_, IsIAMEnabled).WillRepeatedly(Return(true));
     auto localSchedSrv = std::make_shared<MockLocalSchedSrv>();
     actor->BindLocalSchedSrv(localSchedSrv);
 
@@ -4481,6 +4686,7 @@ TEST_F(InstanceCtrlTest, NotifyDsWorkerHealthy)
 {
     auto actor = std::make_shared<InstanceCtrlActor>("InstanceCtrlActor", "nodeID", instanceCtrlConfig);
     actor->BindFunctionAgentMgr(funcAgentMgr_);
+    actor->BindInternalIAM(mockInternalIAM_);
     actor->BindInstanceControlView(instanceControlView_);
     actor->BindControlInterfaceClientManager(mockSharedClientManagerProxy_);
     auto resourceViewMgr = std::make_shared<resource_view::ResourceViewMgr>();
@@ -4762,6 +4968,7 @@ TEST_F(InstanceCtrlTest, ToSchedulingSuccessful)
     GeneratedInstanceStates genStates{ "DesignatedInstanceID", InstanceState::NEW, false };
     EXPECT_CALL(*instanceControlView_, TryGenerateNewInstance).WillOnce(Return(genStates));
     EXPECT_CALL(*mockObserver_, PutInstanceEvent).WillOnce(Return());
+    EXPECT_CALL(*mockObserver_, WatchInstance).WillOnce(Return());
 
     auto future = instanceCtrlWithMockObserver_->ToScheduling(scheduleReq);
     ASSERT_AWAIT_READY(future);
@@ -5010,11 +5217,13 @@ TEST_F(InstanceCtrlTest, DeleteSchedulingInstance)
     instance.set_functionagentid("agentID");
     instance.mutable_instancestatus()->set_code(static_cast<int32_t>(InstanceState::SCHEDULING));
     EXPECT_CALL(*stateMachine, GetInstanceInfo).WillOnce(Return(instance));
+    EXPECT_CALL(*stateMachine, GetModRevision).WillOnce(Return(1000));
     auto callPromise = std::make_shared<litebus::Promise<bool>>();
-    EXPECT_CALL(*mockObserver_, DelInstanceEvent).WillOnce(DoAll(Invoke([callPromise](const std::string &instanceID) {
-        callPromise->SetValue(true);
-        return Status::OK();
-    })));
+    EXPECT_CALL(*mockObserver_, DelInstanceEvent)
+        .WillOnce(DoAll(Invoke([callPromise](const std::string &instanceID, int64_t) {
+            callPromise->SetValue(true);
+            return Status::OK();
+        })));
     instanceCtrlWithMockObserver_->DeleteSchedulingInstance("instanceID", "req-1");
     instanceCtrlWithMockObserver_->DeleteSchedulingInstance("instanceID", "req-2");
     ASSERT_AWAIT_READY(callPromise->GetFuture());
@@ -5061,7 +5270,10 @@ TEST_F(InstanceCtrlTest, SyncInstanceKillCreating)
 TEST_F(InstanceCtrlTest, OnHealthyStatusTest)
 {
     auto actor = std::make_shared<InstanceCtrlActor>("InstanceCtrlActor", "nodeID", instanceCtrlConfig);
+    actor->BindControlInterfaceClientManager(mockSharedClientManagerProxy_);
     auto instanceControlView = std::make_shared<MockInstanceControlView>("nodeID");
+    auto mockInstanceOperator = std::make_shared<MockInstanceOperator>();
+    actor->instanceOpt_ = mockInstanceOperator;
     actor->BindInstanceControlView(instanceControlView);
     auto instanceCtrl = std::make_shared<InstanceCtrl>(actor);
     auto observer = std::make_shared<MockObserver>();
@@ -5071,47 +5283,69 @@ TEST_F(InstanceCtrlTest, OnHealthyStatusTest)
     instanceCtrl->Start(nullptr, mockResourceViewMgr_, observer);
 
     instanceCtrl->OnHealthyStatus(Status(StatusCode::FAILED));
-
     auto stateMachine = std::make_shared<MockInstanceStateMachine>("nodeID");
-    std::unordered_map<std::string, std::shared_ptr<InstanceStateMachine>> instanceMap;
-    instanceMap.emplace("instance1", stateMachine);
-    instanceMap.emplace("instance2", stateMachine);
-    instanceMap.emplace("instance3", stateMachine);
-    instanceMap.emplace("instance4", stateMachine);
+    function_proxy::InstanceInfoMap instanceInfoMap;
 
-    bool subHealthTrans = false;
+    // not belong to this node
+    resource_view::InstanceInfo info1;
+    info1.set_instanceid("instance1");
+    info1.set_function("function");
+    info1.set_functionproxyid("fake_node");
+    info1.mutable_instancestatus()->set_code(static_cast<int32_t>(InstanceState::CREATING));
+    instanceInfoMap.insert({ "instance1", info1 });
+    EXPECT_CALL(*observer, GetAllInstanceInfos).WillRepeatedly(Return(instanceInfoMap));
+    instanceCtrl->OnHealthyStatus(Status::OK());
+
+    // state machine nullptr
+    instanceInfoMap.clear();
+    resource_view::InstanceInfo info2;
+    info2.set_instanceid("instance2");
+    info2.set_function("12345678901234561234567890123456/0-test-helloWorld/$latest");
+    info2.set_functionproxyid("nodeID");
+    info2.set_jobid("job");
+    info2.mutable_instancestatus()->set_code(static_cast<int32_t>(InstanceState::CREATING));
+    instanceInfoMap.insert({ "instance2", info2 });
+    EXPECT_CALL(*instanceControlView, GetInstance("instance2")).WillRepeatedly(Return(nullptr));
+
+    litebus::Future<OperateResult> result;
+    result.SetValue({});
+    bool deleted = false;
+    EXPECT_CALL(*mockInstanceOperator, ForceDelete).WillRepeatedly(DoAll(Assign(&deleted, true), Return(result)));
+    EXPECT_CALL(*observer, GetAllInstanceInfos).WillRepeatedly(Return(instanceInfoMap));
+    instanceCtrl->OnHealthyStatus(Status::OK());
+    ASSERT_AWAIT_TRUE([&]() { return deleted; });
+
+    instanceInfoMap.clear();
+    info2.set_instanceid("instance3");
+    instanceInfoMap.insert({ "instance3", info2 });
+    EXPECT_CALL(*instanceControlView, GetInstance("instance3")).WillRepeatedly(Return(stateMachine));
+    bool skipped = false;
+    EXPECT_CALL(*stateMachine, GetLastSaveFailedState).WillOnce(DoAll(Assign(&skipped, true), Return(-1)));
+    EXPECT_CALL(*observer, GetAllInstanceInfos).WillOnce(Return(instanceInfoMap));
+    instanceCtrl->OnHealthyStatus(Status::OK());
+    ASSERT_AWAIT_TRUE([&]() { return skipped; });
+
+    instanceInfoMap.clear();
+    info2.set_instanceid("instance4");
+    instanceInfoMap.insert({ "instance4", info2 });
+    EXPECT_CALL(*instanceControlView, GetInstance("instance4")).WillRepeatedly(Return(stateMachine));
+    EXPECT_CALL(*stateMachine, GetLastSaveFailedState).WillOnce(Return(3));
+    EXPECT_CALL(*stateMachine, ResetLastSaveFailedState).WillOnce(Return());
+    EXPECT_CALL(*stateMachine, GetInstanceInfo).WillOnce(Return(info2));
+    EXPECT_CALL(*stateMachine, UpdateInstanceInfo).WillOnce(Return());
+    EXPECT_CALL(*stateMachine, GetOwner).WillOnce(Return("nodeID"));
+    EXPECT_CALL(*stateMachine, GetInstanceState()).WillOnce(Return(InstanceState::CREATING));
+    EXPECT_CALL(*stateMachine, IsSaving).WillOnce(Return(false));
+    EXPECT_CALL(*stateMachine, GetVersion()).WillOnce(Return(0));
+
     bool fatalTrans = false;
-    resource_view::InstanceInfo instanceInfo;
-    litebus::Promise<resource_view::InstanceInfo> promise;
-    promise.SetValue(instanceInfo);
-    EXPECT_CALL(*instanceControlView, GetInstances).WillOnce(Return(instanceMap));
-    EXPECT_CALL(*stateMachine, GetOwner).WillRepeatedly(Return("nodeID"));
-    EXPECT_CALL(*stateMachine, GetLastSaveFailedState)
-        .WillOnce(Return(-1))  // INVALID
-        .WillOnce(Return(11))  // SUB_HEALTH
-        .WillOnce(Return(11))  // SUB_HEALTH
-        .WillOnce(Return(2));  // CREATING
-    EXPECT_CALL(*stateMachine, ResetLastSaveFailedState).WillOnce(Return()).WillOnce(Return()).WillOnce(Return());
-    EXPECT_CALL(*stateMachine, SyncInstanceFromMetaStore)
-        .WillOnce(Return(promise.GetFuture()))
-        .WillOnce(Return(promise.GetFuture()))
-        .WillOnce(Return(promise.GetFuture()));
-    EXPECT_CALL(*stateMachine, UpdateInstanceInfo).WillOnce(Return()).WillOnce(Return()).WillOnce(Return());
-    EXPECT_CALL(*stateMachine, GetInstanceState())
-        .WillOnce(Return(InstanceState::SUB_HEALTH))
-        .WillOnce(Return(InstanceState::RUNNING))
-        .WillOnce(Return(InstanceState::RUNNING));
-    EXPECT_CALL(*stateMachine, IsSaving).WillOnce(Return(false)).WillOnce(Return(false));
-    EXPECT_CALL(*stateMachine, GetVersion()).WillOnce(Return(0)).WillOnce(Return(0));
-    EXPECT_CALL(*stateMachine, TransitionToImpl(InstanceState::SUB_HEALTH, _, _, _, _))
-        .WillOnce(DoAll(Assign(&subHealthTrans, true),
-                        Return(TransitionResult{ InstanceState::SUB_HEALTH, InstanceInfo(), InstanceInfo(), 0 })));
-
     EXPECT_CALL(*stateMachine, TransitionToImpl(InstanceState::FATAL, _, _, _, _))
         .WillOnce(DoAll(Assign(&fatalTrans, true),
-                        Return(TransitionResult{ InstanceState::FATAL, InstanceInfo(), InstanceInfo(), 0 })));
+                        Return(TransitionResult{ InstanceState::SUB_HEALTH, InstanceInfo(), InstanceInfo(), 0 })));
+    EXPECT_CALL(*observer, GetAllInstanceInfos).WillOnce(Return(instanceInfoMap));
     instanceCtrl->OnHealthyStatus(Status::OK());
-    ASSERT_AWAIT_TRUE([&]() { return subHealthTrans && fatalTrans; });
+
+    ASSERT_AWAIT_TRUE([&]() { return fatalTrans; });
 }
 
 TEST_F(InstanceCtrlTest, InstanceRouteInfoSyncerTest)
@@ -5137,11 +5371,10 @@ TEST_F(InstanceCtrlTest, InstanceRouteInfoSyncerTest)
 
     auto stateMachine = std::make_shared<MockInstanceStateMachine>("nodeID");
     EXPECT_CALL(*stateMachine, GetOwner).WillRepeatedly(Return("nodeID"));
-    EXPECT_CALL(*stateMachine, GetInstanceInfo)
-        .WillRepeatedly(Return(instanceInfo));
+    EXPECT_CALL(*stateMachine, GetInstanceInfo).WillRepeatedly(Return(instanceInfo));
     EXPECT_CALL(*stateMachine, GetLastSaveFailedState)
-        .WillOnce(Return(2))   // SUB_HEALTH
-        .WillOnce(Return(-1)); // INVALID and different state
+        .WillOnce(Return(2))    // SUB_HEALTH
+        .WillOnce(Return(-1));  // INVALID and different state
 
     litebus::Future<OperateResult> result;
     result.SetValue({});
@@ -5332,7 +5565,9 @@ TEST_F(InstanceCtrlTest, KillFatalInstance)
     auto scheduleReq = std::make_shared<messages::ScheduleRequest>();
     scheduleReq->mutable_instance()->CopyFrom(instanceInfo);
     auto instanceContext = std::make_shared<InstanceContext>(scheduleReq);
-    EXPECT_CALL(*stateMachine, GetInstanceContextCopy).WillOnce(Return(instanceContext)).WillOnce(Return(instanceContext));
+    EXPECT_CALL(*stateMachine, GetInstanceContextCopy)
+        .WillOnce(Return(instanceContext))
+        .WillOnce(Return(instanceContext));
     EXPECT_CALL(*stateMachine, GetCancelFuture).WillRepeatedly(Return(litebus::Future<std::string>()));
     EXPECT_CALL(*stateMachine, GetVersion).WillRepeatedly(Return(0));
 
@@ -5387,6 +5622,7 @@ TEST_F(InstanceCtrlTest, PersistentNewToSchedulingFailed)
     instanceCtrl->Start(nullptr, mockResourceViewMgr_, observer);
     ASSERT_TRUE(observer != nullptr);
     EXPECT_CALL(*observer, GetFuncMeta).WillRepeatedly(Return(functionMeta_)); // mock get function successfully
+    instanceCtrl->BindInternalIAM(mockInternalIAM_); // mock iam successfully
 
     auto scheduler = std::make_shared<MockScheduler>();
     instanceCtrl->BindScheduler(scheduler);
@@ -5455,6 +5691,7 @@ TEST_F(InstanceCtrlTest, PersistentSchedulingToCreatingFailed)
 
     ASSERT_TRUE(observer != nullptr);
     EXPECT_CALL(*observer, GetFuncMeta).WillRepeatedly(Return(functionMeta_)); // mock get function successfully
+    instanceCtrl->BindInternalIAM(mockInternalIAM_); // mock iam successfully
 
     auto scheduler = std::make_shared<MockScheduler>();
     EXPECT_CALL(*scheduler, ScheduleDecision(_)).WillOnce(Return(ScheduleResult{ "", StatusCode::SUCCESS, "" }));
@@ -5493,10 +5730,10 @@ TEST_F(InstanceCtrlTest, PersistentSchedulingToCreatingFailed)
     EXPECT_EQ(runtimePromise->GetFuture().Get().code(), 0);
 
     ASSERT_AWAIT_TRUE([&]() {
-        return scheduleReq->instance().instancestatus().code() == static_cast<int32_t>(InstanceState::CREATING);
+        return scheduleReq->instance().instancestatus().code() == static_cast<int32_t>(InstanceState::FATAL);
     });
     auto machine = instanceControlView->GetInstance("DesignatedInstanceID");
-    EXPECT_EQ(machine->GetInstanceState(), InstanceState::SCHEDULING);
+    EXPECT_EQ(machine->GetInstanceState(), InstanceState::FATAL);
 }
 
 
@@ -5547,6 +5784,7 @@ TEST_F(InstanceCtrlTest, PersistentCreatingToRunningFailed)
     instanceCtrl->Start(nullptr, mockResourceViewMgr_, observer);
     ASSERT_TRUE(observer != nullptr);
     EXPECT_CALL(*observer, GetFuncMeta).WillRepeatedly(Return(functionMeta_)); // mock get function successfully
+    instanceCtrl->BindInternalIAM(mockInternalIAM_); // mock iam successfully
 
     auto scheduler = std::make_shared<MockScheduler>();
     EXPECT_CALL(*scheduler, ScheduleDecision(_)).WillOnce(Return(ScheduleResult{ "", StatusCode::SUCCESS, "" }));

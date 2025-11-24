@@ -20,8 +20,8 @@
 
 #include <nlohmann/json.hpp>
 
-#include "proto/pb/posix/resource.pb.h"
-#include "resource_type.h"
+#include "common/proto/pb/posix/resource.pb.h"
+#include "common/resource_view/resource_type.h"
 #include "common/types/instance_state.h"
 #include "mocks/mock_shared_client.h"
 #include "mocks/mock_shared_client_manager_proxy.h"
@@ -156,9 +156,9 @@ TEST_F(InstanceViewTest, InstanceStateChange)
     UpdateInstance(childA, parent, nodeID, "remote2", 1);
     aid.SetName(childA);
     ASSERT_AWAIT_TRUE([=]() -> bool { return litebus::GetActor(aid) == nullptr; });
-    instanceView_->Delete(childA);
-    instanceView_->Delete(childB);
-    instanceView_->Delete(parent);
+    instanceView_->Delete(childA, -1);
+    instanceView_->Delete(childB, -1);
+    instanceView_->Delete(parent, -1);
     aid.SetName(parent);
     ASSERT_AWAIT_TRUE([=]() -> bool { return litebus::GetActor(aid) == nullptr; });
     aid.SetName(childA);

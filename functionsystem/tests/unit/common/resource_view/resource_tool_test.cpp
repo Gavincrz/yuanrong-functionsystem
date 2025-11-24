@@ -31,11 +31,11 @@ namespace functionsystem::test {
 
 class ResourceToolTest : public ::testing::Test {
 protected:
-    static void SetUpTestCase()
+    [[maybe_unused]] static void SetUpTestSuite()
     {
     }
 
-    static void TearDownTestCase()
+    [[maybe_unused]] static void TearDownTestSuite()
     {
     }
 
@@ -664,6 +664,26 @@ TEST_F(ResourceToolTest, HasInnerAffinityTest)
     innerAffinity->mutable_tenant()->mutable_requiredantiaffinity()->mutable_condition()->mutable_subconditions()->Add(
         GetEmptySelector());
     EXPECT_TRUE(HasInnerAffinity(instance));
+}
+
+TEST_F(ResourceToolTest, ValidateInstanceDiskResource)
+{
+    resource_view::InstanceInfo instance;
+    EXPECT_FALSE(HasDiskResource(instance));
+
+    resource_view::Resources rs = view_utils::GetDiskResources();
+    (*instance.mutable_resources()) = rs;
+    EXPECT_TRUE(HasDiskResource(instance));
+}
+
+TEST_F(ResourceToolTest, ValidateResourceunitDiskResource)
+{
+    resource_view::ResourceUnit unit;
+    EXPECT_FALSE(HasDiskResource(unit));
+
+    resource_view::Resources rs = view_utils::GetDiskResources();
+    (*unit.mutable_allocatable()) = rs;
+    EXPECT_TRUE(HasDiskResource(unit));
 }
 
 }  // namespace functionsystem::test

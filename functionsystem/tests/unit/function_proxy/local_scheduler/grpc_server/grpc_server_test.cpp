@@ -24,13 +24,14 @@
 #include <memory>
 #include <utility>
 
-#include "logs/logging.h"
+#include "common/logs/logging.h"
 #include "common/posix_client/shared_client/shared_client_manager.h"
 #include "common/posix_client/shared_client/posix_stream_manager_proxy.h"
-#include "proto/pb/posix/bus_service.grpc.pb.h"
-#include "proto/pb/posix/bus_service.pb.h"
-#include "proto/pb/posix_pb.h"
-#include "status/status.h"
+#include "common/proto/pb/posix/bus_service.grpc.pb.h"
+#include "common/proto/pb/posix/bus_service.pb.h"
+#include "common/proto/pb/posix_pb.h"
+#include "common/status/status.h"
+#include "function_proxy/common/iam/internal_iam.h"
 #include "gmock/gmock-actions.h"
 #include "gmock/gmock-generated-actions.h"
 #include "gmock/gmock-more-actions.h"
@@ -55,6 +56,9 @@ class GrpcServerTest : public ::testing::Test {
 public:
     void SetUp() override
     {
+        functionsystem::function_proxy::InternalIAM::Param param;
+        param.isEnableIAM = false;
+        internalIAM_ = std::make_shared<functionsystem::function_proxy::InternalIAM>(param);
         controlPlaneObserver_ = std::make_shared<MockObserver>();
         sharedClientMgr_ = std::make_shared<SharedClientManager>("SharedPosixClientMgr");
         litebus::Spawn(sharedClientMgr_);
@@ -76,6 +80,7 @@ public:
         auto nodeID = litebus::uuid_generator::UUID::GetRandomUUID().ToString();
         instanceCtrl_ = InstanceCtrl::Create(nodeID, instanceCtrlconfig);
         instanceCtrl_->Start(funcAgentMgr_, resourceViewMgr_, controlPlaneObserver_);
+        instanceCtrl_->BindInternalIAM(internalIAM_);
         mockLocalSchedSrv_ = std::make_shared<MockLocalSchedSrv>();
     }
     void TearDown() override
@@ -83,6 +88,7 @@ public:
         litebus::Terminate(sharedClientMgr_->GetAID());
         litebus::Await(sharedClientMgr_->GetAID());
 
+        internalIAM_ = nullptr;
         controlPlaneObserver_ = nullptr;
         resourceViewMgr_ = nullptr;
         funcAgentMgr_ = nullptr;
@@ -97,6 +103,7 @@ protected:
     std::shared_ptr<PosixStreamManagerProxy> sharedPosixClientManager_;
     std::shared_ptr<InstanceCtrl> instanceCtrl_;
     std::shared_ptr<MockLocalSchedSrv> mockLocalSchedSrv_;
+    std::shared_ptr<functionsystem::function_proxy::InternalIAM> internalIAM_{ nullptr };
     std::shared_ptr<SharedClientManager> sharedClientMgr_;
 
     std::shared_ptr<MockFunctionAgentMgr> funcAgentMgr_;
@@ -131,6 +138,7 @@ TEST_F(GrpcServerTest, DiscoverDriverStatus)
     auto mockInstanceCtrl = std::make_shared<MockInstanceCtrl>(
         std::make_shared<InstanceCtrlActor>("mockInstanceCtrl", "nodeID", instanceCtrlconfig));
     mockInstanceCtrl->BindControlInterfaceClientManager(mockControlInterfaceClientManagerProxy);
+    mockInstanceCtrl->BindInternalIAM(internalIAM_);
     litebus::Future<Status> statusFut;
     statusFut.SetValue(Status());
     EXPECT_CALL(*controlPlaneObserver_, PutInstance).WillOnce(Return(statusFut));
@@ -149,7 +157,7 @@ TEST_F(GrpcServerTest, DiscoverDriverStatus)
         .instanceCtrl = mockInstanceCtrl,
         .localSchedSrv = mockLocalSchedSrv_,
         .isEnableServerMode = true,
-        .hostIP = "10.27.15.58",
+        .hostIP = "127.0.0.1",
     };
     EXPECT_CALL(*mockLocalSchedSrv_, IsRegisteredToGlobal).WillRepeatedly(Return(Status::OK()));
     auto service = BusService(std::move(param));
@@ -158,7 +166,7 @@ TEST_F(GrpcServerTest, DiscoverDriverStatus)
     ::grpc::Status status = service.DiscoverDriver(&context, &request, &response);
     EXPECT_EQ(status.ok(), true);
     EXPECT_EQ(response.nodeid(), "nodeID");
-    EXPECT_EQ(response.hostip(), "10.27.15.58");
+    EXPECT_EQ(response.hostip(), "127.0.0.1");
 
     // 3. Mock PutInstance returning Status with error code.
     statusFut = litebus::Future<Status>();

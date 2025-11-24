@@ -28,7 +28,7 @@ using namespace functionsystem::test;
 
 class KvClientTest : public ::testing::Test {
 public:
-    static void SetUpTestCase()
+    [[maybe_unused]] static void SetUpTestSuite()
     {
         etcdKvService_ = std::make_shared<MockEtcdKvService>();
         int metaStoreServerPort = functionsystem::test::FindAvailablePort();
@@ -50,7 +50,7 @@ public:
         promise.GetFuture().Get();  // wait for init
     }
 
-    static void TearDownTestCase()
+    [[maybe_unused]] static void TearDownTestSuite()
     {
         if (etcdServer_ != nullptr) {
             etcdServer_->Shutdown();

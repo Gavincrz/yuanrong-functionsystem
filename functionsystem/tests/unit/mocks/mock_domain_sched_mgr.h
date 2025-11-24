@@ -22,12 +22,13 @@
 #include "scheduler_manager/domain_sched_mgr.h"
 
 namespace functionsystem::test {
+const long long HEARTBEAT_TIMEOUT = 30000;
 
 class MockDomainSchedMgr : public global_scheduler::DomainSchedMgr {
 public:
     MockDomainSchedMgr(const std::string &name = "DomainSchedMgrActor")
         : global_scheduler::DomainSchedMgr(
-              std::make_shared<global_scheduler::DomainSchedMgrActor>(name))
+              std::make_shared<global_scheduler::DomainSchedMgrActor>(name, HEARTBEAT_TIMEOUT))
     {
     }
     explicit MockDomainSchedMgr(std::shared_ptr<global_scheduler::DomainSchedMgrActor> domainSchedMgrActor)

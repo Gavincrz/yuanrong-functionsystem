@@ -17,7 +17,7 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
-#include "logs/logging.h"
+#include "common/logs/logging.h"
 #include "domain_scheduler/flags/flags.h"
 
 namespace functionsystem::test {

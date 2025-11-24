@@ -57,7 +57,7 @@ inline int FindAvailablePort()
 {
     std::random_device rd;
     std::mt19937 gen(rd());
-    std::uniform_int_distribution<> dist(1024, 65535);
+    std::uniform_int_distribution<> dist(10240, 65535);
 
     int sock;
     struct sockaddr_in addr;

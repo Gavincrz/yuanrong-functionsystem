@@ -17,7 +17,7 @@
 
 #include <fstream>
 
-#include "hex/hex.h"
+#include "common/hex/hex.h"
 #include "function_proxy/common/distribute_cache_client/ds_cache_client_impl.h"
 #include "utils/os_utils.hpp"
 
@@ -25,11 +25,11 @@ namespace functionsystem::test {
 
 class DistributeCacheClientTest : public ::testing::Test {
 public:
-    static void SetUpTestCase()
+    [[maybe_unused]] static void SetUpTestSuite()
     {
     }
 
-    static void TearDownTestCase()
+    [[maybe_unused]] static void TearDownTestSuite()
     {
     }
     void SetUp() override

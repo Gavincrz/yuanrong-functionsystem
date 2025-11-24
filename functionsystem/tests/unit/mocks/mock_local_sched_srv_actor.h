@@ -27,14 +27,15 @@ using namespace functionsystem::local_scheduler;
 class MockLocalSchedSrvActor : public LocalSchedSrvActor {
 public:
     explicit MockLocalSchedSrvActor(const std::string &name)
-        : LocalSchedSrvActor({
+        : LocalSchedSrvActor(LocalSchedSrvActor::Param{
               name,
               "",
               false,
               0,
               0,
               0,
-               0
+              "",
+              0,
           }){};
 
     ~MockLocalSchedSrvActor(){};

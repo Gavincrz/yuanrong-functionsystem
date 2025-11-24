@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "files.h"
+#include "common/utils/files.h"
 
 #include <gtest/gtest.h>
 

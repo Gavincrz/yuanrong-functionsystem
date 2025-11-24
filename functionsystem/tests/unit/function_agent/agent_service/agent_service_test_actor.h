@@ -22,8 +22,8 @@
 #include <async/future.hpp>
 #include <unordered_set>
 #include <iostream>
-#include "logs/logging.h"
-#include "proto/pb/message_pb.h"
+#include "common/logs/logging.h"
+#include "common/proto/pb/message_pb.h"
 
 namespace functionsystem::function_agent::test {
 
@@ -52,6 +52,7 @@ public:
     MOCK_METHOD(std::string, MockUpdateResourceResponse, ());
     MOCK_METHOD(std::string, MockUpdateAgentStatusResponse, ());
     MOCK_METHOD(std::string, MockRegisteredResponse, ());
+    MOCK_METHOD(std::string, MockStaticFunctionScheduleResponse, ());
 
     // Simulates the Function Agent Manager Actor to receive DeployInstanceResponse messages.
     void DeployInstanceResponse(const litebus::AID &from, std::string &&name, std::string &&msg);
@@ -72,6 +73,8 @@ public:
     void SetNetworkIsolationResponse(const litebus::AID &, std::string &&, std::string &&msg);
     // Simulates the Function Agent Manager Actor to receive QueryDebugInstanceInfosResponse messages.
     void QueryDebugInstanceInfosResponse(const litebus::AID &from, std::string &&name, std::string &&msg);
+    void StaticFunctionScheduleRequest(const litebus::AID &from, std::string &&name, std::string &&msg);
+    void NotifyFunctionStatusChangeResp(const litebus::AID &from, std::string &&, std::string &&msg);
 
     [[maybe_unused]] [[nodiscard]] bool GetReceivedScheduleRequest() const
     {

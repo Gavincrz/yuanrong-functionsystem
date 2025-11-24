@@ -21,7 +21,7 @@
 
 #include <async/future.hpp>
 
-#include "proto/pb/posix_pb.h"
+#include "common/proto/pb/posix_pb.h"
 
 namespace functionsystem::test {
 

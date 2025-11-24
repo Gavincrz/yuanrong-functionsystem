@@ -45,7 +45,7 @@ public:
         litebus::Spawn(subscriptionMgrActor_);
         mockInstanceCtrlView_ = std::make_shared<MockInstanceControlView>(LOCAL_NODE_ID);
         subscriptionMgrActor_->BindInstanceControlView(mockInstanceCtrlView_);
-        mockInstanceCtrl_ = std::make_shared<MockInstanceCtrl>(nullptr);
+        mockInstanceCtrl_ = std::make_shared<MockInstanceCtrl>();
         subscriptionMgrActor_->BindInstanceCtrl(mockInstanceCtrl_);
         mockLocalSchedSrv_ = std::make_shared<MockLocalSchedSrv>();
         subscriptionMgrActor_->BindLocalSchedSrv(mockLocalSchedSrv_);
@@ -436,7 +436,7 @@ TEST_F(SubscriptionManagerActorTest, CleanFunctionMasterSubscriberSuccessfully) 
     // case 2: subscriber is exited
     {
         // 1. mock subscriber is running, mock query ip is empty
-        auto exitSubscriberID = SUBSCRIBER_ID+"1";
+        auto exitSubscriberID = SUBSCRIBER_ID + "1";
         auto subscriber = GetInstanceMachine(exitSubscriberID, InstanceState::RUNNING);
         EXPECT_CALL(*mockInstanceCtrlView_, GetInstance).WillRepeatedly(Return(subscriber));
         EXPECT_CALL(*mockLocalSchedSrv_, QueryMasterIP).WillOnce(Return(""));
@@ -449,11 +449,12 @@ TEST_F(SubscriptionManagerActorTest, CleanFunctionMasterSubscriberSuccessfully) 
         // 2. check subscriber successfully
         auto eventKey = "subscribe_master_" + exitSubscriberID;
         EXPECT_TRUE(subscriber->HasStateChangeCallback(eventKey));
-        EXPECT_TRUE(subscriptionMgrActor_->masterSubscriberMap_.find(exitSubscriberID) != subscriptionMgrActor_->masterSubscriberMap_.end());
+        EXPECT_TRUE(subscriptionMgrActor_->masterSubscriberMap_.find(exitSubscriberID)
+                    != subscriptionMgrActor_->masterSubscriberMap_.end());
 
         // 3. mock subscriber is exited
         subscriber->ExecuteStateChangeCallback("reqId", InstanceState::EXITED);
-        ASSERT_AWAIT_TRUE([&]() { return subscriptionMgrActor_->masterSubscriberMap_.size() == 0;});
+        ASSERT_AWAIT_TRUE([&]() { return subscriptionMgrActor_->masterSubscriberMap_.size() == 0; });
     }
 }
 

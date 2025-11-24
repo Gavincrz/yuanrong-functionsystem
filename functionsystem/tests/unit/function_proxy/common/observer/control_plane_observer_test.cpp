@@ -24,13 +24,16 @@
 #include "common/etcd_service/etcd_service_driver.h"
 #include "meta_storage_accessor/meta_storage_accessor.h"
 #include "meta_store_client/meta_store_client.h"
-#include "resource_type.h"
+#include "common/resource_view/resource_type.h"
 #include "common/types/instance_state.h"
 #include "common/utils/struct_transfer.h"
+#define private public
 #include "function_proxy/common/observer/observer_actor.h"
+#undef private
 #include "function_proxy/common/posix_client/shared_client/shared_client_manager.h"
 #include "function_proxy/common/posix_client/shared_client/posix_stream_manager_proxy.h"
 #include "litebus.hpp"
+#include "mocks/mock_internal_iam.h"
 #include "mocks/mock_meta_store_client.h"
 #include "utils/future_test_helper.h"
 #include "utils/generate_info.h"
@@ -45,7 +48,7 @@ protected:
     inline static std::unique_ptr<meta_store::test::EtcdServiceDriver> etcdSrvDriver_;
     inline static std::string metaStoreServerHost_;
 
-    [[maybe_unused]] static void SetUpTestCase()
+    [[maybe_unused]] static void SetUpTestSuite()
     {
         etcdSrvDriver_ = std::make_unique<meta_store::test::EtcdServiceDriver>();
         int metaStoreServerPort = functionsystem::test::FindAvailablePort();
@@ -67,18 +70,24 @@ protected:
                                                                          metaStorageAccessor_, std::move(param));
 
         observerActor_->BindDataInterfaceClientManager(sharedPosixClientManager);
+        function_proxy::InternalIAM::Param iamParam;
+        iamParam.isEnableIAM = true;
+        iamParam.credType = IAMCredType::AK_SK;
+        internalIAM_ = std::make_shared<MockInternalIAM>(iamParam);
+        observerActor_->BindInternalIAM(internalIAM_);
+        EXPECT_CALL(*internalIAM_, IsSystemTenant).WillRepeatedly(testing::Return(false));
         litebus::Spawn(observerActor_);
         controlPlaneObserver_ = std::make_shared<function_proxy::ControlPlaneObserver>(observerActor_);
         controlPlaneObserver_->Register();
         // one from meta json, three from services.yaml
-        ASSERT_AWAIT_TRUE([&]() -> bool { return observerActor_->funcMetaMap_.size() == 4; });
+        ASSERT_AWAIT_TRUE([&]() -> bool { return observerActor_->funcMetaMap_.size() == 5; });
     }
 
-    [[maybe_unused]] static void TearDownTestCase()
+    [[maybe_unused]] static void TearDownTestSuite()
     {
-        YRLOG_INFO("TearDownTestCase......");
+        YRLOG_INFO("TearDownTestSuite......");
         metaStorageAccessor_->metaClient_ = metaStoreClient_;
-        YRLOG_INFO("TearDownTestCase......Finish");
+        YRLOG_INFO("TearDownTestSuite......Finish");
 
         litebus::Terminate(observerActor_->GetAID());
         litebus::Await(observerActor_);
@@ -91,6 +100,7 @@ protected:
         controlPlaneObserver_ = nullptr;
         metaStorageAccessor_ = nullptr;
         metaStoreClient_ = nullptr;
+        internalIAM_ = nullptr;
         etcdSrvDriver_->StopServer();
     }
 
@@ -100,6 +110,8 @@ protected:
 
     void TearDown() override
     {
+        metaStoreClient_->Delete("/yr/route", { .prefix = true }).Get();
+        metaStoreClient_->Delete("/sn/ins", { .prefix = true }).Get();
         YRLOG_INFO("TearDown......");
         metaStorageAccessor_->metaClient_ = metaStoreClient_;
         YRLOG_INFO("TearDown......Finish");
@@ -112,6 +124,7 @@ protected:
     inline static std::shared_ptr<SharedClientManager> sharedClientMgr_;
     inline static std::shared_ptr<function_proxy::ObserverActor> observerActor_;
     inline static std::shared_ptr<MetaStoreClient> metaStoreClient_;
+    inline static std::shared_ptr<MockInternalIAM> internalIAM_;
 };
 
 void CheckInstanceInfo(const InstanceInfo &l, const InstanceInfo &r)
@@ -293,6 +306,7 @@ TEST_F(ObserverTest, ErrMetaStorageAccessor)
     auto observerActor1_ = std::make_shared<function_proxy::ObserverActor>("err_observer", "node",
                                                                            metaStorageAccessor1_, std::move(param));
     observerActor1_->BindDataInterfaceClientManager(sharedPosixClientManager1);
+    observerActor1_->BindInternalIAM(internalIAM_);
     litebus::Spawn(observerActor1_);
 
     std::string funcAgentID = "funcAgent";
@@ -343,7 +357,7 @@ TEST_F(ObserverTest, DriverCallBack)
     (*instanceInfoA.mutable_extensions())["source"] = "driver";
     controlPlaneObserver_->PutInstanceEvent(instanceInfoA, false, 1);
     EXPECT_TRUE(driverPromise->GetFuture().Get().IsOk());
-    controlPlaneObserver_->DelInstanceEvent(instanceIDA);
+    controlPlaneObserver_->DelInstanceEvent(instanceIDA, -1);
 }
 
 /**
@@ -553,37 +567,37 @@ TEST_F(ObserverTest, SetUpdateFuncMetasFunc)
         .WillOnce(testing::Return())
         .WillOnce(testing::DoAll(testing::Assign(&isFinished, true), testing::Return()));
     controlPlaneObserver_->SetUpdateFuncMetasFunc(
-        [&](bool isAdd, const std::unordered_map<std::string, FunctionMeta> &funcMetas) {
-            mockUpdateFuncMetasFunc->UpdateFuncMetas(isAdd, funcMetas);
+        [&](bool isAdd, const std::unordered_map<std::string, FunctionMeta> &meta) {
+            mockUpdateFuncMetasFunc->UpdateFuncMetas(isAdd, meta);
         });
 
     ASSERT_AWAIT_TRUE([&]() { return isFinished; });
 
-    litebus::Future<bool> isAdd;
+    litebus::Future<bool> added;
     litebus::Future<std::unordered_map<std::string, FunctionMeta>> funcMetas;
     EXPECT_CALL(*mockUpdateFuncMetasFunc, UpdateFuncMetas)
-        .WillOnce(testing::DoAll(FutureArg<0>(&isAdd), FutureArg<1>(&funcMetas), testing::Return()));
+        .WillOnce(testing::DoAll(FutureArg<0>(&added), FutureArg<1>(&funcMetas), testing::Return()));
     // put function meta to meta store
     auto status = metaStorageAccessor_->Put(path, funcMetaJson).Get();
     EXPECT_TRUE(status.IsOk());
 
-    ASSERT_AWAIT_READY(isAdd);
-    EXPECT_TRUE(isAdd.Get());
+    ASSERT_AWAIT_READY(added);
+    EXPECT_TRUE(added.Get());
     ASSERT_AWAIT_READY(funcMetas);
     EXPECT_EQ(funcMetas.Get().size(), static_cast<long unsigned int>(1));
     EXPECT_FALSE(funcMetas.Get().at(funcKey).funcMetaData.isSystemFunc);
 
-    litebus::Future<bool> isAdd2;
+    litebus::Future<bool> added2;
     litebus::Future<std::unordered_map<std::string, FunctionMeta>> funcMetas2;
     EXPECT_CALL(*mockUpdateFuncMetasFunc, UpdateFuncMetas)
-        .WillOnce(testing::DoAll(FutureArg<0>(&isAdd2), FutureArg<1>(&funcMetas2), testing::Return()));
+        .WillOnce(testing::DoAll(FutureArg<0>(&added2), FutureArg<1>(&funcMetas2), testing::Return()));
     // delete function meta in meta store
     metaStorageAccessor_->Delete(path).Get();
     status = metaStorageAccessor_->Delete(path).Get();
 
     EXPECT_TRUE(status.IsOk());
-    ASSERT_AWAIT_READY(isAdd2);
-    EXPECT_FALSE(isAdd2.Get());
+    ASSERT_AWAIT_READY(added2);
+    EXPECT_FALSE(added2.Get());
     ASSERT_AWAIT_READY(funcMetas2);
     EXPECT_EQ(funcMetas2.Get().size(), static_cast<long unsigned int>(1));
     EXPECT_TRUE(funcMetas2.Get().find(funcKey) != funcMetas2.Get().end());
@@ -595,6 +609,13 @@ TEST_F(ObserverTest, SetUpdateFuncMetasFunc)
 
 TEST_F(ObserverTest, SetUpdateSysFuncMetasFunc)
 {
+    function_proxy::InternalIAM::Param iamParam;
+    iamParam.isEnableIAM = true;
+    iamParam.credType = IAMCredType::AK_SK;
+    auto internalIAM = std::make_shared<MockInternalIAM>(iamParam);
+    observerActor_->BindInternalIAM(internalIAM);
+    EXPECT_CALL(*internalIAM, IsSystemTenant).WillRepeatedly(testing::Return(true));
+
     std::string funcMetaJson =
         R"({"funcMetaData":{"layers":[{"appId":"appA","bucketId":"bucketA","objectId":"objectA","bucketUrl":"bucketUrlA","sha256":"1a2b3c"}],"name":"0-yrjava-yr-smoke","description":"","functionUrn":"sn:cn:yrk:12345678901234561234567890123456:function:0-yrjava-yr-smoke","functionVersionUrn":"sn:cn:yrk:12345678901234561234567890123456:function:0-yrjava-yr-smoke:$latest","codeSize":22029378,"codeSha256":"1211a06","handler":"fusion_computation_handler.fusion_computation_handler","runtime":"java1.8","timeout":900,"tenantId":"0","hookHandler":{"call":"com.actorTaskCallHandler"}},"codeMetaData":{"storage_type":"s3","appId":"61022","bucketId":"bucket-test-log1","objectId":"yr-smoke-1667888605803","bucketUrl":"http://bucket-test-log1.hwcloudtest.cn:18085"},"envMetaData":{"envKey":"1d34ef","environment":"e819e3","encrypted_user_data":""},"resourceMetaData":{"cpu":500,"memory":500,"customResources":""}})";
     std::string path =
@@ -625,6 +646,7 @@ TEST_F(ObserverTest, SetUpdateSysFuncMetasFunc)
     EXPECT_TRUE(isAdd.Get());
     ASSERT_AWAIT_READY(funcMetas);
     EXPECT_EQ(funcMetas.Get().size(), static_cast<long unsigned int>(1));
+    EXPECT_TRUE(funcMetas.Get().at(funcKey).funcMetaData.isSystemFunc);
 
     litebus::Future<bool> isAdd2;
     litebus::Future<std::unordered_map<std::string, FunctionMeta>> funcMetas2;
@@ -642,6 +664,7 @@ TEST_F(ObserverTest, SetUpdateSysFuncMetasFunc)
     EXPECT_TRUE(funcMetas2.Get().find(funcKey) != funcMetas2.Get().end());
 
     controlPlaneObserver_->SetUpdateFuncMetasFunc(nullptr);
+    observerActor_->BindInternalIAM(internalIAM_);
 }
 
 TEST_F(ObserverTest, GetLocalSchedulerAID)
@@ -662,6 +685,26 @@ TEST_F(ObserverTest, GetLocalSchedulerAID)
     future = controlPlaneObserver_->GetLocalSchedulerAID(proxyID);
     AIDOption = future.Get();
     ASSERT_TRUE(AIDOption.IsNone());
+}
+
+TEST_F(ObserverTest, GetLocalSchedulerAIDWithoutCache)
+{
+    auto future = controlPlaneObserver_->GetLocalSchedulerAID("proxyID_A");
+    EXPECT_TRUE(future.Get().IsNone());
+    std::string proxyID = "proxyID_B";
+    auto key = BUSPROXY_PATH_PREFIX + "/0/node/" + proxyID;
+    auto jsonStr = R"({"node":")" + proxyID + R"(","aid":")" + proxyID + R"("})";
+    metaStorageAccessor_->Put(key, jsonStr).Get();
+    ASSERT_AWAIT_TRUE([&]() -> bool { return observerActor_->localSchedulerView_->Get("proxyID_B") != nullptr; });
+    future = controlPlaneObserver_->GetLocalSchedulerAID("proxyID_B");
+    EXPECT_TRUE(future.Get().IsSome());
+    //  delete cache
+    auto proxyDelRsp = GetProxyEventRsp(EVENT_TYPE_DELETE, proxyID);
+    // get it from metastore
+    litebus::Async(observerActor_->GetAID(), &function_proxy::ObserverActor::UpdateProxyEvent, proxyDelRsp);
+    ASSERT_AWAIT_TRUE([&]() -> bool { return observerActor_->localSchedulerView_->Get("proxyID_B") == nullptr; });
+    auto future1 = controlPlaneObserver_->GetLocalSchedulerAID("proxyID_B");
+    EXPECT_TRUE(future1.Get().IsSome());
 }
 
 class TestTenantListener : public TenantListener {
@@ -754,39 +797,33 @@ TEST_F(ObserverTest, FailedOrEmptySyncerTest)
     auto mockMetaStoreClient  = std::make_shared<MockMetaStoreClient>(metaStoreServerHost_);
     metaStorageAccessor_->metaClient_ = mockMetaStoreClient;
     {
-        litebus::Future<std::shared_ptr<GetResponse>> getResponseFuture;
         std::shared_ptr<GetResponse> rep = std::make_shared<GetResponse>();
         rep->status = Status(StatusCode::FAILED, "");
-        getResponseFuture.SetValue(rep);
-        EXPECT_CALL(*mockMetaStoreClient, Get).WillRepeatedly(testing::Return(getResponseFuture));
-        auto future = observerActor_->FunctionMetaSyncer();
+        auto future = observerActor_->FunctionMetaSyncer(rep);
         ASSERT_AWAIT_READY(future);
         ASSERT_FALSE(future.Get().status.IsOk());
 
-        future = observerActor_->InstanceInfoSyncer();
+        future = observerActor_->InstanceInfoSyncer(rep);
         ASSERT_AWAIT_READY(future);
         ASSERT_FALSE(future.Get().status.IsOk());
 
-        future = observerActor_->BusProxySyncer();
+        future = observerActor_->BusProxySyncer(rep);
         ASSERT_AWAIT_READY(future);
         ASSERT_FALSE(future.Get().status.IsOk());
     }
 
     {
-        litebus::Future<std::shared_ptr<GetResponse>> getResponseFuture;
         std::shared_ptr<GetResponse> rep = std::make_shared<GetResponse>();
         rep->status = Status::OK();
-        getResponseFuture.SetValue(rep);
-        EXPECT_CALL(*mockMetaStoreClient, Get).WillRepeatedly(testing::Return(getResponseFuture));
-        auto future = observerActor_->FunctionMetaSyncer();
+        auto future = observerActor_->FunctionMetaSyncer(rep);
         ASSERT_AWAIT_READY(future);
         ASSERT_TRUE(future.Get().status.IsOk());
 
-        future = observerActor_->InstanceInfoSyncer();
+        future = observerActor_->InstanceInfoSyncer(rep);
         ASSERT_AWAIT_READY(future);
         ASSERT_TRUE(future.Get().status.IsOk());
 
-        future = observerActor_->BusProxySyncer();
+        future = observerActor_->BusProxySyncer(rep);
         ASSERT_AWAIT_READY(future);
         ASSERT_TRUE(future.Get().status.IsOk());
     }
@@ -805,14 +842,11 @@ TEST_F(ObserverTest, BusProxySyncerTest)
     getKeyValue.set_key(key) ;
     getKeyValue.set_value(value);
 
-    litebus::Future<std::shared_ptr<GetResponse>> getResponseFuture;
     std::shared_ptr<GetResponse> rep = std::make_shared<GetResponse>();
     rep->status = Status::OK();
     rep->kvs.emplace_back(getKeyValue);
-    getResponseFuture.SetValue(rep);
-    EXPECT_CALL(*mockMetaStoreClient, Get).WillOnce(testing::Return(getResponseFuture));
 
-    auto future = observerActor_->BusProxySyncer();
+    auto future = observerActor_->BusProxySyncer(rep);
     ASSERT_AWAIT_READY(future);
     ASSERT_TRUE(future.Get().status.IsOk());
 
@@ -858,12 +892,9 @@ TEST_F(ObserverTest, FunctionMetaSyncerTest)
     getKeyValue.set_key(key) ;
     getKeyValue.set_value(meta);
 
-    litebus::Future<std::shared_ptr<GetResponse>> getResponseFuture;
     std::shared_ptr<GetResponse> rep = std::make_shared<GetResponse>();
     rep->status = Status::OK();
     rep->kvs.emplace_back(getKeyValue);
-    getResponseFuture.SetValue(rep);
-    EXPECT_CALL(*mockMetaStoreClient, Get).WillOnce(testing::Return(getResponseFuture));
     auto counter = std::make_shared<std::atomic<int>>(0);
     observerActor_->SetUpdateFuncMetasFunc(
         [cnt(counter)](bool isAdd, const std::unordered_map<std::string, FunctionMeta> &funcMetas) {
@@ -871,18 +902,19 @@ TEST_F(ObserverTest, FunctionMetaSyncerTest)
                 cnt->fetch_add(funcMetas.size());
             }
         });
-    auto future = observerActor_->FunctionMetaSyncer();
+
+    auto future = observerActor_->FunctionMetaSyncer(rep);
     ASSERT_AWAIT_READY(future);
     ASSERT_TRUE(future.Get().status.IsOk());
 
     auto funcKey = GetFuncKeyFromFuncMetaPath(key);
-    EXPECT_TRUE(observerActor_->funcMetaMap_.count(funcKey) == 1);
-    EXPECT_TRUE(observerActor_->funcMetaMap_.count(funcKey2.Get()) == 0);
-    EXPECT_TRUE(observerActor_->funcMetaMap_.count(funcKey3.Get()) == 0);
-    EXPECT_TRUE(observerActor_->funcMetaMap_.count("deleteKey") == 0); // not local cache key, need to delete
-    EXPECT_TRUE(observerActor_->localFuncMetaSet_.count(funcKey1.Get()) == 1);
-    EXPECT_TRUE(observerActor_->systemFuncMetaMap_.count(funcKey3.Get()) == 0);
-    EXPECT_EQ(*counter, 3);
+    ASSERT_AWAIT_TRUE([&]() { return observerActor_->funcMetaMap_.count(funcKey) == 1; });
+    EXPECT_EQ(observerActor_->funcMetaMap_.count(funcKey), 1);
+    EXPECT_EQ(observerActor_->funcMetaMap_.count(funcKey2.Get()), 0);
+    EXPECT_EQ(observerActor_->funcMetaMap_.count(funcKey3.Get()), 0);
+    EXPECT_EQ(observerActor_->funcMetaMap_.count("deleteKey"), 0);  // not local cache key, need to delete
+    EXPECT_EQ(observerActor_->localFuncMetaSet_.count(funcKey1.Get()), 1);
+    EXPECT_EQ(observerActor_->systemFuncMetaMap_.count(funcKey3.Get()), 0);
     observerActor_->SetUpdateFuncMetasFunc(nullptr);
 }
 
@@ -948,15 +980,11 @@ TEST_F(ObserverTest, InstanceInfoSyncerTest)
     EXPECT_TRUE(observerActor_->instanceInfoMap_.count("InstanceID4") != 0);
 
     // get key1(status 3), key2, key4 in etcd
-    litebus::Future<std::shared_ptr<GetResponse>> getResponseFuture;
     std::shared_ptr<GetResponse> rep = std::make_shared<GetResponse>();
     rep->header.revision = 4;
     rep->status = Status::OK();
     rep->kvs.emplace_back(events[1].kv);
     rep->kvs.emplace_back(events[2].kv);
-    getResponseFuture.SetValue(rep);
-
-    EXPECT_CALL(*mockMetaStoreClient, Get).WillOnce(testing::Return(getResponseFuture));
     std::string cbFuncInstanceID;
     controlPlaneObserver_->SetInstanceInfoSyncerCbFunc([&cbFuncInstanceID](const resource_view::RouteInfo &routeInfo) {
         YRLOG_DEBUG("{}|{}execute instance info sync callback function, create client for instance({}), job({})",
@@ -964,7 +992,7 @@ TEST_F(ObserverTest, InstanceInfoSyncerTest)
         cbFuncInstanceID = routeInfo.instanceid();
         return Status::OK();
     });
-    auto future = observerActor_->InstanceInfoSyncer();
+    auto future = observerActor_->InstanceInfoSyncer(rep);
     ASSERT_AWAIT_READY(future);
     ASSERT_TRUE(future.Get().status.IsOk());
 
@@ -987,11 +1015,10 @@ TEST_F(ObserverTest, InstanceInfoSyncerTest)
     rep->header.revision = 2;
     rep->kvs.emplace_back(events[2].kv);
     rep->kvs.emplace_back(events[4].kv);
-    EXPECT_CALL(*mockMetaStoreClient, Get).WillOnce(testing::Return(rep));
 
     cbFuncInstanceID = "";
     EXPECT_EQ(cbFuncInstanceID, "");
-    future = observerActor_->InstanceInfoSyncer();
+    future = observerActor_->InstanceInfoSyncer(rep);
     ASSERT_AWAIT_READY(future);
     ASSERT_TRUE(future.Get().status.IsOk());
     EXPECT_TRUE(observerActor_->instanceInfoMap_.count("InstanceID1") == 0); // rep don't have key1, so need to delete
@@ -1064,6 +1091,42 @@ TEST_F(ObserverTest, GetAndWatchInstanceTest)
     observerActor_->isPartialWatchInstances_ = false;
 }
 
+TEST_F(ObserverTest, GetOrWatchInstanceTest)
+{
+    auto future = controlPlaneObserver_->GetOrWatchInstance("InstanceID1");
+    ASSERT_AWAIT_TRUE([&]() { return future.IsError(); });
+
+    auto events = GenerateResponseRouteEvent(observerActor_->nodeID_);
+    metaStorageAccessor_->Put(GenInstanceRouteKey("InstanceID1"), events[0].kv.value());
+    ASSERT_AWAIT_TRUE([&](){return observerActor_->instanceInfoMap_.count("InstanceID1") == 1;});
+
+    future = controlPlaneObserver_->GetOrWatchInstance("InstanceID1");
+    ASSERT_AWAIT_READY(future);
+    EXPECT_EQ(future.Get().instanceid(), "InstanceID1");
+
+    metaStorageAccessor_->Delete(GenInstanceRouteKey("InstanceID1"));
+    ASSERT_AWAIT_TRUE([&](){return observerActor_->instanceInfoMap_.count("InstanceID1") == 0;});
+
+    observerActor_->isPartialWatchInstances_ = true;
+    future = controlPlaneObserver_->GetOrWatchInstance("InstanceID1");
+    ASSERT_AWAIT_TRUE([&]() { return future.IsError(); });
+
+    metaStorageAccessor_->Put(GenInstanceRouteKey("InstanceID1"), events[0].kv.value());
+    ASSERT_AWAIT_TRUE([&](){return observerActor_->instanceInfoMap_.count("InstanceID1") == 1;});
+
+    future = controlPlaneObserver_->GetOrWatchInstance("InstanceID1");
+    ASSERT_AWAIT_READY(future);
+    EXPECT_EQ(future.Get().instanceid(), "InstanceID1");
+
+    metaStorageAccessor_->Delete(GenInstanceRouteKey("InstanceID1"));
+    ASSERT_AWAIT_TRUE([&](){return observerActor_->instanceInfoMap_.count("InstanceID1") == 0;});
+
+    future = controlPlaneObserver_->GetOrWatchInstance("InstanceID02");
+    ASSERT_AWAIT_TRUE([&]() { return future.IsError(); });
+
+    observerActor_->isPartialWatchInstances_ = false;
+}
+
 
 TEST_F(ObserverTest, SubscribeInstanceEventTest)
 {
@@ -1073,7 +1136,7 @@ TEST_F(ObserverTest, SubscribeInstanceEventTest)
     auto events = GenerateResponseRouteEvent(observerActor_->nodeID_);
     metaStorageAccessor_->Put(GenInstanceRouteKey("InstanceID1"), events[0].kv.value());
     ASSERT_AWAIT_TRUE([&](){return observerActor_->instanceInfoMap_.count("InstanceID1") == 1;});
-    controlPlaneObserver_->DelInstanceEvent("InstanceID1");
+    controlPlaneObserver_->DelInstanceEvent("InstanceID1", 100);
     ASSERT_AWAIT_TRUE([&](){return observerActor_->instanceInfoMap_.count("InstanceID1") == 0;});
     observerActor_->isPartialWatchInstances_ = false;
     auto future1 = observerActor_->TrySubscribeInstanceEvent("InstanceID-NotExist", "InstanceID1", false);
@@ -1105,18 +1168,15 @@ TEST_F(ObserverTest, PartialInstanceInfoSyncerTest)
     EXPECT_TRUE(observerActor_->instanceInfoMap_.count("InstanceID4") != 0);
 
     // get key1(status 3) in etcd
-    litebus::Future<std::shared_ptr<GetResponse>> getResponseFuture;
     std::shared_ptr<GetResponse> rep = std::make_shared<GetResponse>();
     rep->header.revision = 5;
     rep->status = Status::OK();
     rep->kvs.emplace_back(events[1].kv);
-    getResponseFuture.SetValue(rep);
 
-    EXPECT_CALL(*mockMetaStoreClient, Get).WillOnce(testing::Return(getResponseFuture));
     controlPlaneObserver_->SetInstanceInfoSyncerCbFunc(
         [](const resource_view::RouteInfo &routeInfo) { return Status::OK(); });
 
-    auto future = observerActor_->PartialInstanceInfoSyncer("InstanceID1");
+    auto future = observerActor_->PartialInstanceInfoSyncer(rep, "InstanceID1");
     ASSERT_AWAIT_READY(future);
     ASSERT_TRUE(future.Get().status.IsOk());
 
@@ -1126,12 +1186,9 @@ TEST_F(ObserverTest, PartialInstanceInfoSyncerTest)
                 == static_cast<int32_t>(InstanceState::RUNNING));
 
     // get key2 in etcd
-    getResponseFuture = litebus::Future<std::shared_ptr<GetResponse>>();
     rep->kvs.clear();
     rep->kvs.emplace_back(events[2].kv);
-    getResponseFuture.SetValue(rep);
-    EXPECT_CALL(*mockMetaStoreClient, Get).WillOnce(testing::Return(getResponseFuture));
-    future = observerActor_->PartialInstanceInfoSyncer("InstanceID2");
+    future = observerActor_->PartialInstanceInfoSyncer(rep, "InstanceID2");
     ASSERT_AWAIT_READY(future);
     ASSERT_TRUE(future.Get().status.IsOk());
 
@@ -1139,19 +1196,15 @@ TEST_F(ObserverTest, PartialInstanceInfoSyncerTest)
     EXPECT_TRUE(observerActor_->instanceInfoMap_.count("InstanceID2") != 0);
 
     // get key3 not in etcd
-    getResponseFuture = litebus::Future<std::shared_ptr<GetResponse>>();
     rep->kvs.clear();
-    getResponseFuture.SetValue(rep);
-    EXPECT_CALL(*mockMetaStoreClient, Get).WillOnce(testing::Return(getResponseFuture));
-    future = observerActor_->PartialInstanceInfoSyncer("InstanceID3");
+    future = observerActor_->PartialInstanceInfoSyncer(rep, "InstanceID3");
     ASSERT_AWAIT_READY(future);
     ASSERT_TRUE(future.Get().status.IsOk());
     // test not in etcd but in cache, need delete
     EXPECT_TRUE(observerActor_->instanceInfoMap_.count("InstanceID3") == 0);
 
     // get key4 not in etcd
-    EXPECT_CALL(*mockMetaStoreClient, Get).WillOnce(testing::Return(getResponseFuture));
-    future = observerActor_->PartialInstanceInfoSyncer("InstanceID4");
+    future = observerActor_->PartialInstanceInfoSyncer(rep, "InstanceID4");
     ASSERT_AWAIT_READY(future);
     ASSERT_TRUE(future.Get().status.IsOk());
     // test belong to self, not found in remote, don't delete

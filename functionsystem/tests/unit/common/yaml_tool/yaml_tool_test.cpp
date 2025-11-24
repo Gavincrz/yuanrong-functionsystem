@@ -100,6 +100,7 @@ TEST_F(YamlToolTest, GetFunctionMetaSuccess)
         YRLOG_INFO("entryFile: {}", functionMeta.funcMetaData.entryFile);
         YRLOG_INFO("hookHandler: {}", PrintHookHandler(functionMeta.funcMetaData.hookHandler));
         YRLOG_INFO("version: {}", functionMeta.funcMetaData.version);
+        YRLOG_INFO("tenantID: {}", functionMeta.funcMetaData.tenantId);
         YRLOG_INFO("storage: {}", functionMeta.codeMetaData.storageType);
         YRLOG_INFO("bucketID: {}", functionMeta.codeMetaData.bucketID);
         YRLOG_INFO("objectID: {}", functionMeta.codeMetaData.objectID);

@@ -84,6 +84,11 @@ public:
         return evictResultPromise_->GetFuture();
     }
 
+    void UpdateSchedTopoView(const litebus::AID &to, const messages::ScheduleTopology &topo)
+    {
+        Send(to, "UpdateSchedTopoView", std::move(topo.SerializeAsString()));
+    }
+
     MOCK_METHOD0(MockRegister, std::string());
     MOCK_METHOD0(MockUnRegister, std::string());
 

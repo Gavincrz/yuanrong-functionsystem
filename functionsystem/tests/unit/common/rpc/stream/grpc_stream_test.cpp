@@ -20,14 +20,16 @@
 #include <iostream>
 #include <thread>
 
-#include "rpc/stream/posix/control_client.h"
-#include "rpc/stream/posix/control_server.h"
-#include "status/status.h"
+#include "utils/port_helper.h"
+#include "common/rpc/stream/posix/control_client.h"
+#include "common/rpc/stream/posix/control_server.h"
+#include "common/status/status.h"
 #include "utils/future_test_helper.h"
 
 namespace functionsystem::test {
 using namespace functionsystem::grpc;
 using namespace runtime_rpc;
+
 litebus::Future<std::shared_ptr<StreamingMessage>> InvokeHandler(const std::string &from,
                                                                  const std::shared_ptr<StreamingMessage> &request)
 {
@@ -79,7 +81,7 @@ litebus::Future<std::shared_ptr<StreamingMessage>> NotifyServerHandler(const std
 
 class StreamTest : public ::testing::Test {
 public:
-    static void SetUpTestCase()
+    [[maybe_unused]] static void SetUpTestSuite()
     {
         REGISTER_FUNCTION_SYS_POSIX_CONTROL_HANDLER(StreamingMessage::kInvokeReq, &InvokeHandler);
         REGISTER_FUNCTION_SYS_POSIX_CONTROL_HANDLER(StreamingMessage::kCallResultReq, &CallResultHandler);
@@ -87,10 +89,11 @@ public:
         REGISTER_RUNTIME_CONTROL_POSIX_HANDLER(StreamingMessage::kCallReq, &CallServerHandler);
         REGISTER_RUNTIME_CONTROL_POSIX_HANDLER(StreamingMessage::kNotifyReq, &NotifyServerHandler);
 
+        serverAddress_ = "127.0.0.1:" + std::to_string(FindAvailablePort());
         StartServerAndClient();
     }
 
-    static void TearDownTestCase()
+    [[maybe_unused]] static void TearDownTestSuite()
     {
         ShutdownServerAndClient();
     }
@@ -100,25 +103,26 @@ public:
         service_ = std::make_shared<ControlServer>();
         litebus::Promise<bool> promise;
         thr_ = std::thread([promise]() {
-            std::string serverAddress("127.0.0.1:12345");
             ::grpc::ServerBuilder builder;
-            builder.AddListeningPort(serverAddress, ::grpc::InsecureServerCredentials());
+            YRLOG_INFO("Server listening on {}", serverAddress_);
+            builder.AddListeningPort(serverAddress_, ::grpc::InsecureServerCredentials());
             builder.RegisterService(service_.get());
             server_ = std::move(builder.BuildAndStart());
-            std::cout << "Server listening on " << serverAddress << std::endl;
             promise.SetValue(true);
             server_->Wait();
             std::cout << "Server exit." << std::endl;
         });
 
         promise.GetFuture().Get();
-        grpc::ControlClientConfig config{ .target = "127.0.0.1:12345",
-                                          .creds = ::grpc::InsecureChannelCredentials(),
-                                          .timeoutSec = 30,
-                                          .maxGrpcSize = 5 };
+        grpc::ControlClientConfig config{
+            .target = serverAddress_,
+            .creds = ::grpc::InsecureChannelCredentials(),
+            .timeoutSec = 30,
+            .maxGrpcSize = 5
+        };
         client_ = std::make_shared<ControlClient>("tmpInstance", "runtimeID", config);
         client_->Start();
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));  // wait for client to connect to server
+        std::this_thread::sleep_for(std::chrono::milliseconds(100)); // wait for client to connect to server
     }
 
     static void ShutdownServerAndClient()
@@ -141,6 +145,7 @@ public:
 
 protected:
     inline static std::thread thr_;
+    inline static std::string serverAddress_;
     inline static std::unique_ptr<::grpc::Server> server_;
     inline static std::shared_ptr<ControlServer> service_;
     inline static std::shared_ptr<ControlClient> client_;
@@ -201,7 +206,7 @@ TEST_F(StreamTest, ServerFinishTest)
     auto future = service_->Send(request);
     EXPECT_TRUE(future.IsError());
 
-    Restart();  // restart server and client
+    Restart(); // restart server and client
 }
 
 TEST_F(StreamTest, PosixInvokeClientInValidTest)
@@ -284,7 +289,7 @@ TEST_F(StreamTest, PosixInvokeClientMsgSizeTest)
     ASSERT_AWAIT_SET(future);
     EXPECT_EQ(future.IsError(), true);
 
-    Restart();  // restart server and client
+    Restart(); // restart server and client
 }
 
 class InvocationService : public runtime_rpc::RuntimeRPC::Service {
@@ -308,11 +313,14 @@ public:
 
 class StreamTestV2 : public ::testing::Test {
 public:
-    static void SetUpTestCase()
+    [[maybe_unused]] static void SetUpTestSuite()
     {
+        serverAddress_ = "127.0.0.1:" + std::to_string(FindAvailablePort());
+        YRLOG_INFO("Start GRPC Server on net port: {}", serverAddress_);
+
         litebus::Promise<bool> promise;
         auto thr = std::thread([promise]() {
-            std::string serverAddress("127.0.0.1:50000");
+            std::string serverAddress(serverAddress_);
             ::grpc::ServerBuilder builder;
             builder.AddListeningPort(serverAddress, ::grpc::InsecureServerCredentials());
             builder.RegisterService(&service_);
@@ -324,14 +332,15 @@ public:
         });
         thr.detach();
         promise.GetFuture().Get();
-        grpc::ControlClientConfig config{ .target = "127.0.0.1:50000",
+        grpc::ControlClientConfig config{ .target = serverAddress_,
                                           .creds = ::grpc::InsecureChannelCredentials(),
                                           .timeoutSec = 30,
                                           .maxGrpcSize = 4 };
         client_ = std::make_shared<ControlClient>("tmpInstance", "runtimeID", config);
         client_->Start();
     }
-    static void TearDownTestCase()
+
+    [[maybe_unused]] static void TearDownTestSuite()
     {
         server_->Shutdown();
         client_->Stop();
@@ -339,7 +348,7 @@ public:
 
     void Invoke()
     {
-        grpc::ControlClientConfig config{ .target = "127.0.0.1:50000",
+        grpc::ControlClientConfig config{ .target = serverAddress_,
                                           .creds = ::grpc::InsecureChannelCredentials(),
                                           .timeoutSec = 30,
                                           .maxGrpcSize = 4 };
@@ -361,6 +370,7 @@ protected:
     inline static std::unique_ptr<::grpc::Server> server_;
     inline static InvocationService service_;
     inline static std::shared_ptr<ControlClient> client_;
+    inline static std::string serverAddress_;
 };
 
 TEST_F(StreamTestV2, PosixCallServerValidTest)
@@ -374,5 +384,4 @@ TEST_F(StreamTestV2, PosixCallServerValidTest)
     EXPECT_EQ(result.has_callrsp(), true);
     EXPECT_EQ(result.callrsp().code(), common::ErrorCode::ERR_NONE);
 }
-
-}  // namespace functionsystem::test
+} // namespace functionsystem::test

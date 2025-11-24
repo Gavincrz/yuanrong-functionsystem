@@ -38,7 +38,7 @@
 #include "common/scheduler_framework/framework/policy.h"
 #include "common/scheduler_framework/framework/framework_impl.h"
 #include "common/schedule_plugin/common/preallocated_context.h"
-#include "resource_type.h"
+#include "common/resource_view/resource_type.h"
 
 #include "common/schedule_plugin/prefilter/default_prefilter/default_prefilter.h"
 #include "common/schedule_plugin/filter/default_filter/default_filter.h"

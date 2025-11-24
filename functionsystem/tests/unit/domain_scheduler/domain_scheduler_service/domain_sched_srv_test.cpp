@@ -19,12 +19,12 @@
 
 #include <litebus.hpp>
 
-#include "constants.h"
+#include "common/constants/constants.h"
 #include "common/constants/metastore_keys.h"
 #include "common/etcd_service/etcd_service_driver.h"
 #include "common/explorer/etcd_explorer_actor.h"
 #include "common/explorer/explorer.h"
-#include "logs/logging.h"
+#include "common/logs/logging.h"
 #include "meta_store_client/meta_store_client.h"
 #include "common/resource_view/view_utils.h"
 #include "mocks/mock_domain_group_ctrl.h"
@@ -82,7 +82,7 @@ private:
 class DomainSchedSrvTest : public ::testing::Test {
 protected:
     inline static std::string metaStoreServerHost_;
-    static void SetUpTestCase()
+    [[maybe_unused]] static void SetUpTestSuite()
     {
         const auto &address = litebus::GetLitebusAddress();
         address_ = address.ip + ":" + std::to_string(address.port);
@@ -93,7 +93,7 @@ protected:
         etcdSrvDriver_->StartServer(metaStoreServerHost_);
     }
 
-    static void TearDownTestCase()
+    [[maybe_unused]] static void TearDownTestSuite()
     {
         etcdSrvDriver_->StopServer();
     }
@@ -136,9 +136,9 @@ protected:
     {
         globalStub->SetResponseLeader(upDomainName, address_);
         EXPECT_CALL(*primary_, GetFullResourceView())
-            .WillRepeatedly(Return(std::make_shared<resource_view::ResourceUnit>()));
+            .WillRepeatedly(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnit>())));
         EXPECT_CALL(*virtual_, GetFullResourceView())
-            .WillRepeatedly(Return(std::make_shared<resource_view::ResourceUnit>()));
+            .WillRepeatedly(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnit>())));
         LeaderResponse response{ .status = Status::OK(),
                                  .header = {},
                                  .kv = std::make_pair(DEFAULT_MASTER_ELECTION_KEY, address_) };
@@ -185,9 +185,9 @@ TEST_F(DomainSchedSrvTest, RegisterToGlobalTimeout)
     InitCase("RegisterToGlobalTimeout", 5, 2);
     auto unit = std::make_shared<resource_view::ResourceUnit>();
     EXPECT_CALL(*primary_, GetFullResourceView())
-        .WillRepeatedly(Return(std::make_shared<resource_view::ResourceUnit>()));
+        .WillRepeatedly(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnit>())));
     EXPECT_CALL(*virtual_, GetFullResourceView())
-        .WillRepeatedly(Return(std::make_shared<resource_view::ResourceUnit>()));
+        .WillRepeatedly(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnit>())));
     auto domainSchedSrv = DomainSchedSrv(domainSchedSrvActor_->GetAID());
     // test global not start
     LeaderResponse response{ .status = Status::OK(),
@@ -207,9 +207,9 @@ TEST_F(DomainSchedSrvTest, RegisterToGlobalNormalAndNotifyAbnormal)
     EXPECT_CALL(*mockUnderlayerSchedMgr_, UpdateUnderlayerTopo).WillOnce(Return());
     auto unit = std::make_shared<resource_view::ResourceUnit>();
     EXPECT_CALL(*primary_, GetFullResourceView())
-        .WillRepeatedly(Return(std::make_shared<resource_view::ResourceUnit>()));
+        .WillRepeatedly(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnit>())));
     EXPECT_CALL(*virtual_, GetFullResourceView())
-        .WillRepeatedly(Return(std::make_shared<resource_view::ResourceUnit>()));
+        .WillRepeatedly(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnit>())));
 
     // test global start
     auto globalStub = std::make_shared<UplayerActor>(DOMAIN_SCHED_MGR_ACTOR_NAME);
@@ -268,7 +268,7 @@ public:
 
     void PingPongLostHelper(const litebus::AID &lostDst)
     {
-        PingPongLost(lostDst, HeartbeatConnection::LOST);
+        PingPongLost(lostDst);
     }
 
     void UpdateLeaderHelper(const std::string &name, const std::string &address)
@@ -283,7 +283,7 @@ public:
 TEST_F(DomainSchedSrvTest, NotifyAbnormalFailWithNoGlobalAndUplayer)
 {
     DomainSchedSrvActorHelper domainSchedSrvActorHelper("test", metaStoreServerHost_);
-    litebus::AID connDst("conn", "127.0.0.1:12345");
+    litebus::AID connDst("conn", "127.0.0.1:12345"); // ���ᷢ����ʵ������
     domainSchedSrvActorHelper.SetUplayerHelper(connDst);
     domainSchedSrvActorHelper.SetGlobalHelper(connDst);
 
@@ -297,7 +297,7 @@ TEST_F(DomainSchedSrvTest, NotifyAbnormalFailWithNoGlobalAndUplayer)
 TEST_F(DomainSchedSrvTest, NotifyWorkerFailWithNoGlobalAndUplayer)
 {
     DomainSchedSrvActorHelper domainSchedSrvActorHelper("test", metaStoreServerHost_);
-    litebus::AID connDst("conn", "127.0.0.1:12345");
+    litebus::AID connDst("conn", "127.0.0.1:12345"); // ���ᷢ����ʵ������
     domainSchedSrvActorHelper.SetUplayerHelper(connDst);
     domainSchedSrvActorHelper.SetGlobalHelper(connDst);
 
@@ -310,8 +310,8 @@ TEST_F(DomainSchedSrvTest, NotifyWorkerFailWithNoGlobalAndUplayer)
 TEST_F(DomainSchedSrvTest, PingPongLostFail)
 {
     DomainSchedSrvActorHelper domainSchedSrvActorHelper("test", metaStoreServerHost_);
-    litebus::AID connDst("conn", "127.0.0.1:12345");
-    litebus::AID lostDst("lost", "127.0.0.1:12345");
+    litebus::AID connDst("conn", "127.0.0.1:12345"); // ������ò�����Mock����
+    litebus::AID lostDst("lost", "127.0.0.1:12345"); // ������ò�����Mock����
     domainSchedSrvActorHelper.SetUplayerHelper(lostDst);
 
     EXPECT_CALL(domainSchedSrvActorHelper, RegisterToLeader()).WillRepeatedly(Return());
@@ -390,13 +390,13 @@ TEST_F(DomainSchedSrvTest, PutReadyAgent)
     auto domainUnit2 = GenUnitByFragment(agentUnits2);
 
     EXPECT_CALL(*primary_, GetFullResourceView())
-        .WillOnce(Return(std::make_shared<resource_view::ResourceUnit>(domainUnit1)))
-        .WillOnce(Return(std::make_shared<resource_view::ResourceUnit>(domainUnit1)))
-        .WillOnce(Return(std::make_shared<resource_view::ResourceUnit>(domainUnit2)))
-        .WillRepeatedly(Return(std::make_shared<resource_view::ResourceUnit>(domainUnit1)));
+        .WillOnce(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnit>(domainUnit1))))
+        .WillOnce(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnit>(domainUnit1))))
+        .WillOnce(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnit>(domainUnit2))))
+        .WillRepeatedly(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnit>(domainUnit1))));
 
     EXPECT_CALL(*virtual_, GetFullResourceView())
-        .WillRepeatedly(Return(std::make_shared<resource_view::ResourceUnit>(domainUnit1)));
+        .WillRepeatedly(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnit>(domainUnit1))));
 
     uint32_t putCnt = 0;
     uint32_t readyResCnt = 0;
@@ -418,7 +418,9 @@ TEST_F(DomainSchedSrvTest, PutReadyAgent)
     MetaStoreClient client(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_ });
     client.Init();
     WatchOption option = { .prefix = true, .prevKv = true, .revision = 0 };
-    auto syncer = []() -> litebus::Future<SyncResult> { return SyncResult{ Status::OK(), 0 }; };
+    auto syncer = [](const std::shared_ptr<GetResponse> &) -> litebus::Future<SyncResult> {
+        return SyncResult{ Status::OK() };
+    };
     auto watcher = client.Watch(READY_AGENT_CNT_KEY, option, observer, syncer).Get();
     ASSERT_AWAIT_TRUE([&watcher]() -> bool { return watcher->GetWatchId() == 0; });
 
@@ -460,7 +462,7 @@ TEST_F(DomainSchedSrvTest, ReceiveLeaderTopoFromGlobalToRegister)
         .WillRepeatedly(testing::DoAll(FutureArg<1>(&name), FutureArg<2>(&msg)));
     resource_view::ResourceUnit successRet;
     successRet.set_id("ReceiveLeaderTopoFromGlobalToRegister");
-    EXPECT_CALL(*primary_, GetSerializedResourceView()).WillOnce(Return(successRet.SerializeAsString()));
+    EXPECT_CALL(*primary_, GetSerializedResourceView()).WillOnce(Return(AsyncReturn(successRet.SerializeAsString())));
     RegisterUplayer("d1", "ReceiveLeaderTopoFromGlobalToRegister", globalStub, leadStub, domainSchedSrv);
     ASSERT_AWAIT_READY_FOR(name, 5000);
     EXPECT_EQ(name.Get(), "UpdateResources");
@@ -524,7 +526,7 @@ TEST_F(DomainSchedSrvTest, UpdateSchedTopoView)
             EXPECT_EQ(1, 0);
         }));
     auto unit = std::make_shared<resource_view::ResourceUnit>();
-    EXPECT_CALL(*primary_, GetFullResourceView()).WillRepeatedly(Return(unit));
+    EXPECT_CALL(*primary_, GetFullResourceView()).WillRepeatedly(Return(AsyncReturn(unit)));
     litebus::Async(globalStub->GetAID(), &UplayerActor::SendRequest, domainSchedSrvActor_->GetAID(),
                    "UpdateSchedTopoView", topo.SerializeAsString());
     litebus::Terminate(globalStub->GetAID());
@@ -557,7 +559,7 @@ TEST_F(DomainSchedSrvTest, UpdateSchedTopoViewWithNoHeader)
             EXPECT_EQ(1, 0);
         }));
     auto unit = std::make_shared<resource_view::ResourceUnit>();
-    EXPECT_CALL(*primary_, GetFullResourceView()).WillRepeatedly(Return(unit));
+    EXPECT_CALL(*primary_, GetFullResourceView()).WillRepeatedly(Return(AsyncReturn(unit)));
     litebus::Async(globalStub->GetAID(), &UplayerActor::SendRequest, domainSchedSrvActor_->GetAID(),
                    "UpdateSchedTopoView", topo.SerializeAsString());
     litebus::Terminate(globalStub->GetAID());
@@ -579,7 +581,7 @@ TEST_F(DomainSchedSrvTest, UpdateSchedTopoViewWithPareseFail)
     litebus::Future<messages::ScheduleTopology> topo;
     EXPECT_CALL(*mockUnderlayerSchedMgr_, UpdateUnderlayerTopo(_)).WillRepeatedly(testing::DoAll(FutureArg<0>(&topo)));
     auto unit = std::make_shared<resource_view::ResourceUnit>();
-    EXPECT_CALL(*primary_, GetFullResourceView()).WillRepeatedly(Return(unit));
+    EXPECT_CALL(*primary_, GetFullResourceView()).WillRepeatedly(Return(AsyncReturn(unit)));
     litebus::Async(globalStub->GetAID(), &UplayerActor::SendRequest, domainSchedSrvActor_->GetAID(),
                    "UpdateSchedTopoView", "test");
 
@@ -603,8 +605,8 @@ TEST_F(DomainSchedSrvTest, PullResources)
     auto failed = litebus::Future<std::string>();
     failed.SetFailed(StatusCode::FAILED);
     EXPECT_CALL(*primary_, GetSerializedResourceView())
-        .WillOnce(Return(successRet.SerializeAsString()))
-        .WillOnce(Return(failed));
+        .WillOnce(Return(AsyncReturn(successRet.SerializeAsString())))
+        .WillOnce(Return(AsyncReturn(failed)));
 
     litebus::Future<std::string> name;
     litebus::Future<std::string> msg;
@@ -736,9 +738,9 @@ TEST_F(DomainSchedSrvTest, ScheduleSuccessful)
     rsp->set_code(0);
     EXPECT_CALL(*mockInstanceCtrl_, Schedule(_)).WillOnce(Return(rsp));
     EXPECT_CALL(*primary_, GetResourceViewChanges())
-        .WillRepeatedly(Return(std::make_shared<resource_view::ResourceUnitChanges>()));
+        .WillRepeatedly(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnitChanges>())));
     EXPECT_CALL(*virtual_, GetResourceViewChanges())
-        .WillRepeatedly(Return(std::make_shared<resource_view::ResourceUnitChanges>()));
+        .WillRepeatedly(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnitChanges>())));
 
     auto req = std::make_shared<messages::ScheduleRequest>();
     req->set_requestid("request");
@@ -777,11 +779,11 @@ TEST_F(DomainSchedSrvTest, ScheduleFailed)
     auto rsp = std::make_shared<messages::ScheduleResponse>();
     rsp->set_requestid("request");
     rsp->set_code(StatusCode::RESOURCE_NOT_ENOUGH);
-    EXPECT_CALL(*mockInstanceCtrl_, Schedule(_)).WillOnce(Return(rsp));
+    EXPECT_CALL(*mockInstanceCtrl_, Schedule(_)).WillOnce(Return(AsyncReturn(rsp)));
     EXPECT_CALL(*primary_, GetResourceViewChanges())
-        .WillRepeatedly(Return(std::make_shared<resource_view::ResourceUnitChanges>()));
+        .WillRepeatedly(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnitChanges>())));
     EXPECT_CALL(*virtual_, GetResourceViewChanges())
-        .WillRepeatedly(Return(std::make_shared<resource_view::ResourceUnitChanges>()));
+        .WillRepeatedly(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnitChanges>())));
 
     auto req = std::make_shared<messages::ScheduleRequest>();
     req->set_requestid("request");
@@ -881,7 +883,7 @@ TEST_F(DomainSchedSrvTest, QueryAgentInfo)
 
     auto domainUnit1 = GenUnitByFragment(agentUnits, "domain1");
     EXPECT_CALL(*primary_, GetFullResourceView())
-        .WillOnce(Return(std::make_shared<resource_view::ResourceUnit>(domainUnit1)));
+        .WillOnce(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnit>(domainUnit1))));
 
     auto req = std::make_shared<messages::QueryAgentInfoRequest>();
     req->set_requestid("request");
@@ -1003,10 +1005,10 @@ TEST_F(DomainSchedSrvTest, GetSchedulingQueue)
         .WillOnce(testing::DoAll(FutureArg<1>(&name), FutureArg<2>(&msg)));
 
     std::vector<std::shared_ptr<messages::ScheduleRequest>> instanceRequest = GetInstanceRequest();
-    EXPECT_CALL(*mockInstanceCtrl_, GetSchedulerQueue()).WillOnce(Return(instanceRequest));
+    EXPECT_CALL(*mockInstanceCtrl_, GetSchedulerQueue()).WillOnce(Return(AsyncReturn(instanceRequest)));
 
     std::vector<std::shared_ptr<messages::ScheduleRequest>> groupRequest = GetGroupRequest();
-    EXPECT_CALL(*mockGroupCtrl_, GetRequests()).WillOnce(Return(groupRequest));
+    EXPECT_CALL(*mockGroupCtrl_, GetRequests()).WillOnce(Return(AsyncReturn(groupRequest)));
 
     auto req = std::make_shared<messages::QueryInstancesInfoResponse>();
     std::string requestId = "requestIdIdId";
@@ -1042,9 +1044,9 @@ TEST_F(DomainSchedSrvTest, QueryResourceInfo)
     invalid.set_status(static_cast<uint32_t>(UnitStatus::TO_BE_DELETED));
     (*unit.mutable_fragment())["invalid"] = invalid;
     EXPECT_CALL(*primary_, GetResourceViewCopy())
-        .WillRepeatedly(Return(std::make_shared<resource_view::ResourceUnit>(unit)));
+        .WillRepeatedly(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnit>(unit))));
     EXPECT_CALL(*virtual_, GetResourceViewCopy())
-        .WillRepeatedly(Return(std::make_shared<resource_view::ResourceUnit>(unit)));
+        .WillRepeatedly(Return(AsyncReturn(std::make_shared<resource_view::ResourceUnit>(unit))));
 
     auto req = std::make_shared<messages::QueryResourcesInfoRequest>();
     req->set_requestid("request");

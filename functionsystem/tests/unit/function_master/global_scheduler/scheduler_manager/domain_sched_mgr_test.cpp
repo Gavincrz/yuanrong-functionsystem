@@ -25,6 +25,7 @@
 #include "utils/future_test_helper.h"
 
 namespace functionsystem::test {
+const long long HEARTBEAT_TIMEOUT = 30000;
 
 class DomainSchedMgrTest : public ::testing::Test {
 public:
@@ -39,9 +40,11 @@ public:
     static void Registered(litebus::Option<messages::ScheduleTopology> topology, std::string &name,
                            std::string &responseMsg)
     {
-        auto actor = std::make_shared<functionsystem::global_scheduler::DomainSchedMgrActor>("TestDomainSchedMgrActor");
+        auto actor = std::make_shared<functionsystem::global_scheduler::DomainSchedMgrActor>("TestDomainSchedMgrActor",
+                                                                                             HEARTBEAT_TIMEOUT);
         auto schedMgr = std::make_shared<functionsystem::global_scheduler::DomainSchedMgr>(actor);
         schedMgr->Start();
+        actor->curStatus_ = MASTER_BUSINESS;
 
         auto domainScheduler = std::make_shared<MockDomainSchedSrvActor>("MockDomainScheduler");
         litebus::Spawn(domainScheduler);
@@ -77,7 +80,8 @@ public:
  */
 TEST_F(DomainSchedMgrTest, AddCallback)
 {
-    auto actor = std::make_shared<functionsystem::global_scheduler::DomainSchedMgrActor>("TestDomainSchedMgrActor");
+    auto actor = std::make_shared<functionsystem::global_scheduler::DomainSchedMgrActor>("TestDomainSchedMgrActor",
+                                                                                         HEARTBEAT_TIMEOUT);
     auto schedMgr = std::make_shared<functionsystem::global_scheduler::DomainSchedMgr>(actor);
     schedMgr->Start();
 
@@ -112,7 +116,8 @@ TEST_F(DomainSchedMgrTest, AddCallback)
  */
 TEST_F(DomainSchedMgrTest, DelCallback)
 {
-    auto actor = std::make_shared<functionsystem::global_scheduler::DomainSchedMgrActor>("TestDomainSchedMgrActor");
+    auto actor = std::make_shared<functionsystem::global_scheduler::DomainSchedMgrActor>("TestDomainSchedMgrActor",
+                                                                                         HEARTBEAT_TIMEOUT);
     auto schedMgr = std::make_shared<functionsystem::global_scheduler::DomainSchedMgr>(actor);
     schedMgr->Start();
 
@@ -145,7 +150,8 @@ TEST_F(DomainSchedMgrTest, DelCallback)
  */
 TEST_F(DomainSchedMgrTest, UpdateSchedTopoView)
 {
-    auto actor = std::make_shared<functionsystem::global_scheduler::DomainSchedMgrActor>("TestDomainSchedMgrActor");
+    auto actor = std::make_shared<functionsystem::global_scheduler::DomainSchedMgrActor>("TestDomainSchedMgrActor",
+                                                                                         HEARTBEAT_TIMEOUT);
     auto schedMgr = std::make_shared<functionsystem::global_scheduler::DomainSchedMgr>(actor);
     schedMgr->Start();
 
@@ -235,7 +241,7 @@ TEST_F(DomainSchedMgrTest, Registered)
  */
 TEST_F(DomainSchedMgrTest, ScheduleWithInvalidParameters)
 {
-    auto actor = std::make_shared<global_scheduler::DomainSchedMgrActor>("TestDomainSchedMgrActor");
+    auto actor = std::make_shared<global_scheduler::DomainSchedMgrActor>("TestDomainSchedMgrActor", HEARTBEAT_TIMEOUT);
     auto client = std::make_shared<global_scheduler::DomainSchedMgr>(actor);
     client->Start();
 
@@ -267,9 +273,10 @@ TEST_F(DomainSchedMgrTest, ScheduleWithInvalidParameters)
  */
 TEST_F(DomainSchedMgrTest, ScheduleWithValidParameters)
 {
-    auto actor = std::make_shared<global_scheduler::DomainSchedMgrActor>("TestDomainSchedMgrActor");
+    auto actor = std::make_shared<global_scheduler::DomainSchedMgrActor>("TestDomainSchedMgrActor", HEARTBEAT_TIMEOUT);
     auto client = std::make_shared<global_scheduler::DomainSchedMgr>(actor);
     client->Start();
+    actor->curStatus_ = MASTER_BUSINESS;
 
     std::string domainName = "test";
     auto scheduler = std::make_shared<MockDomainSchedSrvActor>(domainName + DOMAIN_SCHEDULER_SRV_ACTOR_NAME_POSTFIX);
@@ -305,9 +312,10 @@ TEST_F(DomainSchedMgrTest, ScheduleWithValidParameters)
  */
 TEST_F(DomainSchedMgrTest, ScheduleRepeat)
 {
-    auto actor = std::make_shared<global_scheduler::DomainSchedMgrActor>("TestDomainSchedMgrActor");
+    auto actor = std::make_shared<global_scheduler::DomainSchedMgrActor>("TestDomainSchedMgrActor", HEARTBEAT_TIMEOUT);
     auto client = std::make_shared<global_scheduler::DomainSchedMgr>(actor);
     client->Start();
+    actor->curStatus_ = MASTER_BUSINESS;
 
     std::string domainName = "test";
     auto scheduler = std::make_shared<MockDomainSchedSrvActor>(domainName + DOMAIN_SCHEDULER_SRV_ACTOR_NAME_POSTFIX);

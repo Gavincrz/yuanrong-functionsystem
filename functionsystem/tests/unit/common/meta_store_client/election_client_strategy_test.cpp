@@ -143,13 +143,13 @@ class ElectionClientStrategyTest : public ::testing::Test {
 public:
     ElectionClientStrategyTest() = default;
     ~ElectionClientStrategyTest() override = default;
-    [[maybe_unused]] static void SetUpTestCase()
+    [[maybe_unused]] static void SetUpTestSuite()
     {
         mockElectionService_ = std::make_shared<MockElectionServiceActor>();
         litebus::Spawn(mockElectionService_);
     }
 
-    [[maybe_unused]] static void TearDownTestCase()
+    [[maybe_unused]] static void TearDownTestSuite()
     {
         litebus::Terminate(mockElectionService_->GetAID());
         litebus::Await(mockElectionService_->GetAID());

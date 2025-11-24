@@ -38,11 +38,8 @@ class MetaStoreClientMgrTest : public ::testing::Test {
 
 TEST_F(MetaStoreClientMgrTest, EtcdMode)
 {
-    MetaStoreConfig metaStoreConfig{ .etcdAddress = metaStoreServerHost,
-                                     .metaStoreAddress = "",
-                                     .enableMetaStore = false,
-                                     .isMetaStorePassthrough = false,
-                                     .etcdTablePrefix = "/test" };
+    MetaStoreConfig metaStoreConfig{ .etcdAddress = metaStoreServerHost, .metaStoreAddress = "",
+                                     .enableMetaStore= false, .etcdTablePrefix = "/test" };
     auto metaStoreClientMgr = std::make_shared<MetaStoreClientMgr>(metaStoreConfig);
     EXPECT_EQ(metaStoreClientMgr->Init(), Status::OK());
     EXPECT_NE(metaStoreClientMgr->etcdKvClient_, nullptr);
@@ -105,14 +102,9 @@ TEST_F(MetaStoreClientMgrTest, MetaStoreLocalModeNoEtcd)
 TEST_F(MetaStoreClientMgrTest, MetaStoreLocalModeWithEtcd)
 {
     // key(/yr/pool) needed to be stored in etcd
-    MetaStoreConfig metaStoreConfig{ .etcdAddress = metaStoreServerHost,
-                                     .metaStoreAddress = metaStoreServerHost,
-                                     .enableMetaStore = true,
-                                     .isMetaStorePassthrough = false,
-                                     .etcdTablePrefix = "/test",
-                                     .enableAutoSync = false,
-                                     .autoSyncInterval = 0,
-                                     .excludedKeys = { "yr/pool" } };
+    MetaStoreConfig metaStoreConfig{ .etcdAddress = metaStoreServerHost, .metaStoreAddress = metaStoreServerHost,
+                                     .enableMetaStore = true, .isMetaStorePassthrough = false,
+                                     .etcdTablePrefix = "/test", .excludedKeys = { "yr/pool" } };
     auto metaStoreClientMgr = std::make_shared<MetaStoreClientMgr>(metaStoreConfig);
     EXPECT_EQ(metaStoreClientMgr->Init(), Status::OK());
     EXPECT_NE(metaStoreClientMgr->etcdKvClient_, nullptr);
@@ -127,8 +119,8 @@ TEST_F(MetaStoreClientMgrTest, MetaStoreLocalModeWithEtcd)
     EXPECT_NE(metaStoreClientMgr->GetMaintenanceClient(), nullptr);
     EXPECT_NE(metaStoreClientMgr->GetLeaseClient(), nullptr);
     EXPECT_NE(metaStoreClientMgr->GetElectionClient(), nullptr);
-    metaStoreClientMgr->UpdateMetaStoreAddress("127.1.1.0:3334");
-    EXPECT_EQ(metaStoreClientMgr->metaStoreExplorer_->Explore().Get(), "127.1.1.0:3334");
+    metaStoreClientMgr->UpdateMetaStoreAddress("http://127.1.1.0:3334");
+    EXPECT_EQ(metaStoreClientMgr->metaStoreExplorer_->Explore().Get(), "http://127.1.1.0:3334");
 
 }
 }

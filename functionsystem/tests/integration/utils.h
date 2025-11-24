@@ -25,8 +25,12 @@ inline litebus::Try<std::shared_ptr<litebus::Exec>> CreateProcess(const std::str
                                                                   const std::vector<std::string> &args)
 {
     litebus::Try<std::shared_ptr<litebus::Exec>> process = litebus::Exec::CreateExec(
-        path, args, litebus::None(), litebus::ExecIO::CreateFDIO(STDIN_FILENO),
-        litebus::ExecIO::CreateFDIO(STDOUT_FILENO), litebus::ExecIO::CreateFDIO(STDERR_FILENO));
+        path, args,
+        litebus::None(),
+        litebus::ExecIO::CreateFDIO(STDIN_FILENO),
+        litebus::ExecIO::CreateFDIO(STDOUT_FILENO),
+        litebus::ExecIO::CreateFDIO(STDERR_FILENO)
+    );
 
     // Need to check process is alive.
     sleep(1);
@@ -38,7 +42,6 @@ inline void KillProcess(pid_t pid, int sig)
     ::kill(pid, sig);
     // Need to check process has been killed.
 }
-
-}  // namespace functionsystem::test
+} // namespace functionsystem::test
 
 #endif  // TEST_INTEGRATION_UTILS_H

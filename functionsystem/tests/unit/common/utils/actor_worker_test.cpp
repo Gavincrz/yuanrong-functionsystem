@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "actor_worker.h"
+#include "common/utils/actor_worker.h"
 
 #include <gtest/gtest.h>
 

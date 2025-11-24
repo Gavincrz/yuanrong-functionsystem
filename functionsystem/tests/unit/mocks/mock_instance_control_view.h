@@ -36,7 +36,7 @@ public:
     MOCK_METHOD(void, Update,
                 (const std::string &instanceID, const resources::InstanceInfo &instanceInfo, bool isForceUpdate),
                 (override));
-    MOCK_METHOD(void, Delete, (const std::string &instanceID), (override));
+    MOCK_METHOD(void, Delete, (const std::string &instanceID, int64_t modRevision), (override));
     MOCK_METHOD(litebus::Future<Status>, TryExitInstance, (const std::string &instanceID, bool isSynchronized),
                 (override));
     MOCK_METHOD(std::shared_ptr<InstanceStateMachine>, GetInstance, (const std::string &instanceID), (override));

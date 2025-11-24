@@ -19,7 +19,7 @@
 
 #include <string>
 
-#include "resource_type.h"
+#include "common/resource_view/resource_type.h"
 #include "common/resource_view/view_utils.h"
 #include "common/scheduler_framework/framework/framework.h"
 #include "common/scheduler_framework/framework/policy.h"
@@ -30,12 +30,12 @@ using namespace ::testing;
 std::unique_ptr<Framework> fwk = nullptr;
 class FrameworkImplTest : public ::testing::Test {
 protected:
-    static void SetUpTestSuite()
+    [[maybe_unused]] static void SetUpTestSuite()
     {
         fwk = std::make_unique<FrameworkImpl>();
     }
 
-    static void TearDownTestSuite()
+    [[maybe_unused]] static void TearDownTestSuite()
     {
         fwk = nullptr;
     }
@@ -389,6 +389,56 @@ TEST_F(FrameworkImplTest, ScoreSortedTest)
     EXPECT_EQ(second.score, scoreList[second.name] + scoreLis1[second.name]);
     EXPECT_EQ(second.heteroProductName, "");
     result.sortedFeasibleNodes.pop();
+}
+
+TEST_F(FrameworkImplTest, AddScoreTest)
+{
+    auto fw = std::make_unique<FrameworkImpl>(-1);
+    auto ctx = std::make_shared<ScheduleContext>();
+    auto instance = MakeDefaultTestInstanceInfo();
+    auto resource = MakeMultiFragmentTestResourceUnit(1);
+
+    auto mockPrefilter = DefaultPrefilter(resource);
+    auto mockFilter = std::make_shared<MockFilterPlugin>();
+    EXPECT_CALL(*mockFilter, GetPluginName()).WillRepeatedly(Return("mockFilter"));
+    EXPECT_CALL(*mockFilter, Filter(_, _, _)).WillRepeatedly(Return(Filtered{}));
+
+    std::map<std::string, int64_t> scoreList = { { "0", 5 } };
+    std::map<std::string, int64_t> scoreLis1 = { { "0", 30 } };
+
+    auto mockScore = std::make_shared<MockScorePlugin>();
+    EXPECT_CALL(*mockScore, GetPluginName()).WillRepeatedly(Return("mockScore"));
+    auto nodeScore = NodeScore(5);
+    nodeScore.heteroProductName = "NPU/910B4";
+    nodeScore.realIDs = { 0 };
+    nodeScore.vectorAllocations.push_back(schedule_framework::VectorResourceAllocation{});
+    nodeScore.vectorAllocations.push_back(schedule_framework::VectorResourceAllocation{});
+    EXPECT_CALL(*mockScore, Score(_, _, _)).WillOnce(Return(nodeScore));
+
+    auto mockScore1 = std::make_shared<MockScorePlugin>();
+    EXPECT_CALL(*mockScore1, GetPluginName()).WillRepeatedly(Return("mockScore1"));
+    auto nodeScore1 = NodeScore(30);
+    nodeScore1.heteroProductName = "NPU/310";
+    nodeScore1.realIDs = { 1 };
+    nodeScore1.vectorAllocations.push_back(schedule_framework::VectorResourceAllocation{});
+    EXPECT_CALL(*mockScore1, Score(_, _, _)).WillOnce(Return(nodeScore1));;
+    fw->RegisterPolicy(mockPrefilter);
+    fw->RegisterPolicy(mockFilter);
+    fw->RegisterPolicy(mockScore);
+    fw->RegisterPolicy(mockScore1);
+    EXPECT_EQ(mockFilter->GetPluginType(), PolicyType::FILTER_POLICY);
+    EXPECT_EQ(mockScore->GetPluginType(), PolicyType::SCORE_POLICY);
+
+    auto result = fw->SelectFeasible(ctx, instance, resource, 0);
+    EXPECT_EQ(result.sortedFeasibleNodes.size(), (size_t)1);
+    auto top = result.sortedFeasibleNodes.top();
+    EXPECT_EQ(top.name, "0");
+    EXPECT_EQ(top.score, scoreList[top.name] + scoreLis1[top.name]);
+    // validate heterogeneous info -- overwrite mode
+    EXPECT_EQ(top.heteroProductName, "NPU/310");
+    EXPECT_EQ(top.realIDs, std::vector<int>{1});
+    // validate vector allocation info -- append mode
+    EXPECT_EQ(top.vectorAllocations.size(), 3);
 }
 
 // multi filter return diff available

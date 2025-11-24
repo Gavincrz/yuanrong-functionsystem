@@ -23,12 +23,14 @@
 
 #include "common/utils/exception.h"
 #include "common/utils/exec_utils.h"
-#include "files.h"
-#include "meta_store_kv_operation.h"
-#include "param_check.h"
+#include "common/utils/files.h"
+#include "common/utils/meta_store_kv_operation.h"
+#include "common/utils/param_check.h"
 #include "common/utils/path.h"
-#include "ssl_config.h"
+#include "common/utils/ssl_config.h"
 #include "common/utils/struct_transfer.h"
+#include "common/utils/random_number.h"
+#include "common/utils/sensitive_value.h"
 #include "exec/exec.hpp"
 #include "utils/future_test_helper.h"
 
@@ -733,5 +735,49 @@ TEST_F(UtilsTest, ParseValueFromKey)
     EXPECT_EQ("/yr/functions/business/yrk/tenant/0/function/0-system-faascontroller/version/$latest", funcName);
     funcName = TrimKeyPrefix("/test/yr/functions/business/yrk/tenant/0/function/0-system-faascontroller/version/$latest", "/test");
     EXPECT_EQ("/yr/functions/business/yrk/tenant/0/function/0-system-faascontroller/version/$latest", funcName);
+}
+
+/**
+* @tc.name  : ShuffleStringByDelimiter_ShouldReturnEmptyString_WhenInputIsEmpty
+* @tc.number: ShuffleStringByDelimiter_Test_001
+* @tc.desc  : Test ShuffleStringByDelimiter function with empty input string.
+ */
+TEST_F(UtilsTest, ShuffleStringByDelimiter_ShouldReturnEmptyString_WhenInputIsEmpty) {
+    std::string input = "";
+    std::string pattern = ",";
+    std::string result = ShuffleStringByDelimiter(input, pattern);
+    EXPECT_EQ(result, "");
+}
+
+/**
+* @tc.name  : ShuffleStringByDelimiter_ShouldReturnSameString_WhenInputHasNoDelimiter
+* @tc.number: ShuffleStringByDelimiter_Test_002
+* @tc.desc  : Test ShuffleStringByDelimiter function with input string that has no delimiter.
+ */
+TEST_F(UtilsTest, ShuffleStringByDelimiter_ShouldReturnSameString_WhenInputHasNoDelimiter) {
+    std::string input = "127.0.0.1:2379";
+    std::string pattern = ",";
+    std::string result = ShuffleStringByDelimiter(input, pattern);
+    EXPECT_EQ(result, "127.0.0.1:2379");
+    result = ShuffleStringByDelimiter("ds-core-etcd.default.svc.cluster.local:2379", pattern);
+    EXPECT_EQ(result, "ds-core-etcd.default.svc.cluster.local:2379");
+}
+
+/**
+* @tc.name  : ShuffleStringByDelimiter_ShouldReturnShuffledString_WhenInputHasMultipleDelimiters
+* @tc.number: ShuffleStringByDelimiter_Test_003
+* @tc.desc  : Test ShuffleStringByDelimiter function with input string that has multiple delimiters.
+ */
+TEST_F(UtilsTest, ShuffleStringByDelimiter_ShouldReturnShuffledString_WhenInputHasMultipleDelimiters) {
+    std::string input = "127.0.0.1:2379,127.0.0.2:2379,127.0.0.3:2379";
+    std::string pattern = ",";
+    std::string result = ShuffleStringByDelimiter(input, pattern);
+    // Since the result is shuffled, we cannot predict the exact output.
+    // However, we can check if the result contains the same elements.
+    std::vector<std::string> expected = {"127.0.0.1:2379", "127.0.0.2:2379", "127.0.0.3:2379"};
+    std::vector<std::string> resultVec = litebus::strings::Split(result, ",");
+    std::sort(expected.begin(), expected.end());
+    std::sort(resultVec.begin(), resultVec.end());
+    EXPECT_EQ(resultVec, expected);
 }
 }  // namespace functionsystem::test

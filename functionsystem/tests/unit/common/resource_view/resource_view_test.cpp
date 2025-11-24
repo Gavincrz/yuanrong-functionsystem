@@ -20,14 +20,16 @@
 
 #include <map>
 
-#include "constants.h"
-#include "metrics/metrics_adapter.h"
+#include "common/constants/constants.h"
+#include "common/metrics/metrics_adapter.h"
 #include "common/resource_view/resource_poller.h"
 #include "common/resource_view/resource_tool.h"
 #include "common/types/instance_state.h"
 #include "utils/future_test_helper.h"
 #include "view_utils.h"
 #include "utils/port_helper.h"
+
+#define private public
 
 namespace functionsystem::test {
 
@@ -52,11 +54,11 @@ static const std::string NEED_RECOVER_VIEW = "needRecoverView";
 
 class ResourceViewTest : public ::testing::Test {
 protected:
-    static void SetUpTestCase()
+    [[maybe_unused]] static void SetUpTestSuite()
     {
     }
 
-    static void TearDownTestCase()
+    [[maybe_unused]] static void TearDownTestSuite()
     {
     }
 
@@ -1600,13 +1602,19 @@ TEST_F(ResourceViewTest, MergeResourceViewChanges)
     EXPECT_EQ(change8.modification().instancechanges(0).instance().instanceid(), inst1.instanceid());
 
     // Situation 9: modify resourceunit(delete instance2) + modify resourceunit(add instance2)
-    //          --> no changes
+    //          --> modify resourceunit(delete instance2 + add instance2)
     ResourceUnitChanges result9;
     masterRevisionInPullRequest = currentRevision3;
     currentLocalRevision = currentRevision5;
     resourceView.MergeLocalResourceViewChanges(masterRevisionInPullRequest, currentLocalRevision, result9);
+    EXPECT_EQ(result9.changes_size(), 1);
+    const ResourceUnitChange &change9 = result9.changes(0);
     EXPECT_EQ(result9.endrevision(), currentLocalRevision);
-    EXPECT_EQ(result9.changes_size(), 0);
+    EXPECT_EQ(change9.Changed_case(), ResourceUnitChange::kModification);
+    EXPECT_EQ(change9.modification().instancechanges(0).changetype(), InstanceChange::DELETE);
+    EXPECT_EQ(change9.modification().instancechanges(0).instance().instanceid(), inst2.instanceid());
+    EXPECT_EQ(change9.modification().instancechanges(1).changetype(), InstanceChange::ADD);
+    EXPECT_EQ(change9.modification().instancechanges(1).instance().instanceid(), inst2.instanceid());
 }
 
 TEST_F(ResourceViewTest, MergeInstanceChange)
@@ -1678,13 +1686,19 @@ TEST_F(ResourceViewTest, MergeInstanceChange)
     ASSERT_AWAIT_READY(ret);
 
     // Situation 1: delete instance2 + add instance2
-    //          --> no changes
+    //          --> delete instance2 + add instance2
     auto result = ResourceUnitChanges{};
     masterRevisionInPullRequest = currentRevision3;
     currentLocalRevision = currentRevision5;
     resourceView.MergeLocalResourceViewChanges(masterRevisionInPullRequest, currentLocalRevision, result);
     EXPECT_EQ(result.endrevision(), currentLocalRevision);
-    EXPECT_EQ(result.changes_size(), 0);
+    EXPECT_EQ(result.changes_size(), 1);
+    auto change = result.changes(0);
+    EXPECT_EQ(change.Changed_case(), ResourceUnitChange::kModification);
+    EXPECT_EQ(change.modification().instancechanges(0).changetype(), InstanceChange::DELETE);
+    EXPECT_EQ(change.modification().instancechanges(0).instance().instanceid(), inst2.instanceid());
+    EXPECT_EQ(change.modification().instancechanges(1).changetype(), InstanceChange::ADD);
+    EXPECT_EQ(change.modification().instancechanges(1).instance().instanceid(), inst2.instanceid());
 
     // Situation 2: add instance2 + delete instance2
     //          --> no changes
@@ -1702,7 +1716,7 @@ TEST_F(ResourceViewTest, MergeInstanceChange)
     currentLocalRevision = currentRevision6;
     resourceView.MergeLocalResourceViewChanges(masterRevisionInPullRequest, currentLocalRevision, result);
     EXPECT_EQ(result.changes_size(), 1);
-    auto change = result.changes(0);
+    change = result.changes(0);
     EXPECT_EQ(result.endrevision(), currentLocalRevision);
     EXPECT_EQ(change.Changed_case(), ResourceUnitChange::kModification);
     EXPECT_EQ(change.modification().instancechanges(0).changetype(), InstanceChange::DELETE);
@@ -1722,12 +1736,18 @@ TEST_F(ResourceViewTest, MergeInstanceChange)
     EXPECT_EQ(change.modification().instancechanges(0).instance().instanceid(), inst2.instanceid());
 
     // Situation 5: delete instance2 + add instance2 + delete instance2 + add instance2
-    //          --> no changes
+    //          --> delete instance2 + add instance2
     result = ResourceUnitChanges{};
     masterRevisionInPullRequest = currentRevision3;
     currentLocalRevision = currentRevision7;
     resourceView.MergeLocalResourceViewChanges(masterRevisionInPullRequest, currentLocalRevision, result);
-    EXPECT_EQ(result.changes_size(), 0);
+    EXPECT_EQ(result.changes_size(), 1);
+    change = result.changes(0);
+    EXPECT_EQ(change.Changed_case(), ResourceUnitChange::kModification);
+    EXPECT_EQ(change.modification().instancechanges(0).changetype(), InstanceChange::DELETE);
+    EXPECT_EQ(change.modification().instancechanges(0).instance().instanceid(), inst2.instanceid());
+    EXPECT_EQ(change.modification().instancechanges(1).changetype(), InstanceChange::ADD);
+    EXPECT_EQ(change.modification().instancechanges(1).instance().instanceid(), inst2.instanceid());
 
     // Situation 6: add instance2 + delete instance2 + add instance2 + delete instance2
     //          --> no changes
@@ -1902,6 +1922,11 @@ TEST_F(ResourceViewTest, PullResourceUnitTest)
                                          litebus::GetActor(childNode + "-ResourceViewActor")->GetAID().Url());
     ASSERT_FALSE(add.Get().IsOk());
 
+    auto childView = child->GetFullResourceView().Get();
+    auto curSnap = parent->GetUnitSnapshotInfo(childNode).Get();
+    EXPECT_EQ(curSnap.version(), childView->revision());
+    EXPECT_EQ(curSnap.localviewinittime(), childView->viewinittime());
+
     // 1.add resourceunit
     auto currentRevision1 = 1;
     auto unit = Get1DResourceUnit();
@@ -1926,6 +1951,15 @@ TEST_F(ResourceViewTest, PullResourceUnitTest)
     bucket = rView.Get()->fragment().at(agentId).bucketindexs().at(unitProportion).buckets().at(unitMem);
     EXPECT_EQ(bucket.total().monopolynum(), 1);
     EXPECT_EQ(bucket.allocatable().at(agentId).monopolynum(), 1);
+
+    auto emptySnap = parent->GetUnitSnapshotInfo("");
+    EXPECT_EQ(emptySnap.Get().version(), 0);
+    EXPECT_TRUE(emptySnap.Get().localviewinittime().empty());
+
+    childView = child->GetFullResourceView().Get();
+    curSnap = parent->GetUnitSnapshotInfo(childNode).Get();
+    EXPECT_EQ(curSnap.version(), childView->revision());
+    EXPECT_EQ(curSnap.localviewinittime(), childView->viewinittime());
 
     // 2.modify resourceunit -- add instance1(shared)
     rView = parent->GetResourceView();
@@ -1957,6 +1991,10 @@ TEST_F(ResourceViewTest, PullResourceUnitTest)
     bucket = rView.Get()->fragment().at(agentId).bucketindexs().at(unitProportion).buckets().at(unitMem);
     EXPECT_EQ(bucket.total().monopolynum(), 0);
     EXPECT_EQ(bucket.allocatable().at(agentId).monopolynum(), 0);
+    childView = child->GetFullResourceView().Get();
+    curSnap = parent->GetUnitSnapshotInfo(childNode).Get();
+    EXPECT_EQ(curSnap.version(), childView->revision());
+    EXPECT_EQ(curSnap.localviewinittime(), childView->viewinittime());
 
     // 3.modify resourceunit -- add instance2(shared)
     rView = parent->GetResourceView();
@@ -1988,6 +2026,11 @@ TEST_F(ResourceViewTest, PullResourceUnitTest)
     EXPECT_EQ(bucket.total().monopolynum(), 0);
     EXPECT_EQ(bucket.mutable_allocatable()->at(agentId).monopolynum(), 0);
 
+    childView = child->GetFullResourceView().Get();
+    curSnap = parent->GetUnitSnapshotInfo(childNode).Get();
+    EXPECT_EQ(curSnap.version(), childView->revision());
+    EXPECT_EQ(curSnap.localviewinittime(), childView->viewinittime());
+
     // 4.del instance1(shared)
     std::vector<std::string> ids1;
     ids1.push_back(inst1.instanceid());
@@ -2006,6 +2049,11 @@ TEST_F(ResourceViewTest, PullResourceUnitTest)
     bucket = rView.Get()->fragment().at(agentId).bucketindexs().at(unitProportion).buckets().at(unitMem);
     EXPECT_EQ(bucket.total().monopolynum(), 0);
     EXPECT_EQ(bucket.allocatable().at(agentId).monopolynum(), 0);
+
+    childView = child->GetFullResourceView().Get();
+    curSnap = parent->GetUnitSnapshotInfo(childNode).Get();
+    EXPECT_EQ(curSnap.version(), childView->revision());
+    EXPECT_EQ(curSnap.localviewinittime(), childView->viewinittime());
 
     // 5.del instance2(shared)
     std::vector<std::string> ids2;
@@ -2027,6 +2075,11 @@ TEST_F(ResourceViewTest, PullResourceUnitTest)
     EXPECT_EQ(bucket.total().monopolynum(), 1);
     EXPECT_EQ(bucket.allocatable().at(agentId).monopolynum(), 1);
 
+    childView = child->GetFullResourceView().Get();
+    curSnap = parent->GetUnitSnapshotInfo(childNode).Get();
+    EXPECT_EQ(curSnap.version(), childView->revision());
+    EXPECT_EQ(curSnap.localviewinittime(), childView->viewinittime());
+
     // 6.update status
     auto currentRevision6 = 6;
     begin = litebus::TimeWatch::Now();
@@ -2039,6 +2092,11 @@ TEST_F(ResourceViewTest, PullResourceUnitTest)
     EXPECT_EQ(rView.Get()->fragment().at(agentId).status(),
         static_cast<uint32_t>(resource_view::UnitStatus::EVICTING));
     ASSERT_EQ(parent->GetLocalInfoInDomain(childNode).localRevisionInDomain, currentRevision6);
+
+    childView = child->GetFullResourceView().Get();
+    curSnap = parent->GetUnitSnapshotInfo(childNode).Get();
+    EXPECT_EQ(curSnap.version(), childView->revision());
+    EXPECT_EQ(curSnap.localviewinittime(), childView->viewinittime());
 
     // 7.modify resourceunit -- add instance3(monopoly)
     rView = parent->GetResourceView();
@@ -2062,6 +2120,11 @@ TEST_F(ResourceViewTest, PullResourceUnitTest)
     EXPECT_EQ(bucket.total().monopolynum(), 0);
     EXPECT_EQ(bucket.mutable_allocatable()->at(agentId).monopolynum(), 0);
 
+    childView = child->GetFullResourceView().Get();
+    curSnap = parent->GetUnitSnapshotInfo(childNode).Get();
+    EXPECT_EQ(curSnap.version(), childView->revision());
+    EXPECT_EQ(curSnap.localviewinittime(), childView->viewinittime());
+
     // 8.del resourceunit
     begin = litebus::TimeWatch::Now();
     ASSERT_TRUE(child->DeleteResourceUnit(agentId).Get().IsOk());
@@ -2073,6 +2136,11 @@ TEST_F(ResourceViewTest, PullResourceUnitTest)
     ASSERT_EQ(rView.Get()->fragment_size(), 0);
     bucket = rView.Get()->mutable_bucketindexs()->at(unitProportion).mutable_buckets()->at(unitMem);
     EXPECT_EQ(bucket.total().monopolynum(), 0);
+
+    childView = child->GetFullResourceView().Get();
+    curSnap = parent->GetUnitSnapshotInfo(childNode).Get();
+    EXPECT_EQ(curSnap.version(), childView->revision());
+    EXPECT_EQ(curSnap.localviewinittime(), childView->viewinittime());
 }
 
 TEST_F(ResourceViewTest, PullResourceUnitWithSwitchDomainUrlTest)
@@ -3070,14 +3138,14 @@ TEST_F(ResourceViewTest, idleToRecyclePodDeleteInstance)
     auto idleToRecycleLabels = GenerateIdleToRecycleLabel();
     std::set<std::string> disabledAgent;
     std::atomic<int> count = 0;
-    viewPtr->RegisterUnitDisableFunc([&disabledAgent, &count](const std::string &agentID){
+    viewPtr->RegisterUnitDisableFunc([&disabledAgent, &count](const std::string &agentID) {
         disabledAgent.emplace(agentID);
         count++;
     });
 
     // pod has been set timer and in recycle, addInstance, pod will not be recycled;
     auto unit3 = Get1DResourceUnit();
-    unit3.mutable_nodelabels()->insert({IDLE_TO_RECYCLE, idleToRecycleLabels[2]});
+    unit3.mutable_nodelabels()->insert({ IDLE_TO_RECYCLE, idleToRecycleLabels[2] });
     ASSERT_AWAIT_READY(resourceView.AddResourceUnit(unit3));
     EXPECT_EQ(resourceView.GetReuseTimers().count(unit3.id()), 1);
 
@@ -3127,7 +3195,7 @@ TEST_F(ResourceViewTest, idleToRecyclePodDeleteInstance)
     ret = resourceView.DeleteInstances(ids3);
     ASSERT_AWAIT_READY(ret);
     EXPECT_TRUE(ret.Get().IsOk());
-    EXPECT_AWAIT_TRUE([&] () -> bool { return resourceView.GetReuseTimers().count(unit3.id()) == 0; });
+    EXPECT_AWAIT_TRUE([&]() -> bool { return resourceView.GetReuseTimers().count(unit3.id()) == 0; });
     cache = resourceView.GetAgentCacheMap();
     EXPECT_TRUE(cache.find(unit3.id()) == cache.end());
     EXPECT_EQ(count, 1);
@@ -3153,7 +3221,7 @@ TEST_F(ResourceViewTest, tenantAffinityRecyclePodDeleteInstance)
     viewPtr->SetEnableTenantAffinity(true);
     std::set<std::string> disabledAgent;
     std::atomic<int> count = 0;
-    viewPtr->RegisterUnitDisableFunc([&disabledAgent, &count](const std::string &agentID){
+    viewPtr->RegisterUnitDisableFunc([&disabledAgent, &count](const std::string &agentID) {
         disabledAgent.emplace(agentID);
         count++;
     });
@@ -3161,7 +3229,7 @@ TEST_F(ResourceViewTest, tenantAffinityRecyclePodDeleteInstance)
     {
         // 1.pod not set idlePod, enable tenantAffinity and delete actually instance -> set timer and recycle
         auto unit1 = Get1DResourceUnit();
-        unit1.mutable_nodelabels()->insert({IDLE_TO_RECYCLE, idleToRecycleLabels[1]});
+        unit1.mutable_nodelabels()->insert({ IDLE_TO_RECYCLE, idleToRecycleLabels[1] });
         ASSERT_AWAIT_READY(resourceView.AddResourceUnit(unit1));
         EXPECT_EQ(resourceView.GetReuseTimers().count(unit1.id()), 0);
 
@@ -3184,7 +3252,7 @@ TEST_F(ResourceViewTest, tenantAffinityRecyclePodDeleteInstance)
         ASSERT_AWAIT_READY(ret);
         EXPECT_TRUE(ret.Get().IsOk());
 
-        std::vector<std::string> ids1{inst1.instanceid()};
+        std::vector<std::string> ids1{ inst1.instanceid() };
         ret = resourceView.DeleteInstances(ids1);
         ASSERT_AWAIT_READY(ret);
         EXPECT_TRUE(ret.Get().IsOk());
@@ -3200,7 +3268,7 @@ TEST_F(ResourceViewTest, tenantAffinityRecyclePodDeleteInstance)
         ret = resourceView.DeleteInstances(ids3);
         ASSERT_AWAIT_READY(ret);
         EXPECT_TRUE(ret.Get().IsOk());
-        EXPECT_AWAIT_TRUE([&] () -> bool { return resourceView.GetReuseTimers().count(unit1.id()) == 0; });
+        EXPECT_AWAIT_TRUE([&]() -> bool { return resourceView.GetReuseTimers().count(unit1.id()) == 0; });
 
         cache = resourceView.GetAgentCacheMap();
         EXPECT_TRUE(cache.find(unit1.id()) == cache.end());
@@ -3212,10 +3280,10 @@ TEST_F(ResourceViewTest, tenantAffinityRecyclePodDeleteInstance)
         // pod not set idlePod, enable tenantAffinity and delete actually instance,
         // set timer and then add instance and then delete virtual instance -> set timer and recycle
         auto unit1 = Get1DResourceUnit();
-        unit1.mutable_nodelabels()->insert({IDLE_TO_RECYCLE, idleToRecycleLabels[1]});
+        unit1.mutable_nodelabels()->insert({ IDLE_TO_RECYCLE, idleToRecycleLabels[1] });
         ASSERT_AWAIT_READY(resourceView.AddResourceUnit(unit1));
         EXPECT_EQ(resourceView.GetReuseTimers().count(unit1.id()), 0);
-        count = 0; // reset
+        count = 0;  // reset
 
         // mock instance is actually use, and delete
         auto inst2 = Get1DInstance();
@@ -3230,7 +3298,7 @@ TEST_F(ResourceViewTest, tenantAffinityRecyclePodDeleteInstance)
         auto ret = resourceView.AddInstances(instances);
         ASSERT_AWAIT_READY(ret);
 
-        std::vector<std::string> ids1{inst1.instanceid()};
+        std::vector<std::string> ids1{ inst1.instanceid() };
         ret = resourceView.DeleteInstances(ids1);
         ASSERT_AWAIT_READY(ret);
 
@@ -3247,10 +3315,10 @@ TEST_F(ResourceViewTest, tenantAffinityRecyclePodDeleteInstance)
         ret = resourceView.AddInstances(instances2);
         ASSERT_AWAIT_READY(ret);
 
-        std::vector<std::string> ids2{inst2.instanceid()};
+        std::vector<std::string> ids2{ inst2.instanceid() };
         ASSERT_AWAIT_READY(resourceView.DeleteInstances(ids2, true));
 
-        EXPECT_AWAIT_TRUE([&] () -> bool { return resourceView.GetReuseTimers().count(unit1.id()) == 0; });
+        EXPECT_AWAIT_TRUE([&]() -> bool { return resourceView.GetReuseTimers().count(unit1.id()) == 0; });
         cache = resourceView.GetAgentCacheMap();
         EXPECT_TRUE(cache.find(unit1.id()) == cache.end());
         EXPECT_EQ(count, 1);
@@ -3258,12 +3326,13 @@ TEST_F(ResourceViewTest, tenantAffinityRecyclePodDeleteInstance)
     }
 
     {
-        // pod not set idlePod, enable tenantAffinity and add unit and then delete virtual instance -> not set timer and not recycle
+        // pod not set idlePod, enable tenantAffinity and add unit and then delete virtual instance -> not set timer and
+        // not recycle
         auto unit1 = Get1DResourceUnit();
-        unit1.mutable_nodelabels()->insert({IDLE_TO_RECYCLE, idleToRecycleLabels[1]});
+        unit1.mutable_nodelabels()->insert({ IDLE_TO_RECYCLE, idleToRecycleLabels[1] });
         ASSERT_AWAIT_READY(resourceView.AddResourceUnit(unit1));
         EXPECT_EQ(resourceView.GetReuseTimers().count(unit1.id()), 0);
-        count = 0; // reset
+        count = 0;  // reset
 
         // mock instance is virtual use, and delete
         auto inst2 = Get1DInstance();
@@ -3277,7 +3346,7 @@ TEST_F(ResourceViewTest, tenantAffinityRecyclePodDeleteInstance)
         instances.emplace(inst1.instanceid(), resource_view::InstanceAllocatedInfo{ inst1, nullptr });
         auto ret = resourceView.AddInstances(instances);
         ASSERT_AWAIT_READY(ret);
-        std::vector<std::string> ids1{inst1.instanceid()};
+        std::vector<std::string> ids1{ inst1.instanceid() };
         ret = resourceView.DeleteInstances(ids1, true);
         ASSERT_AWAIT_READY(ret);
         EXPECT_EQ(resourceView.GetReuseTimers().count(unit1.id()), 0);
@@ -3286,7 +3355,7 @@ TEST_F(ResourceViewTest, tenantAffinityRecyclePodDeleteInstance)
         instances.emplace(inst2.instanceid(), resource_view::InstanceAllocatedInfo{ inst2, nullptr });
         ret = resourceView.AddInstances(instances2);
         ASSERT_AWAIT_READY(ret);
-        std::vector<std::string> ids2{inst2.instanceid()};
+        std::vector<std::string> ids2{ inst2.instanceid() };
         ret = resourceView.DeleteInstances(ids2, true);
         ASSERT_AWAIT_READY(ret);
         EXPECT_EQ(resourceView.GetReuseTimers().count(unit1.id()), 0);
@@ -3296,10 +3365,10 @@ TEST_F(ResourceViewTest, tenantAffinityRecyclePodDeleteInstance)
         // pod not set idlePod, enable tenantAffinity and add unit and then delete instance and add virtual instance,
         // timer is executed, and then virtual instance is deleted  -> pod need to be recycled
         auto unit1 = Get1DResourceUnit();
-        unit1.mutable_nodelabels()->insert({IDLE_TO_RECYCLE, idleToRecycleLabels[1]});
+        unit1.mutable_nodelabels()->insert({ IDLE_TO_RECYCLE, idleToRecycleLabels[1] });
         ASSERT_AWAIT_READY(resourceView.AddResourceUnit(unit1));
         EXPECT_EQ(resourceView.GetReuseTimers().count(unit1.id()), 0);
-        count = 0; // reset
+        count = 0;  // reset
         auto inst2 = Get1DInstance();
         auto inst1 = Get1DInstance();
         inst1.set_unitid(unit1.id());
@@ -3312,10 +3381,10 @@ TEST_F(ResourceViewTest, tenantAffinityRecyclePodDeleteInstance)
         instances.emplace(inst1.instanceid(), resource_view::InstanceAllocatedInfo{ inst1, nullptr });
         auto ret = resourceView.AddInstances(instances);
         ASSERT_AWAIT_READY(ret);
-        std::vector<std::string> ids1{inst1.instanceid()};
+        std::vector<std::string> ids1{ inst1.instanceid() };
         ret = resourceView.DeleteInstances(ids1, false);
         ASSERT_AWAIT_READY(ret);
-        EXPECT_EQ(resourceView.GetReuseTimers().count(unit1.id()), 1); // timer is set
+        EXPECT_EQ(resourceView.GetReuseTimers().count(unit1.id()), 1);  // timer is set
         EXPECT_EQ(resourceView.GetAgentUsedMap().count(unit1.id()), 1);
 
         // mock virtual instance add
@@ -3331,10 +3400,10 @@ TEST_F(ResourceViewTest, tenantAffinityRecyclePodDeleteInstance)
         EXPECT_TRUE(cache.find(unit1.id()) != cache.end());
 
         // delete virtual instance , and pod is need to be recycled
-        std::vector<std::string> ids2{inst2.instanceid()};
+        std::vector<std::string> ids2{ inst2.instanceid() };
         ret = resourceView.DeleteInstances(ids2, true);
         ASSERT_AWAIT_READY(ret);
-        EXPECT_AWAIT_TRUE([&] () -> bool { return resourceView.GetReuseTimers().count(unit1.id()) == 0; });
+        EXPECT_AWAIT_TRUE([&]() -> bool { return resourceView.GetReuseTimers().count(unit1.id()) == 0; });
         cache = resourceView.GetAgentCacheMap();
         EXPECT_TRUE(cache.find(unit1.id()) == cache.end());
         EXPECT_EQ(count, 1);
@@ -3371,7 +3440,7 @@ TEST_F(ResourceViewTest, SetBillingPodResourceInstance)
     child->ToReady();
 
     auto add = parent->AddResourceUnitWithUrl(*child->GetFullResourceView().Get(),
-                                              litebus::GetActor(childNode +"-ResourceViewActor")->GetAID().Url());
+                                              litebus::GetActor(childNode + "-ResourceViewActor")->GetAID().Url());
     ASSERT_TRUE(add.Get().IsOk());
     auto map = metrics::MetricsAdapter::GetInstance().GetMetricsContext().GetPodResourceMap();
     EXPECT_EQ(map.size(), 0);
@@ -3390,6 +3459,105 @@ TEST_F(ResourceViewTest, SetBillingPodResourceInstance)
         []() { return metrics::MetricsAdapter::GetInstance().GetMetricsContext().GetPodResourceMap().size() == 1; });
     map = metrics::MetricsAdapter::GetInstance().GetMetricsContext().GetPodResourceMap();
     EXPECT_NE(map.find(unit.id()), map.end());
+}
+
+TEST_F(ResourceViewTest, ValidateSchedulerLevel)
+{
+    // 1.scheduler_level = Non-root domain
+    auto parent = resource_view::ResourceView::CreateResourceView(DOMAIN_RESOUCE_VIEW_ID, PARENT_PARAM);
+    EXPECT_EQ(parent->GetResourceInfo().Get().schedulerLevel, SCHEDULER_LEVEL::NON_ROOT_DOMAIN);
+
+    // 2.scheduler_level = root domain
+    parent->UpdateIsHeader(true);
+    EXPECT_EQ(parent->GetResourceInfo().Get().schedulerLevel, SCHEDULER_LEVEL::ROOT_DOMAIN);
+
+    // 3.scheduler_level = local
+    auto child = resource_view::ResourceView::CreateResourceView(LOCAL_RESOUCE_VIEW_ID, CHILD_PARAM);
+    EXPECT_EQ(child->GetResourceInfo().Get().schedulerLevel, SCHEDULER_LEVEL::LOCAL);
+}
+
+TEST_F(ResourceViewTest, TryDelResourceUnitChange)
+{
+
+    std::string childNode = LOCAL_RESOUCE_VIEW_ID;
+    auto child = resource_view::ResourceView::CreateResourceView(childNode, CHILD_PARAM);
+
+    // 1.add resourceunit
+    auto unit = Get1DResourceUnit();
+    auto agentId = unit.id();
+    GenerateMinimumUnitBucketInfo(unit);
+    ASSERT_TRUE(child->AddResourceUnit(unit).Get().IsOk());
+
+    // 2.add resourceunit
+    auto unit2 = Get1DResourceUnit();
+    GenerateMinimumUnitBucketInfo(unit2);
+    auto agentId2 = unit2.id();
+    ASSERT_TRUE(child->AddResourceUnit(unit2).Get().IsOk());
+
+    // 3.modify resourceunit -- add instance1(shared)
+    auto inst1 = Get1DInstance();
+    (*inst1.mutable_schedulerchain()->Add()) = agentId;
+    inst1.set_unitid(agentId);
+    std::map<std::string, resource_view::InstanceAllocatedInfo> instances1;
+    instances1.emplace(inst1.instanceid(), resource_view::InstanceAllocatedInfo{ inst1, nullptr });
+    ASSERT_TRUE(child->AddInstances(instances1).Get().IsOk());
+
+    // 4.modify resourceunit -- add instance2(shared)
+    auto inst2 = Get1DInstance();
+    (*inst2.mutable_schedulerchain()->Add()) = agentId;
+    inst2.set_unitid(agentId);
+    std::map<std::string, resource_view::InstanceAllocatedInfo> instances2;
+    instances2.emplace(inst2.instanceid(), resource_view::InstanceAllocatedInfo{ inst2, nullptr });
+    ASSERT_TRUE(child->AddInstances(instances2).Get().IsOk());
+
+    auto change = child->GetResourceViewChanges();
+    auto childView = child->GetFullResourceView().Get();
+    EXPECT_EQ(change.Get()->startrevision(), 0);
+    EXPECT_EQ(change.Get()->endrevision(), childView->revision());
+
+    // 5.del instance1(shared)
+    std::vector<std::string> ids1;
+    ids1.push_back(inst1.instanceid());
+    ASSERT_TRUE(child->DeleteInstances(ids1).Get().IsOk());
+
+    // 6.del instance2(shared)
+    std::vector<std::string> ids2;
+    ids2.push_back(inst2.instanceid());
+    ASSERT_TRUE(child->DeleteInstances(ids2).Get().IsOk());
+
+    // Test for not del because condition is not satisfied
+    child->TryDelResourceUnitChange(2, "AAA");
+    childView = child->GetFullResourceView().Get();
+    EXPECT_TRUE(child->implActor_->versionChanges_.find(1) != child->implActor_->versionChanges_.end());
+
+    child->TryDelResourceUnitChange(100, childView->viewinittime());
+    childView = child->GetFullResourceView().Get();
+    EXPECT_TRUE(child->implActor_->versionChanges_.find(1) != child->implActor_->versionChanges_.end());
+
+    child->TryDelResourceUnitChange(2, childView->viewinittime());
+    childView = child->GetFullResourceView().Get(); // need get lastest version
+    EXPECT_TRUE(child->implActor_->versionChanges_.find(1) == child->implActor_->versionChanges_.end());
+
+    // 7.update status
+    ASSERT_TRUE(child->UpdateUnitStatus(agentId, resource_view::UnitStatus::EVICTING).Get().IsOk());
+
+    // 8.modify resourceunit -- add instance3(monopoly)
+    auto inst3 = Get1DInstance();
+    (*inst3.mutable_schedulerchain()->Add()) = agentId2;
+    inst3.mutable_scheduleoption()->set_schedpolicyname(MONOPOLY_SCHEDULE);
+    inst3.set_unitid(agentId);
+    std::map<std::string, resource_view::InstanceAllocatedInfo> instances3;
+    instances3.emplace(inst3.instanceid(), resource_view::InstanceAllocatedInfo{ inst3, nullptr });
+    ASSERT_TRUE(child->AddInstances(instances3).Get().IsOk());
+
+    // 9.del resourceunit
+    ASSERT_TRUE(child->DeleteResourceUnit(agentId).Get().IsOk());
+    child->TryDelResourceUnitChange(4, childView->viewinittime());
+
+    childView = child->GetFullResourceView().Get(); // need get lastest version
+    EXPECT_TRUE(child->implActor_->versionChanges_.find(3) == child->implActor_->versionChanges_.end());
+    EXPECT_TRUE(child->implActor_->versionChanges_.find(4) != child->implActor_->versionChanges_.end());
+
 }
 
 }  // namespace functionsystem::test

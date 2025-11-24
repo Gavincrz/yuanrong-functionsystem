@@ -25,13 +25,14 @@
 #include "common/etcd_service/etcd_service_driver.h"
 #include "meta_store_client/key_value/watcher.h"
 #include "meta_store_client/watch_client.h"
-#include "metrics/metrics_adapter.h"
-#include "metrics/metrics_constants.h"
-#include "status/status.h"
+#include "common/metrics/metrics_adapter.h"
+#include "common/metrics/metrics_constants.h"
+#include "common/status/status.h"
 #include "common/types/instance_state.h"
-#include "meta_store_kv_operation.h"
+#include "common/utils/meta_store_kv_operation.h"
 #include "function_proxy/common/observer/observer_actor.h"
 #include "function_proxy/common/state_machine/instance_context.h"
+#include "mocks/mock_internal_iam.h"
 #include "mocks/mock_shared_client.h"
 #include "mocks/mock_shared_client_manager_proxy.h"
 #include "utils/port_helper.h"
@@ -44,7 +45,7 @@ public:
     inline static std::unique_ptr<meta_store::test::EtcdServiceDriver> etcdSrvDriver_;
     inline static std::string metaStoreServerHost_;
 
-    [[maybe_unused]] static void SetUpTestCase()
+    [[maybe_unused]] static void SetUpTestSuite()
     {
         etcdSrvDriver_ = std::make_unique<meta_store::test::EtcdServiceDriver>();
         int metaStoreServerPort = functionsystem::test::FindAvailablePort();
@@ -52,7 +53,7 @@ public:
         etcdSrvDriver_->StartServer(metaStoreServerHost_);
     }
 
-    [[maybe_unused]] static void TearDownTestCase()
+    [[maybe_unused]] static void TearDownTestSuite()
     {
         etcdSrvDriver_->StopServer();
     }
@@ -68,6 +69,12 @@ public:
             FUNCTION_PROXY_OBSERVER_ACTOR_NAME, "nodeA", metaStorageAccessor, function_proxy::ObserverParam{});
         mockSharedClientManagerProxy_ = std::make_shared<MockSharedClientManagerProxy>();
         observerActor_->BindDataInterfaceClientManager(mockSharedClientManagerProxy_);
+        function_proxy::InternalIAM::Param iamParam;
+        iamParam.isEnableIAM = true;
+        iamParam.credType = IAMCredType::AK_SK;
+        internalIAM_ = std::make_shared<MockInternalIAM>(iamParam);
+        observerActor_->BindInternalIAM(internalIAM_);
+        EXPECT_CALL(*internalIAM_, IsSystemTenant).WillRepeatedly(testing::Return(false));
         litebus::Spawn(observerActor_);
         dataPlaneObserver_ = std::make_shared<function_proxy::DataPlaneObserver>(observerActor_);
 
@@ -82,6 +89,7 @@ public:
 
         observerActor_ = nullptr;
         dataPlaneObserver_ = nullptr;
+        internalIAM_ = nullptr;
 
         unsetenv("HOST_IP");
         unsetenv("HOSTNAME");
@@ -91,6 +99,7 @@ protected:
     std::shared_ptr<function_proxy::ObserverActor> observerActor_;
     std::shared_ptr<function_proxy::DataPlaneObserver> dataPlaneObserver_;
     std::shared_ptr<MockSharedClientManagerProxy> mockSharedClientManagerProxy_;
+    std::shared_ptr<MockInternalIAM> internalIAM_;
 };
 
 inline RouteInfo GenRouteInfo(const std::string &instanceID, const std::string &funcAgentID,

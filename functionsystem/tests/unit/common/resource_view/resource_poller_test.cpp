@@ -22,7 +22,7 @@
 #include <iostream>
 
 #include "async/asyncafter.hpp"
-#include "logs/logging.h"
+#include "common/logs/logging.h"
 #include "litebus.hpp"
 #include "utils/future_test_helper.h"
 

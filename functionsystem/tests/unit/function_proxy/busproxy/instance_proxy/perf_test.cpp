@@ -19,7 +19,7 @@
 #include <string>
 
 #include "busproxy/instance_proxy/perf.h"
-#include "status/status.h"
+#include "common/status/status.h"
 
 namespace functionsystem::test {
 using namespace ::testing;

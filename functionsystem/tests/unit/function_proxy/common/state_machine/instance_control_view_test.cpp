@@ -19,8 +19,8 @@
 #include <gtest/gtest.h>
 
 #include "common/etcd_service/etcd_service_driver.h"
-#include "logs/logging.h"
-#include "proto/pb/message_pb.h"
+#include "common/logs/logging.h"
+#include "common/proto/pb/message_pb.h"
 #include "mocks/mock_meta_store_client.h"
 #include "mocks/mock_observer.h"
 #include "mocks/mock_txn_transaction.h"
@@ -38,7 +38,7 @@ public:
     inline static std::unique_ptr<meta_store::test::EtcdServiceDriver> etcdSrvDriver_;
     inline static std::string metaStoreServerHost_;
 
-    [[maybe_unused]] static void SetUpTestCase()
+    [[maybe_unused]] static void SetUpTestSuite()
     {
         etcdSrvDriver_ = std::make_unique<meta_store::test::EtcdServiceDriver>();
         int metaStoreServerPort = functionsystem::test::FindAvailablePort();
@@ -46,7 +46,7 @@ public:
         etcdSrvDriver_->StartServer(metaStoreServerHost_);
     }
 
-    [[maybe_unused]] static void TearDownTestCase()
+    [[maybe_unused]] static void TearDownTestSuite()
     {
         etcdSrvDriver_->StopServer();
     }
@@ -283,7 +283,7 @@ TEST_F(InstanceControlViewTest, DelInstanceTest)
 
     auto observer = std::make_shared<MockObserver>();
     InstanceStateMachine::BindControlPlaneObserver(observer);
-    EXPECT_CALL(*observer, DelInstanceEvent(generatedID)).WillOnce(testing::Return(Status::OK()));
+    EXPECT_CALL(*observer, DelInstanceEvent(generatedID, _)).WillOnce(testing::Return(Status::OK()));
 
     status = instanceControlView.DelInstance(generatedID);
     EXPECT_TRUE(status.Get().IsOk());
@@ -370,8 +370,9 @@ TEST_F(InstanceControlViewTest, DeleteInstance)
     resources::InstanceInfo instanceInfo;
     instanceInfo.set_functionproxyid("proxyid");
     instanceInfo.mutable_instancestatus()->set_code(static_cast<int32_t>(InstanceState::EXITING));
+    (*instanceInfo.mutable_extensions())[INSTANCE_MOD_REVISION] = "1000";
     instanceControlView.Update(instanceID, instanceInfo, false);
-    instanceControlView.Delete("instanceIDA");
+    instanceControlView.Delete("instanceIDA", 100);
     instanceControlView.Delete("instanceIDA");
     instanceControlView.Delete(instanceID);
 
@@ -425,6 +426,36 @@ TEST_F(InstanceControlViewTest, IsDuplicateScheduling)
     res = instanceControlView.NewInstance(scheduleReq);
     ASSERT_AWAIT_READY(res);
     EXPECT_TRUE(res.Get().preState == InstanceState::SCHEDULING);
+
+    instanceControlView.ReleaseOwner(instanceID);
+    res = instanceControlView.NewInstance(scheduleReq);
+    ASSERT_AWAIT_READY(res);
+    EXPECT_TRUE(res.Get().preState == InstanceState::SCHEDULING);
+}
+
+TEST_F(InstanceControlViewTest, OldUpdateInstanceEvent)
+{
+    InstanceControlView instanceControlView(TEST_NODE_ID, false);
+    std::string instanceID = "instanceID";
+    std::string requestID = "req";
+    instanceControlView.SetOwner(instanceID);
+    resources::InstanceInfo instanceInfo;
+    instanceInfo.set_functionproxyid("proxyid");
+    instanceInfo.set_requestid(requestID);
+    instanceInfo.mutable_instancestatus()->set_code(static_cast<int32_t>(InstanceState::SCHEDULING));
+    instanceControlView.Update(instanceID, instanceInfo, false);
+
+    instanceInfo.mutable_instancestatus()->set_code(static_cast<int32_t>(InstanceState::CREATING));
+    (*instanceInfo.mutable_extensions())["modRevision"] = "10";
+    instanceControlView.Update(instanceID, instanceInfo, false);
+
+    instanceInfo.mutable_instancestatus()->set_code(static_cast<int32_t>(InstanceState::SCHEDULING));
+    (*instanceInfo.mutable_extensions())["modRevision"] = "1";
+    instanceControlView.Update(instanceID, instanceInfo, false);
+
+    auto stateMachine = instanceControlView.GetInstance(instanceID);
+    EXPECT_EQ(stateMachine->GetModRevision(), 10);
+    EXPECT_EQ(stateMachine->GetInstanceState(), InstanceState::CREATING);
 }
 
 }  // namespace functionsystem::test

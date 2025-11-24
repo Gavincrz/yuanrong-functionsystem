@@ -16,8 +16,8 @@
 
 #include "function_proxy/common/state_handler/state_handler.h"
 
-#include "hex/hex.h"
-#include "files.h"
+#include "common/hex/hex.h"
+#include "common/utils/files.h"
 #include "gtest/gtest.h"
 #include "mocks/mock_distributed_cache_client.h"
 #include "state_handler_helper.h"
@@ -261,5 +261,70 @@ TEST_F(StateHandlerTest, LoadStateFailedWithInValidAID)
     EXPECT_EQ(response.Get()->saversp().code(), common::ErrorCode::ERR_INNER_SYSTEM_ERROR);
     EXPECT_EQ(response.Get()->saversp().message(), "save state failed: don't init state actor");
 }
+
+/**
+ * Feature: SaveStateSuccess
+ * Description: save state success
+ * Steps:
+ * 1. save state
+ *
+ * Expectation:
+ * 1. StatusCode::ERR_NONE
+ */
+TEST_F(StateHandlerTest, DeleteStateSuccess)
+{
+    EXPECT_CALL(*distributedCacheClient_, Del(Matcher<const std::string &>("DeleteStateSuccess_instance_id")))
+            .WillOnce(Return(Status::OK()));
+
+    auto status = StateHandler::DeleteState("DeleteStateSuccess_instance_id");
+    EXPECT_TRUE(status.Get().IsOk());
+}
+
+/**
+ * Feature: DeleteStateFailed
+ * Description: delete state failed
+ * Steps:
+ * 1. delete state with empty instance id
+ * 2. delete state from cache failed
+ *
+ * Expectation:
+ * 1. StatusCode::ERR_INSTANCE_INFO_INVALID
+ * 2. StatusCode::FAILED
+ */
+TEST_F(StateHandlerTest, DeleteStateFailed)
+{
+    auto status = StateHandler::DeleteState("");
+    EXPECT_AWAIT_READY(status);
+    EXPECT_FALSE(status.Get());
+
+    EXPECT_CALL(*distributedCacheClient_, Del(Matcher<const std::string &>("DeleteStateFailed_instance_id")))
+    .WillOnce(Return(Status(StatusCode::FAILED, "something was wrong")));
+
+    status = StateHandler::DeleteState("DeleteStateFailed_instance_id");
+    EXPECT_AWAIT_READY(status);
+    EXPECT_EQ(status.Get().StatusCode(), StatusCode::FAILED);
+
+}
+
+
+/**
+ * Feature: DeleteStateFailed
+ * Description: delete state failed
+ * Steps:
+ * 1. clear aid
+ * 2. delete state
+ *
+ * Expectation:
+ * 1. StatusCode::ERR_INNER_SYSTEM_ERROR
+ */
+    TEST_F(StateHandlerTest, DeleteStateFailedWithInValidAID)
+    {
+        StateHandlerHelper::ClearStateActorHelper();
+
+        auto status = StateHandler::DeleteState("instance_id");
+
+        EXPECT_AWAIT_READY(status);
+        EXPECT_EQ(status.Get().StatusCode(), StatusCode::ERR_INNER_SYSTEM_ERROR);
+    }
 
 }  // namespace functionsystem::function_proxy::test

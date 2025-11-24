@@ -18,7 +18,7 @@
 #define RUNTIME_MANAGER_MANAGER_RUNTIME_MANAGER_TEST_ACTOR_H
 
 #include "actor/actor.hpp"
-#include "proto/pb/message_pb.h"
+#include "common/proto/pb/message_pb.h"
 namespace functionsystem::runtime_manager {
 class RuntimeManagerTestActor : public litebus::ActorBase {
 public:
@@ -39,8 +39,6 @@ public:
     void StopInstanceResponse(const litebus::AID &from, std::string && /* name */, std::string &&msg);
 
     void Register(const litebus::AID &from, std::string &&, std::string &&msg);
-
-    void SendPingOnce(const litebus::AID &to);
 
     void QueryInstanceStatusInfo(const litebus::AID &to, const messages::QueryInstanceStatusRequest &request);
 

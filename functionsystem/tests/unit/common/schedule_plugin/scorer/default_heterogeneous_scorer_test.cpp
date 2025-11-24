@@ -71,16 +71,16 @@ TEST(DefaultHeterogeneousScorerTest, TestHeteroScoringHBMAndLatencyAndStreamInHe
     auto instance = view_utils::Get1DInstanceWithNpuResource(30, 20, 1, "NPU/Ascend910B");
     auto preAllocated = std::make_shared<PreAllocatedContext>();
     auto score = scorer.Score(preAllocated, instance, unit);
-    EXPECT_EQ(score.score, 41); // ((40 - 30)/40 + 0 + 99) / 3;
-    EXPECT_EQ(score.realIDs[0], 2);
+    EXPECT_EQ(score.score, 33); // int(30/30*100 + 0 + 0) / 3;
+    EXPECT_EQ(score.realIDs[0], 5);
     EXPECT_EQ(score.heteroProductName, "NPU/Ascend910B");
 
     // 2.regex
     instance = view_utils::Get1DInstanceWithNpuResource(30, 20, 1, "NPU/Ascend910.*");
     preAllocated = std::make_shared<PreAllocatedContext>();
     score = scorer.Score(preAllocated, instance, unit);
-    EXPECT_EQ(score.score, 41); // ((40 - 30)/40 + 0 + 99) / 3;
-    EXPECT_EQ(score.realIDs[0], 2);
+    EXPECT_EQ(score.score, 33); // int(30/30*100 + 0 + 0) / 3;
+    EXPECT_EQ(score.realIDs[0], 5);
     EXPECT_EQ(score.heteroProductName, "NPU/Ascend910B");
 }
 

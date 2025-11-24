@@ -94,10 +94,10 @@ private:
 
 class FutureHelperExample : public ::testing::Test {
 protected:
-    static void SetUpTestCase()
+    [[maybe_unused]] static void SetUpTestSuite()
     {
     }
-    static void TearDownTestCase()
+    [[maybe_unused]] static void TearDownTestSuite()
     {
     }
     void SetUp()

@@ -19,9 +19,9 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
-#include "constants.h"
-#include "logs/logging.h"
-#include "resource_type.h"
+#include "common/constants/constants.h"
+#include "common/logs/logging.h"
+#include "common/resource_view/resource_type.h"
 #include "common/resource_view/view_utils.h"
 #include "common/schedule_plugin/common/plugin_utils.h"
 #include "common/schedule_plugin/common/preallocated_context.h"
@@ -55,6 +55,7 @@ TEST_F(LabelAffinityFilterTest, InstancRequiredAffinityInPodScopeTest)
     auto instance1 = view_utils::Get1DInstance();
 
     auto preAllocated = std::make_shared<schedule_framework::PreAllocatedContext>();
+    preAllocated->allLocalLabels[local1.id()] = local1.nodelabels();
     auto pluginCtx = messages::PluginContext();
     pluginCtx.mutable_affinityctx()->set_maxscore(100);
     std::map<std::string, messages::PluginContext> tmp{ { LABEL_AFFINITY_PLUGIN, pluginCtx } };
@@ -118,10 +119,10 @@ TEST_F(LabelAffinityFilterTest, InstancRequiredAffinityInNodeScopeTest)
     auto agent3 = NewResourceUnit("agent3", { { "key2", "value2" } });
     auto agent4 = NewResourceUnit("agent3", { { "key3", "value3" } });
     auto local1 = NewResourceUnit("local1", {});
-    agent1.set_ownerid(local1.id());
-    agent2.set_ownerid(local1.id());
-    agent3.set_ownerid(local1.id());
-    agent4.set_ownerid(local1.id());
+    agent1.set_ownerid(agent1.id());
+    agent2.set_ownerid(agent2.id());
+    agent3.set_ownerid(agent3.id());
+    agent4.set_ownerid(agent4.id());
     AddFragmentToUnit(local1, agent1);
     AddFragmentToUnit(local1, agent2);
     AddFragmentToUnit(local1, agent3);
@@ -145,6 +146,7 @@ TEST_F(LabelAffinityFilterTest, InstancRequiredAffinityInNodeScopeTest)
     (*preAllocated->pluginCtx)[LABEL_AFFINITY_PLUGIN].mutable_affinityctx()->clear_scheduledresult();
     preAllocated->ClearUnfeasible();
     preAllocated->allLocalLabels[local1.id()] = local1.nodelabels();
+    preAllocated->schedulerLevel = resource_view::SCHEDULER_LEVEL::LOCAL;
     schedule_framework::Filtered result;
 
     result = strictNonRootFilterPlugin.Filter(preAllocated, instance1, agent1);
@@ -167,9 +169,9 @@ TEST_F(LabelAffinityFilterTest, InstancPreferredAffinityTest)
     auto agent2 = NewResourceUnit("agent2", { { "key2", "value2" } });
     auto agent3 = NewResourceUnit("agent3", { { "key3", "value3" } });
     auto local1 = NewResourceUnit("local1", {});
-    agent1.set_ownerid(local1.id());
-    agent2.set_ownerid(local1.id());
-    agent3.set_ownerid(local1.id());
+    agent1.set_ownerid(agent1.id());
+    agent2.set_ownerid(agent2.id());
+    agent3.set_ownerid(agent3.id());
     AddFragmentToUnit(local1, agent1);
     AddFragmentToUnit(local1, agent2);
     AddFragmentToUnit(local1, agent3);
@@ -180,6 +182,7 @@ TEST_F(LabelAffinityFilterTest, InstancPreferredAffinityTest)
     auto affinity = Selector(true, { { Exist("key1") }, { Exist("key2") } });
     (*instanceAffinity->mutable_preferredaffinity()) = std::move(affinity);
     auto preAllocated = std::make_shared<schedule_framework::PreAllocatedContext>();
+    preAllocated->allLocalLabels[local1.id()] = local1.nodelabels();
     auto pluginCtx = messages::PluginContext();
     pluginCtx.mutable_affinityctx()->set_maxscore(100);
     std::map<std::string, messages::PluginContext> tmp{ { LABEL_AFFINITY_PLUGIN, pluginCtx } };
@@ -236,7 +239,7 @@ TEST_F(LabelAffinityFilterTest, InstancPreferredAffinityTest)
         auto instanceAffinity = instance1.mutable_scheduleoption()->mutable_affinity()->mutable_instance();
         instanceAffinity->set_scope(affinity::NODE);
 
-        preAllocated->allLocalLabels[local1.id()] = local1.nodelabels();
+        preAllocated->schedulerLevel = resource_view::SCHEDULER_LEVEL::LOCAL;
 
         schedule_framework::Filtered result;
 
@@ -269,6 +272,7 @@ TEST_F(LabelAffinityFilterTest, TopDomnSchedulingSkipPreferredOptimalScoreTest)
     auto affinity = Selector(false, { { Exist("key1") } });
     (*instanceAffinity->mutable_preferredaffinity()) = std::move(affinity);
     auto preAllocated = std::make_shared<schedule_framework::PreAllocatedContext>();
+    preAllocated->allLocalLabels[local1.id()] = local1.nodelabels();
     auto pluginCtx = messages::PluginContext();
     pluginCtx.mutable_affinityctx()->set_maxscore(100);
     std::map<std::string, messages::PluginContext> tmp{ { LABEL_AFFINITY_PLUGIN, pluginCtx } };
@@ -320,6 +324,7 @@ TEST_F(LabelAffinityFilterTest, ResourceRequiredAffinityTest)
     auto instance1 = view_utils::Get1DInstance();
 
     auto preAllocated = std::make_shared<schedule_framework::PreAllocatedContext>();
+    preAllocated->allLocalLabels[local1.id()] = local1.nodelabels();
     auto pluginCtx = messages::PluginContext();
     pluginCtx.mutable_affinityctx()->set_maxscore(100);
     std::map<std::string, messages::PluginContext> tmp{ { LABEL_AFFINITY_PLUGIN, pluginCtx } };
@@ -396,6 +401,7 @@ TEST_F(LabelAffinityFilterTest, ResourcePreferredAffinityTest)
     auto affinity = Selector(true, { { Exist("key1") }, { Exist("key2") } });
     (*resourceAffinity->mutable_preferredaffinity()) = std::move(affinity);
     auto preAllocated = std::make_shared<schedule_framework::PreAllocatedContext>();
+    preAllocated->allLocalLabels[local1.id()] = local1.nodelabels();
     auto pluginCtx = messages::PluginContext();
     pluginCtx.mutable_affinityctx()->set_maxscore(100);
     std::map<std::string, messages::PluginContext> tmp{ { LABEL_AFFINITY_PLUGIN, pluginCtx } };
@@ -490,6 +496,7 @@ TEST_F(LabelAffinityFilterTest, AllowPreemptPreferredAffinityTest)
         preAllocated->allLocalLabels["NodeA"] = NodeA.nodelabels();
         preAllocated->allLocalLabels["NodeB"] = NodeB.nodelabels();
         preAllocated->allLocalLabels["NodeC"] = NodeC.nodelabels();
+        preAllocated->schedulerLevel = resource_view::SCHEDULER_LEVEL::NON_ROOT_DOMAIN;
         schedule_framework::Filtered result;
 
         result = relaxedNonRootFilterPlugin.Filter(preAllocated, instance1, agent1);
@@ -506,6 +513,7 @@ TEST_F(LabelAffinityFilterTest, AllowPreemptPreferredAffinityTest)
         preAllocated->allLocalLabels["NodeA"] = NodeA.nodelabels();
         preAllocated->allLocalLabels["NodeB"] = NodeB.nodelabels();
         preAllocated->allLocalLabels["NodeC"] = NodeC.nodelabels();
+        preAllocated->schedulerLevel = resource_view::SCHEDULER_LEVEL::NON_ROOT_DOMAIN;
         schedule_framework::Filtered result;
 
         result = strictNonRootFilterPlugin.Filter(preAllocated, instance1, agent1);
@@ -559,6 +567,7 @@ TEST_F(LabelAffinityFilterTest, NotAllowPreemptPreferredAffinityTest)
         preAllocated->allLocalLabels["NodeA"] = NodeA.nodelabels();
         preAllocated->allLocalLabels["NodeB"] = NodeB.nodelabels();
         preAllocated->allLocalLabels["NodeC"] = NodeC.nodelabels();
+        preAllocated->schedulerLevel = resource_view::SCHEDULER_LEVEL::NON_ROOT_DOMAIN;
         schedule_framework::Filtered result;
 
         result = relaxedNonRootFilterPlugin.Filter(preAllocated, instance1, agent1);
@@ -574,6 +583,7 @@ TEST_F(LabelAffinityFilterTest, NotAllowPreemptPreferredAffinityTest)
         preAllocated->allLocalLabels["NodeA"] = NodeA.nodelabels();
         preAllocated->allLocalLabels["NodeB"] = NodeB.nodelabels();
         preAllocated->allLocalLabels["NodeC"] = NodeC.nodelabels();
+        preAllocated->schedulerLevel = resource_view::SCHEDULER_LEVEL::NON_ROOT_DOMAIN;
         schedule_framework::Filtered result;
 
         result = strictNonRootFilterPlugin.Filter(preAllocated, instance1, agent1);
@@ -606,6 +616,7 @@ TEST_F(LabelAffinityFilterTest, DataPreferredAffinityTest)
     auto affinity = Selector(true, { { Exist("key1") }, { Exist("key2") } });
     (*dataAffinity->mutable_preferredaffinity()) = std::move(affinity);
     auto preAllocated = std::make_shared<schedule_framework::PreAllocatedContext>();
+    preAllocated->allLocalLabels[local1.id()] = local1.nodelabels();
     auto pluginCtx = messages::PluginContext();
     pluginCtx.mutable_affinityctx()->set_maxscore(100);
     std::map<std::string, messages::PluginContext> tmp{ { LABEL_AFFINITY_PLUGIN, pluginCtx } };
@@ -679,6 +690,7 @@ TEST_F(LabelAffinityFilterTest, PendingAffinityTest)
 
     {
         auto preAllocated = std::make_shared<schedule_framework::PreAllocatedContext>();
+        preAllocated->allLocalLabels[local1.id()] = local1.nodelabels();
         auto pluginCtx = messages::PluginContext();
         pluginCtx.mutable_affinityctx()->set_maxscore(100);
         std::map<std::string, messages::PluginContext> tmp{ { LABEL_AFFINITY_PLUGIN, pluginCtx } };
@@ -713,6 +725,68 @@ TEST_F(LabelAffinityFilterTest, PendingAffinityTest)
     }
 }
 
+TEST_F(LabelAffinityFilterTest, TenantPreferredAffinityTest)
+{
+    LabelAffinityFilter relaxedNonRootFilterPlugin(true, false);
+    LabelAffinityFilter strictNonRootFilterPlugin(false, false);
+
+    auto agent1 = NewResourceUnit("agent1", { { "tenantId", "tenantA" } });
+    auto agent2 = NewResourceUnit("agent2", { { "tenantId", "tenantB" } });
+    auto agent3 = NewResourceUnit("agent3", {});
+    auto local1 = NewResourceUnit("local1", {});
+    agent1.set_ownerid(local1.id());
+    agent2.set_ownerid(local1.id());
+    agent3.set_ownerid(local1.id());
+    AddFragmentToUnit(local1, agent1);
+    AddFragmentToUnit(local1, agent2);
+    AddFragmentToUnit(local1, agent3);
+
+    auto instance1 = view_utils::Get1DInstance();
+    auto tenantAffinity = instance1.mutable_scheduleoption()->mutable_affinity()->mutable_inner()->mutable_tenant();
+    auto tenantRequiredAntiAffinity = Selector(false, { { NotIn("tenantId", { "tenantA" }), Exist("tenantId") } });
+    (*tenantAffinity->mutable_requiredantiaffinity()) = std::move(tenantRequiredAntiAffinity);
+    auto tenantPreferrdAffinity = Selector(true, { { In("tenantId", { "tenantA" }) } });
+    (*tenantAffinity->mutable_preferredaffinity()) = std::move(tenantPreferrdAffinity);
+
+    auto preAllocated = std::make_shared<schedule_framework::PreAllocatedContext>();
+    preAllocated->allLocalLabels[local1.id()] = local1.nodelabels();
+    auto pluginCtx = messages::PluginContext();
+    pluginCtx.mutable_affinityctx()->set_maxscore(100);
+    std::map<std::string, messages::PluginContext> tmp{ { LABEL_AFFINITY_PLUGIN, pluginCtx } };
+    ::google::protobuf::Map<std::string, messages::PluginContext> map(tmp.begin(), tmp.end());
+    preAllocated->pluginCtx = &map;
+
+    // 1.relaxed filter
+    {
+        preAllocated->ClearUnfeasible();
+        schedule_framework::Filtered result;
+
+        result = relaxedNonRootFilterPlugin.Filter(preAllocated, instance1, agent1);
+        EXPECT_EQ(result.status.IsOk(), true);
+        EXPECT_EQ(result.availableForRequest, -1);
+        result = relaxedNonRootFilterPlugin.Filter(preAllocated, instance1, agent2);
+        EXPECT_EQ(result.status.IsOk(), false);
+        result = relaxedNonRootFilterPlugin.Filter(preAllocated, instance1, agent3);
+        EXPECT_EQ(result.status.IsOk(), true);
+    }
+
+    // 2.strict filter
+    {
+        (*preAllocated->pluginCtx)[LABEL_AFFINITY_PLUGIN].mutable_affinityctx()->clear_scheduledscore();
+        (*preAllocated->pluginCtx)[LABEL_AFFINITY_PLUGIN].mutable_affinityctx()->clear_scheduledresult();
+        preAllocated->ClearUnfeasible();
+        schedule_framework::Filtered result;
+
+        result = strictNonRootFilterPlugin.Filter(preAllocated, instance1, agent1);
+        EXPECT_EQ(result.status.IsOk(), true);
+        EXPECT_EQ(result.availableForRequest, -1);
+        result = strictNonRootFilterPlugin.Filter(preAllocated, instance1, agent2);
+        EXPECT_EQ(result.status.IsOk(), false);
+        result = strictNonRootFilterPlugin.Filter(preAllocated, instance1, agent3);
+        EXPECT_EQ(result.status.IsOk(), false);
+    }
+}
+
 TEST_F(LabelAffinityFilterTest, ResourceGroupAffinityTest)
 {
     LabelAffinityFilter strictNonRootFilterPlugin(false, false);
@@ -735,6 +809,7 @@ TEST_F(LabelAffinityFilterTest, ResourceGroupAffinityTest)
 
     {
         auto preAllocated = std::make_shared<schedule_framework::PreAllocatedContext>();
+        preAllocated->allLocalLabels[local1.id()] = local1.nodelabels();
         auto pluginCtx = messages::PluginContext();
         pluginCtx.mutable_affinityctx()->set_maxscore(100);
         std::map<std::string, messages::PluginContext> tmp{ { LABEL_AFFINITY_PLUGIN, pluginCtx } };

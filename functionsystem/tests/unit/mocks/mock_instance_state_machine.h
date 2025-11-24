@@ -85,12 +85,14 @@ public:
     MOCK_METHOD(int64_t, GetGracefulShutdownTime, (), (override));
     MOCK_METHOD(void, SetGracefulShutdownTime, (const int64_t time), (override));
     MOCK_METHOD(int32_t, GetLastSaveFailedState, (), (override));
+    MOCK_METHOD(int32_t, GetLastSaveFailedErrCode, (), (override));
     MOCK_METHOD(void, ResetLastSaveFailedState, (), (override));
     MOCK_METHOD(litebus::Future<resources::InstanceInfo>, SyncInstanceFromMetaStore, (), (override));
     MOCK_METHOD(void, ExecuteStateChangeCallback, (const std::string &requestID, const InstanceState newState), (override));
     MOCK_METHOD(std::string, GetRequestID, (), (override));
     MOCK_METHOD(std::shared_ptr<InstanceContext>, GetInstanceContextCopy, (), (override));
     MOCK_METHOD(litebus::Future<std::string>, GetCancelFuture, (), (override));
+    MOCK_METHOD(int64_t, GetModRevision, (), (override));
 };
 }  // namespace functionsystem::test
 

@@ -25,7 +25,7 @@
 #include "meta_store_client/key_value/etcd_kv_client_strategy.h"
 #include "meta_store_client/lease/etcd_lease_client_strategy.h"
 #include "meta_store_client/meta_store_struct.h"
-#include "meta_store_kv_operation.h"
+#include "common/utils/meta_store_kv_operation.h"
 #include "mocks/mock_etcd_election_service.h"
 #include "mocks/mock_etcd_lease_service.h"
 #include "mocks/mock_etcd_watch_service.h"
@@ -55,7 +55,7 @@ protected:
     inline static std::string watchHost_;
     inline static std::string electionHost_;
 
-    [[maybe_unused]] static void SetUpTestCase()
+    [[maybe_unused]] static void SetUpTestSuite()
     {
         etcdSrvDriver_ = std::make_unique<meta_store::test::EtcdServiceDriver>();
         int metaStoreServerPort = functionsystem::test::FindAvailablePort();
@@ -85,12 +85,12 @@ protected:
         wp->GetFuture().Get();
     }
 
-    [[maybe_unused]] static void TearDownTestCase()
+    [[maybe_unused]] static void TearDownTestSuite()
     {
         etcdSrvDriver_->StopServer();
 
         if (electionServer_ != nullptr) {
-            electionServer_->Shutdown();
+            electionServer_->Shutdown(std::chrono::system_clock::now());
             electionServer_ = nullptr;
         }
 
@@ -98,7 +98,7 @@ protected:
         leaseService_ = nullptr;
 
         if (watchServer_ != nullptr) {
-            watchServer_->Shutdown();
+            watchServer_->Shutdown(std::chrono::system_clock::now());
             watchServer_ = nullptr;
         }
         watchService_ = nullptr;
@@ -120,9 +120,10 @@ protected:
     void SetUp() override
     {
         PutOption op = { .leaseId = 0, .prevKv = false };
-        MetaStoreClient client(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_, .metaStoreAddress = "",
-                                                .enableMetaStore= false, .isMetaStorePassthrough = false,
-                                                .etcdTablePrefix = "/test"  });
+        MetaStoreClient client(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_,
+                                                .metaStoreAddress = "",
+                                                .enableMetaStore = false,
+                                                .etcdTablePrefix = "/test" });
         client.Init();
         client.UpdateMetaStoreAddress(metaStoreServerHost_);
         client.Put("llt/sn/workers/xxx", "1.0", op).Get();
@@ -135,7 +136,10 @@ protected:
     {
         DeleteOption op = { .prevKv = false, .prefix = true };
 
-        MetaStoreClient metastoreClient(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_, .metaStoreAddress = "", .enableMetaStore= false, .isMetaStorePassthrough = false, .etcdTablePrefix = "/test"  });
+        MetaStoreClient metastoreClient(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_,
+                                                         .metaStoreAddress = "",
+                                                         .enableMetaStore = false,
+                                                         .etcdTablePrefix = "/test" });
         metastoreClient.Init();
         metastoreClient.Delete("llt/sn/workers/", op).Get();  // delete all llt
     }
@@ -184,7 +188,7 @@ protected:
 TEST_F(MetaStoreClientTest, OperateEtcdFailed)  // NOLINT
 {
     auto helper = GrpcClientHelper(10);
-    MetaStoreClient errorClient(MetaStoreConfig{ .etcdAddress = "127.0.0.1:33333", .metaStoreAddress = "", .enableMetaStore= false, .isMetaStorePassthrough = false, .etcdTablePrefix = "/test"  }, sslConfig, metaStoreTimeoutOpt_);
+    MetaStoreClient errorClient(MetaStoreConfig{ .etcdAddress = "127.0.0.1:33333", .metaStoreAddress = "", .enableMetaStore= false, .etcdTablePrefix = "/test"  }, sslConfig, metaStoreTimeoutOpt_);
     errorClient.Init();
     PutOption op = { .leaseId = 0, .prevKv = false };
     auto response = errorClient.Put("llt/sn/error/put", "2.0", op).Get();
@@ -202,7 +206,7 @@ TEST_F(MetaStoreClientTest, OperateEtcdFailed)  // NOLINT
 
 TEST_F(MetaStoreClientTest, PutKeyValue)  // NOLINT
 {
-    MetaStoreClient client(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_ , .metaStoreAddress = "", .enableMetaStore= false, .isMetaStorePassthrough = false, .etcdTablePrefix = "/test" }, sslConfig, metaStoreTimeoutOpt_);
+    MetaStoreClient client(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_ , .metaStoreAddress = "", .enableMetaStore= false, .etcdTablePrefix = "/test" }, sslConfig, metaStoreTimeoutOpt_);
     client.Init();
     PutOption op = { .leaseId = 0, .prevKv = false };
     auto response = client.Put("llt/sn/workers/xxx", "2.0", op).Get();
@@ -217,7 +221,7 @@ TEST_F(MetaStoreClientTest, PutKeyValue)  // NOLINT
 
 TEST_F(MetaStoreClientTest, DeleteKeyValue)  // NOLINT
 {
-    MetaStoreClient client(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_, .metaStoreAddress = "", .enableMetaStore= false, .isMetaStorePassthrough = false, .etcdTablePrefix = "/test"  }, sslConfig, metaStoreTimeoutOpt_);
+    MetaStoreClient client(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_, .metaStoreAddress = "", .enableMetaStore= false, .etcdTablePrefix = "/test"  }, sslConfig, metaStoreTimeoutOpt_);
     client.Init();
     DeleteOption op = { false, false };
     auto response = client.Delete("llt/sn/workers/xxx", op).Get();
@@ -228,7 +232,7 @@ TEST_F(MetaStoreClientTest, DeleteKeyValue)  // NOLINT
 
 TEST_F(MetaStoreClientTest, DeleteKeyValuePrevKv)  // NOLINT
 {
-    MetaStoreClient client(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_, .metaStoreAddress = "", .enableMetaStore= false, .isMetaStorePassthrough = false, .etcdTablePrefix = "/test"  }, sslConfig, metaStoreTimeoutOpt_);
+    MetaStoreClient client(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_, .metaStoreAddress = "", .enableMetaStore= false, .etcdTablePrefix = "/test"  }, sslConfig, metaStoreTimeoutOpt_);
     client.Init();
     DeleteOption op = { .prevKv = true, .prefix = false };
     auto response = client.Delete("llt/sn/workers/xxx", op).Get();
@@ -241,7 +245,7 @@ TEST_F(MetaStoreClientTest, DeleteKeyValuePrevKv)  // NOLINT
 
 TEST_F(MetaStoreClientTest, DeleteKeyValuePrefix)  // NOLINT
 {
-    MetaStoreClient client(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_, .metaStoreAddress = "", .enableMetaStore= false, .isMetaStorePassthrough = false, .etcdTablePrefix = "/test"  }, sslConfig, metaStoreTimeoutOpt_);
+    MetaStoreClient client(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_, .metaStoreAddress = "", .enableMetaStore= false, .etcdTablePrefix = "/test"  }, sslConfig, metaStoreTimeoutOpt_);
     client.Init();
     DeleteOption op = { false, true };
     auto response = client.Delete("llt/sn/workers/", op).Get();
@@ -252,7 +256,7 @@ TEST_F(MetaStoreClientTest, DeleteKeyValuePrefix)  // NOLINT
 
 TEST_F(MetaStoreClientTest, DeleteKeyValuePrevPrefix)  // NOLINT
 {
-    MetaStoreClient client(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_, .metaStoreAddress = "", .enableMetaStore= false, .isMetaStorePassthrough = false, .etcdTablePrefix = "/test"  }, sslConfig, metaStoreTimeoutOpt_);
+    MetaStoreClient client(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_, .metaStoreAddress = "", .enableMetaStore= false, .etcdTablePrefix = "/test"  }, sslConfig, metaStoreTimeoutOpt_);
     client.Init();
     DeleteOption op = { true, true };
     auto response = client.Delete("llt/sn/workers/", op).Get();
@@ -265,7 +269,7 @@ TEST_F(MetaStoreClientTest, DeleteKeyValuePrevPrefix)  // NOLINT
 
 TEST_F(MetaStoreClientTest, GetKeyValue)  // NOLINT
 {
-    MetaStoreClient client(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_, .metaStoreAddress = "", .enableMetaStore= false, .isMetaStorePassthrough = false, .etcdTablePrefix = "/test"  }, sslConfig, metaStoreTimeoutOpt_);
+    MetaStoreClient client(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_, .metaStoreAddress = "", .enableMetaStore= false, .etcdTablePrefix = "/test"  }, sslConfig, metaStoreTimeoutOpt_);
     client.Init();
     GetOption op = { false, false, false, 0, SortOrder::DESCEND, SortTarget::MODIFY };
     auto response = client.Get("llt/sn/workers/xxx", op).Get();
@@ -299,7 +303,7 @@ TEST_F(MetaStoreClientTest, GetKeyValue)  // NOLINT
 
 TEST_F(MetaStoreClientTest, TransactionTxn)  // NOLINT
 {
-    MetaStoreClient client(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_, .metaStoreAddress = "", .enableMetaStore= false, .isMetaStorePassthrough = false, .etcdTablePrefix = "/test"  }, sslConfig, metaStoreTimeoutOpt_);
+    MetaStoreClient client(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_, .metaStoreAddress = "", .enableMetaStore= false, .etcdTablePrefix = "/test"  }, sslConfig, metaStoreTimeoutOpt_);
     client.Init();
     auto transaction = client.BeginTransaction();
 
@@ -329,14 +333,14 @@ TEST_F(MetaStoreClientTest, TransactionTxn)  // NOLINT
     EXPECT_EQ(TrimKeyPrefix(std::get<PutResponse>(txnResponse->responses[1].response).prevKv.key(), "/test"), "llt/sn/workers/yyy");
     EXPECT_EQ(std::get<PutResponse>(txnResponse->responses[1].response).prevKv.value(), "1.0");
 
-    EXPECT_EQ(std::get<GetResponse>(txnResponse->responses[2].response).kvs.size(), static_cast<uint32_t>(2));
+    EXPECT_EQ(std::get<GetResponse>(txnResponse->responses[2].response).kvs.size(), static_cast<uint32_t>(3)); // Txn中的查询始终查的缓存 cache_
     EXPECT_EQ(TrimKeyPrefix(std::get<GetResponse>(txnResponse->responses[2].response).kvs[0].key(), "/test"), "llt/sn/workers/zzz");
     EXPECT_EQ(std::get<GetResponse>(txnResponse->responses[2].response).kvs[0].value(), "1.0");
 }
 
 TEST_F(MetaStoreClientTest, TransactionTxnTest)
 {
-    MetaStoreClient client(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_, .metaStoreAddress = "", .enableMetaStore= false, .isMetaStorePassthrough = false, .etcdTablePrefix = "/test"  }, sslConfig, metaStoreTimeoutOpt_);
+    MetaStoreClient client(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_, .metaStoreAddress = "", .enableMetaStore= false, .etcdTablePrefix = "/test"  }, sslConfig, metaStoreTimeoutOpt_);
     client.Init();
     auto transaction = client.BeginTransaction();
     transaction->If(TxnCompare::OfVersion("llt/sn/workers/xxx", CompareOperator::EQUAL, 1));
@@ -349,7 +353,7 @@ TEST_F(MetaStoreClientTest, TransactionTxnTest)
 
 TEST_F(MetaStoreClientTest, TransactionTxnElse)  // NOLINT
 {
-    MetaStoreClient client(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_, .metaStoreAddress = "", .enableMetaStore= false, .isMetaStorePassthrough = false, .etcdTablePrefix = "/test"  }, sslConfig, metaStoreTimeoutOpt_);
+    MetaStoreClient client(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_, .metaStoreAddress = "", .enableMetaStore= false, .etcdTablePrefix = "/test"  }, sslConfig, metaStoreTimeoutOpt_);
     client.Init();
     auto transaction = client.BeginTransaction();
 
@@ -380,14 +384,14 @@ TEST_F(MetaStoreClientTest, TransactionTxnElse)  // NOLINT
     EXPECT_EQ(TrimKeyPrefix(std::get<DeleteResponse>(txnResponse->responses[1].response).prevKvs[0].key(), "/test"), "llt/sn/workers/yyy");
     EXPECT_EQ(std::get<DeleteResponse>(txnResponse->responses[1].response).prevKvs[0].value(), "1.0");
 
-    EXPECT_EQ(std::get<GetResponse>(txnResponse->responses[2].response).kvs.size(), static_cast<uint32_t>(2));
+    EXPECT_EQ(std::get<GetResponse>(txnResponse->responses[2].response).kvs.size(), static_cast<uint32_t>(3)); // Txn中的查询始终查的缓存 cache_
     EXPECT_EQ(TrimKeyPrefix(std::get<GetResponse>(txnResponse->responses[2].response).kvs[0].key(), "/test"), "llt/sn/workers/zzz");
-    EXPECT_EQ(std::get<GetResponse>(txnResponse->responses[2].response).kvs[0].value(), "2.0");
+    EXPECT_EQ(std::get<GetResponse>(txnResponse->responses[2].response).kvs[0].value(), "1.0"); // Txn中的查询始终查的缓存 cache_
 }
 
 TEST_F(MetaStoreClientTest, GrantLease)  // NOLINT
 {
-    MetaStoreClient client(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_, .metaStoreAddress = "", .enableMetaStore= false, .isMetaStorePassthrough = false, .etcdTablePrefix = "/test"  }, sslConfig, metaStoreTimeoutOpt_);
+    MetaStoreClient client(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_, .metaStoreAddress = "", .enableMetaStore= false, .etcdTablePrefix = "/test"  }, sslConfig, metaStoreTimeoutOpt_);
     client.Init();
     bool put = false, deleted = false;
     auto observer = [&](const std::vector<WatchEvent> &events, bool) -> bool {
@@ -409,7 +413,9 @@ TEST_F(MetaStoreClientTest, GrantLease)  // NOLINT
         return true;
     };
     WatchOption option = { .prefix = true, .prevKv = true, .revision = 0 };
-    auto syncer = []() -> litebus::Future<SyncResult> { return SyncResult{Status::OK(), 0}; };
+    auto syncer = [](const std::shared_ptr<GetResponse> &) -> litebus::Future<SyncResult> {
+        return SyncResult{ Status::OK() };
+    };
     auto watcher = client.Watch("llt/sn/workers", option, observer, syncer).Get();  // await
     ASSERT_AWAIT_TRUE([&watcher]() -> bool { return watcher->GetWatchId() == 0; });
 
@@ -435,7 +441,11 @@ TEST_F(MetaStoreClientTest, GrantLease)  // NOLINT
 
 TEST_F(MetaStoreClientTest, RevokeLease)  // NOLINT
 {
-    MetaStoreClient client(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_, .metaStoreAddress = "", .enableMetaStore= false, .isMetaStorePassthrough = false, .etcdTablePrefix = "/test"  }, sslConfig, metaStoreTimeoutOpt_);
+    MetaStoreClient client(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_,
+                                            .metaStoreAddress = "",
+                                            .enableMetaStore = false,
+                                            .etcdTablePrefix = "/test" },
+                           sslConfig, metaStoreTimeoutOpt_);
     client.Init();
     bool put = false, deleted = false;
     auto observer = [&](const std::vector<WatchEvent> &events, bool) -> bool {
@@ -457,7 +467,9 @@ TEST_F(MetaStoreClientTest, RevokeLease)  // NOLINT
         return true;
     };
     WatchOption option = { .prefix = true, .prevKv = true, .revision = 0 };
-    auto syncer = []() -> litebus::Future<SyncResult> { return SyncResult{Status::OK(), 0}; };
+    auto syncer = [](const std::shared_ptr<GetResponse> &) -> litebus::Future<SyncResult> {
+        return SyncResult{ Status::OK() };
+    };
     auto watcher = client.Watch("llt/sn/workers", option, observer, syncer).Get();  // await
     ASSERT_AWAIT_TRUE([&watcher]() -> bool { return watcher->GetWatchId() == 0; });
 
@@ -486,7 +498,11 @@ TEST_F(MetaStoreClientTest, RevokeLease)  // NOLINT
 
 TEST_F(MetaStoreClientTest, KeepAliveLease)  // NOLINT
 {
-    MetaStoreClient client(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_, .metaStoreAddress = "", .enableMetaStore= false, .isMetaStorePassthrough = false, .etcdTablePrefix = "/test"  }, sslConfig, metaStoreTimeoutOpt_);
+    MetaStoreClient client(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_,
+                                            .metaStoreAddress = "",
+                                            .enableMetaStore = false,
+                                            .etcdTablePrefix = "/test" },
+                           sslConfig, metaStoreTimeoutOpt_);
     client.Init();
     bool put = false, deleted = false;
     auto observer = [&](const std::vector<WatchEvent> &events, bool) -> bool {
@@ -508,7 +524,9 @@ TEST_F(MetaStoreClientTest, KeepAliveLease)  // NOLINT
         return true;
     };
     WatchOption option = { .prefix = true, .prevKv = true, .revision = 0 };
-    auto syncer = []() -> litebus::Future<SyncResult> { return SyncResult{Status::OK(), 0}; };
+    auto syncer = [](const std::shared_ptr<GetResponse> &) -> litebus::Future<SyncResult> {
+        return SyncResult{ Status::OK() };
+    };
     auto watcher = client.Watch("llt/sn/workers", option, observer, syncer).Get();  // await
     ASSERT_AWAIT_TRUE([&watcher]() -> bool { return watcher->GetWatchId() == 0; });
 
@@ -526,14 +544,19 @@ TEST_F(MetaStoreClientTest, KeepAliveLease)  // NOLINT
     ASSERT_AWAIT_TRUE([&deleted]() -> bool { return deleted; });
 
     auto helper = GrpcClientHelper(10);
-    MetaStoreClient invalid_client(MetaStoreConfig{ .etcdAddress = "127.0.0.1:123", .metaStoreAddress = "", .enableMetaStore= false, .isMetaStorePassthrough = false, .etcdTablePrefix = "/test"  });
+    MetaStoreClient invalid_client(MetaStoreConfig{
+        .etcdAddress = "127.0.0.1:123",
+        .metaStoreAddress = "",
+        .enableMetaStore= false,
+        .etcdTablePrefix = "/test"
+    });
     invalid_client.Init();
     EXPECT_EQ(invalid_client.KeepAliveOnce(123).Get().status.StatusCode(), StatusCode::FAILED);
 }
 
 TEST_F(MetaStoreClientTest, CreateWatcher)  // NOLINT
 {
-    MetaStoreClient client(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_, .metaStoreAddress = "", .enableMetaStore= false, .isMetaStorePassthrough = false, .etcdTablePrefix = "/test"  }, sslConfig, metaStoreTimeoutOpt_);
+    MetaStoreClient client(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_, .metaStoreAddress = "", .enableMetaStore= false, .etcdTablePrefix = "/test"  }, sslConfig, metaStoreTimeoutOpt_);
     client.Init();
     int count = 0;
     auto observer =
@@ -564,7 +587,9 @@ TEST_F(MetaStoreClientTest, CreateWatcher)  // NOLINT
     auto revision = client.Get("llt/sn/workers", { .prefix = true }).Get()->header.revision;
 
     WatchOption option = { .prefix = true, .prevKv = true, .revision = revision + 1 };
-    auto syncer = []() -> litebus::Future<SyncResult> { return SyncResult{Status::OK(), 0}; };
+    auto syncer = [](const std::shared_ptr<GetResponse> &) -> litebus::Future<SyncResult> {
+        return SyncResult{ Status::OK() };
+    };
     auto watcher = client.Watch("llt/sn/workers", option, observer, syncer).Get();
     // receive put and delete event
     ASSERT_AWAIT_TRUE([&watcher]() -> bool { return watcher->GetWatchId() == 0; });
@@ -585,7 +610,10 @@ TEST_F(MetaStoreClientTest, CreateWatcher)  // NOLINT
 
 TEST_F(MetaStoreClientTest, WatchCanceledByServerTest)  // NOLINT
 {
-    MetaStoreClient client(MetaStoreConfig{ .etcdAddress = watchHost_ , .metaStoreAddress = "", .enableMetaStore= false, .isMetaStorePassthrough = false, .etcdTablePrefix = "/test" }, sslConfig, metaStoreTimeoutOpt_);
+    MetaStoreClient client(
+        MetaStoreConfig{
+            .etcdAddress = watchHost_, .metaStoreAddress = "", .enableMetaStore = false, .etcdTablePrefix = "/test" },
+        sslConfig, metaStoreTimeoutOpt_);
     client.Init();
     auto watchActor = std::make_shared<MockEtcdWatchActor>();
     litebus::Spawn(watchActor);
@@ -595,9 +623,14 @@ TEST_F(MetaStoreClientTest, WatchCanceledByServerTest)  // NOLINT
     EXPECT_CALL(*watchActor, Create).WillOnce(testing::DoAll(FutureArg<0>(&createRequest1), testing::Return()));
 
     WatchOption option = { .prefix = true, .prevKv = true, .revision = 0 };
-    auto syncer = []() -> litebus::Future<SyncResult> { return SyncResult{Status::OK(), 0}; };
+    auto syncer = [](const std::shared_ptr<GetResponse> &) -> litebus::Future<SyncResult> {
+        return SyncResult{ Status::OK() };
+    };
     auto watcher =
-        client.Watch("/test", option, [](const std::vector<WatchEvent> &events, bool) -> bool { return true; }, syncer).Get();
+        client
+            .Watch(
+                "/test", option, [](const std::vector<WatchEvent> &events, bool) -> bool { return true; }, syncer)
+            .Get();
 
     ASSERT_AWAIT_READY(createRequest1);
     EXPECT_EQ(TrimKeyPrefix(createRequest1.Get().key(), "/test"), "/test");
@@ -631,7 +664,7 @@ TEST_F(MetaStoreClientTest, CloseWatcher)  // NOLINT
     const std::string key =
         "/sn/instance/business/yrk/tenant/12345678901234561234567890123456/function"
         "/0-yrcpp-yr-refcount/version/$latest/defaultaz/cf8e2758-dab0-4775-adff-a746df288052";
-    MetaStoreClient watchClient(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_ , .metaStoreAddress = "", .enableMetaStore= false, .isMetaStorePassthrough = false, .etcdTablePrefix = "/test" }, sslConfig, metaStoreTimeoutOpt_);
+    MetaStoreClient watchClient(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_ , .metaStoreAddress = "", .enableMetaStore= false, .etcdTablePrefix = "/test" }, sslConfig, metaStoreTimeoutOpt_);
     watchClient.Init();
     WatchEvent event;
     WatchOption watchOption = { .prefix = true, .prevKv = false, .revision = 0 };
@@ -639,11 +672,13 @@ TEST_F(MetaStoreClientTest, CloseWatcher)  // NOLINT
         event = events.front();
         return true;
     };
-    auto syncer = []() -> litebus::Future<SyncResult> { return SyncResult{Status::OK(), 0}; };
+    auto syncer = [](const std::shared_ptr<GetResponse> &) -> litebus::Future<SyncResult> {
+        return SyncResult{ Status::OK() };
+    };
     auto watcher = watchClient.Watch("/sn/instance/business/yrk/tenant/", watchOption, observer, syncer).Get();
     ASSERT_AWAIT_TRUE([&watcher]() -> bool { return watcher->GetWatchId() == 0; });
 
-    MetaStoreClient handleClient(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_ , .metaStoreAddress = "", .enableMetaStore= false, .isMetaStorePassthrough = false, .etcdTablePrefix = "/test" }, sslConfig, metaStoreTimeoutOpt_);
+    MetaStoreClient handleClient(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_ , .metaStoreAddress = "", .enableMetaStore= false, .etcdTablePrefix = "/test" }, sslConfig, metaStoreTimeoutOpt_);
     handleClient.Init();
     PutOption putOption = { .leaseId = 0, .prevKv = false };
     handleClient.Put(key, "1.0", putOption).Get();
@@ -698,12 +733,11 @@ TEST_F(MetaStoreClientTest, DoRevoke)
 
     litebus::Terminate(leaseClient->GetAID());
     litebus::Await(leaseClient->GetAID());
-    ASSERT_TRUE(true);
 }
 
 TEST_F(MetaStoreClientTest, CampaignTest)  // NOLINT
 {
-    MetaStoreClient client(MetaStoreConfig{ .etcdAddress = electionHost_, .metaStoreAddress = "", .enableMetaStore= false, .isMetaStorePassthrough = false, .etcdTablePrefix = "/test"  }, sslConfig, metaStoreTimeoutOpt_);
+    MetaStoreClient client(MetaStoreConfig{ .etcdAddress = electionHost_, .metaStoreAddress = "", .enableMetaStore= false, .etcdTablePrefix = "/test"  }, sslConfig, metaStoreTimeoutOpt_);
     client.Init();
     StartElectionGrantLease();
 
@@ -766,7 +800,7 @@ TEST_F(MetaStoreClientTest, CampaignTest)  // NOLINT
 
 TEST_F(MetaStoreClientTest, LeaderTest)  // NOLINT
 {
-    MetaStoreClient client(MetaStoreConfig{ .etcdAddress = electionHost_, .metaStoreAddress = "", .enableMetaStore= false, .isMetaStorePassthrough = false, .etcdTablePrefix = "/test"  }, sslConfig, metaStoreTimeoutOpt_);
+    MetaStoreClient client(MetaStoreConfig{ .etcdAddress = electionHost_, .metaStoreAddress = "", .enableMetaStore= false, .etcdTablePrefix = "/test"  }, sslConfig, metaStoreTimeoutOpt_);
     client.Init();
     StartElectionGrantLease();
 
@@ -802,7 +836,7 @@ TEST_F(MetaStoreClientTest, LeaderTest)  // NOLINT
 
 TEST_F(MetaStoreClientTest, ResignTest)  // NOLINT
 {
-    MetaStoreClient client(MetaStoreConfig{ .etcdAddress = electionHost_, .metaStoreAddress = "", .enableMetaStore= false, .isMetaStorePassthrough = false, .etcdTablePrefix = "/test"  }, sslConfig, metaStoreTimeoutOpt_);
+    MetaStoreClient client(MetaStoreConfig{ .etcdAddress = electionHost_, .metaStoreAddress = "", .enableMetaStore= false, .etcdTablePrefix = "/test"  }, sslConfig, metaStoreTimeoutOpt_);
     client.Init();
     StartElectionGrantLease();
 
@@ -840,7 +874,11 @@ TEST_F(MetaStoreClientTest, ResignTest)  // NOLINT
 
 TEST_F(MetaStoreClientTest, ObserveTest)  // NOLINT
 {
-    MetaStoreClient client(MetaStoreConfig{ .etcdAddress = electionHost_, .metaStoreAddress = "", .enableMetaStore= false, .isMetaStorePassthrough = false, .etcdTablePrefix = "/test"  }, sslConfig, metaStoreTimeoutOpt_);
+    MetaStoreClient client(MetaStoreConfig{ .etcdAddress = electionHost_,
+                                            .metaStoreAddress = "",
+                                            .enableMetaStore = false,
+                                            .etcdTablePrefix = "/test" },
+                           sslConfig, metaStoreTimeoutOpt_);
     client.Init();
     StartElectionGrantLease();
 
@@ -896,7 +934,11 @@ TEST_F(MetaStoreClientTest, ObserveTest)  // NOLINT
 
 TEST_F(MetaStoreClientTest, FallbreakTest)
 {
-    MetaStoreClient client(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_, .metaStoreAddress = "", .enableMetaStore= false, .isMetaStorePassthrough = false, .etcdTablePrefix = "/test"  }, sslConfig, metaStoreTimeoutOpt_);
+    MetaStoreClient client(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_,
+                                            .metaStoreAddress = "",
+                                            .enableMetaStore = false,
+                                            .etcdTablePrefix = "/test" },
+                           sslConfig, metaStoreTimeoutOpt_);
     client.Init();
     client.OnHealthyStatus(Status(GRPC_UNKNOWN, "healthy checkfailed"));
 
@@ -926,11 +968,17 @@ TEST_F(MetaStoreClientTest, FallbreakTest)
 
     auto resignRsp = client.Resign(LeaderKey());
     EXPECT_TRUE(resignRsp.Get().status.IsError());
+
+    client.OnHealthyStatus(Status::OK());
 }
 
 TEST_F(MetaStoreClientTest, IsConnectedTest)
 {
-    MetaStoreClient client(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_, .metaStoreAddress = "", .enableMetaStore= false, .isMetaStorePassthrough = false, .etcdTablePrefix = "/test"  }, sslConfig, metaStoreTimeoutOpt_);
+    MetaStoreClient client(MetaStoreConfig{ .etcdAddress = metaStoreServerHost_,
+                                            .metaStoreAddress = "",
+                                            .enableMetaStore = false,
+                                            .etcdTablePrefix = "/test" },
+                           sslConfig, metaStoreTimeoutOpt_);
     client.Init();
     auto isConnected = client.IsConnected();
     ASSERT_AWAIT_READY(isConnected);

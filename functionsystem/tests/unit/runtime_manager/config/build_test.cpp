@@ -96,7 +96,7 @@ TEST_F(BuildTest, GeneratePosixEnvsTest)
         startReq->mutable_runtimeinstanceinfo()->set_instanceid("ins-004");
         startReq->mutable_runtimeinstanceinfo()->mutable_runtimeconfig()->set_language("posix-custom-runtime");
         auto envMap = GeneratePosixEnvs(runtimeConfig, startReq, "21003");
-        EXPECT_EQ(envMap["PYTHONUNBUFFERED"], "1");  // default
+        EXPECT_EQ(envMap["PYTHONUNBUFFERED"], "1"); // default
     }
 }
 
@@ -126,7 +126,7 @@ TEST_F(BuildTest, GenerateEnvsTest)
         { "func-POSIX_LISTEN_ADDR", "/dcache" });
     startReq->mutable_runtimeinstanceinfo()->mutable_runtimeconfig()->mutable_userenvs()->insert(
         { "func-NPU-DEVICE-IDS", "0,1,3" });
-    auto env = GenerateEnvs(runtimeConfig, startReq, "21000", { 0, 4, 6, 7 });
+    auto env = GenerateEnvs(runtimeConfig, startReq, "21000", {0, 4, 6, 7});
     EXPECT_TRUE(env.customResourceEnvs["ENABLE_DS_AUTH"] == "true");
     EXPECT_TRUE(env.customResourceEnvs["ENABLE_SERVER_AUTH"] == "true");
     EXPECT_TRUE(env.customResourceEnvs["ENABLE_SERVER_MODE"] == "true");
@@ -135,8 +135,14 @@ TEST_F(BuildTest, GenerateEnvsTest)
     EXPECT_TRUE(env.posixEnvs["YR_FUNCTION_LIB_PATH"] == "/dcache/layer/func/test/test-a-b-c");
     EXPECT_TRUE(env.posixEnvs["LAYER_LIB_PATH"] == "/dcache/layer/test/layer-a-b");
     EXPECT_TRUE(env.userEnvs["ASCEND_RT_VISIBLE_DEVICES"] == "0,1,3");
-}
+    EXPECT_TRUE(env.customResourceEnvs.find("YR_LOG_PREFIX") == env.customResourceEnvs.end());
 
+    startReq->set_logprefix("YR_123_000001");
+    env = GenerateEnvs(runtimeConfig, startReq, "21000", {0, 4, 6, 7});
+    EXPECT_EQ(env.customResourceEnvs["YR_LOG_PREFIX"], "YR_123_000001");
+    EXPECT_EQ(env.customResourceEnvs["DATASYSTEM_CLIENT_LOG_NAME"], "YR_123_000001_ds_client");
+    EXPECT_EQ(env.customResourceEnvs["DATASYSTEM_CLIENT_ACCESS_LOG_NAME"], "YR_123_000001_ds_client_access");
+}
 TEST_F(BuildTest, SelectRealIDsTest_CardsIDsAndEnvSizeNotTheSame)
 {
     const std::vector<int> &cardsIDs = { 0, 4, 6, 7 };
@@ -160,5 +166,4 @@ TEST_F(BuildTest, SelectRealIDsTest_EmptyEnv)
     std::string result = SelectRealIDs(env, cardsIDs);
     EXPECT_EQ(result, "");
 }
-
 }  // namespace functionsystem::test

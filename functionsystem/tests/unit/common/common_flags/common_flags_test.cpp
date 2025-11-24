@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "common_flags/common_flags.h"
+#include "common/common_flags/common_flags.h"
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>

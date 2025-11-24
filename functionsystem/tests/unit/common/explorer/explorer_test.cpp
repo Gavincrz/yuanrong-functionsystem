@@ -24,10 +24,12 @@
 #include "common/constants/signal.h"
 #include "common/etcd_service/etcd_service_driver.h"
 #include "common/explorer/etcd_explorer_actor.h"
+#include "common/explorer/k8s_explorer_actor.h"
 #include "common/explorer/txn_explorer_actor.h"
-#include "logs/logging.h"
-#include "metadata/metadata.h"
+#include "common/logs/logging.h"
+#include "common/metadata/metadata.h"
 #include "common/utils/generate_message.h"
+#include "mocks/mock_kube_client.h"
 #include "mocks/mock_meta_store_client.h"
 #include "utils/future_test_helper.h"
 #include "utils/port_helper.h"
@@ -69,7 +71,7 @@ TEST_F(ExplorerTest, StandaloneMode)
     // TEST 1: New leader info, and new standalone explorer
     explorer::LeaderInfo leaderInfo{ .name = DEFAULT_MASTER_ELECTION_KEY, .address = "123" };
     explorer::ElectionInfo electionInfo{ .identity = "123", .mode = STANDALONE_MODE };
-    (void)Explorer::CreateExplorer(electionInfo, leaderInfo, mockMetaClient_);
+    (void)Explorer::CreateExplorer(electionInfo, leaderInfo, mockMetaClient_, nullptr, "default");
 
     LeaderInfo cachedLeaderInfo;
     // TEST 1.1: register callback
@@ -83,7 +85,7 @@ TEST_F(ExplorerTest, EtcdElectionMode)
 {
     explorer::LeaderInfo leaderInfo{ .name = DEFAULT_MASTER_ELECTION_KEY, .address = "123" };
     explorer::ElectionInfo electionInfo{ .identity = "123", .mode = ETCD_ELECTION_MODE };
-    (void)Explorer::CreateExplorer(electionInfo, leaderInfo, mockMetaClient_);
+    (void)Explorer::CreateExplorer(electionInfo, leaderInfo, mockMetaClient_, nullptr, "default");
 
     auto explorerActor = Explorer::GetInstance().GetExplorer(DEFAULT_MASTER_ELECTION_KEY);
 
@@ -127,14 +129,39 @@ TEST_F(ExplorerTest, EtcdElectionMode)
     litebus::Await(explorerActor->GetAID());
 }
 
+TEST_F(ExplorerTest, K8sElectionMode)
+{
+    explorer::LeaderInfo leaderInfo{ .name = FUNCTION_MASTER_K8S_LEASE_NAME, .address = "123" };
+    explorer::ElectionInfo electionInfo{
+        .identity = "123",
+        .mode = K8S_ELECTION_MODE,
+        .electKeepAliveInterval = 30,
+        .electLeaseTTL = 300,
+    };
+    auto mockClient1 = std::make_shared<MockKubeClient>();
+    (void)Explorer::CreateExplorer(electionInfo, leaderInfo, mockMetaClient_, mockClient1, "default");
+    LeaderInfo cachedLeaderInfo;
+    // TEST 1: register callback
+    Explorer::GetInstance().AddLeaderChangedCallback(
+        "cbid", [&cachedLeaderInfo](const LeaderInfo &lf) { cachedLeaderInfo = lf; });
+    auto lease = MockKubeClient::CreateLease("123");
+    litebus::Promise<std::shared_ptr<V1Lease>> promise;
+    promise.SetValue(lease);
+    EXPECT_CALL(*mockClient1, ReadNamespacedLease).WillRepeatedly(testing::Return(promise.GetFuture()));
+    auto explorerActor = Explorer::GetInstance().GetExplorer(FUNCTION_MASTER_K8S_LEASE_NAME);
+    litebus::Async(explorerActor->GetAID(), &K8sExplorerActor::FastPublish, LeaderInfo{});
+    litebus::Async(explorerActor->GetAID(), &K8sExplorerActor::Observe);
+    ASSERT_AWAIT_TRUE([&]() -> bool { return cachedLeaderInfo.address == "123"; });
+}
+
 TEST_F(ExplorerTest, TxnElectionMode)
 {
     auto watcher = std::make_shared<Watcher>([](int64_t watchID) {});
-    EXPECT_CALL(*mockMetaClient_, GetAndWatch).WillOnce(testing::Return(watcher));
+    EXPECT_CALL(*mockMetaClient_, GetAndWatch(testing::_,testing::_,testing::_,testing::_)).WillOnce(testing::Return(watcher));
 
     explorer::ElectionInfo electionInfo{ .identity = "123", .mode = TXN_ELECTION_MODE };
     explorer::LeaderInfo leaderInfo{ .name = DEFAULT_MASTER_ELECTION_KEY, .address = "123" };
-    (void)Explorer::CreateExplorer(electionInfo, leaderInfo, mockMetaClient_);
+    (void)Explorer::CreateExplorer(electionInfo, leaderInfo, mockMetaClient_, nullptr, "default");
 
     auto actor = Explorer::GetInstance().GetExplorer(DEFAULT_MASTER_ELECTION_KEY);
     auto *explorer = dynamic_cast<TxnExplorerActor *>(actor.get());

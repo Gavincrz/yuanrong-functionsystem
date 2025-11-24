@@ -16,7 +16,7 @@
 #include <gtest/gtest.h>
 
 #include "common/schedule_decision/queue/schedule_queue.h"
-#include "resource_type.h"
+#include "common/resource_view/resource_type.h"
 
 namespace functionsystem::test {
 using namespace schedule_decision;

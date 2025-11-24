@@ -20,7 +20,7 @@
 
 #include "busproxy/startup/busproxy_startup.h"
 #include "common/etcd_service/etcd_service_driver.h"
-#include "status/status.h"
+#include "common/status/status.h"
 #include "utils/port_helper.h"
 
 namespace functionsystem::test {
@@ -31,7 +31,7 @@ protected:
     inline static std::unique_ptr<meta_store::test::EtcdServiceDriver> etcdSrvDriver_;
     inline static std::string metaStoreServerHost_;
 
-    [[maybe_unused]] static void SetUpTestCase()
+    [[maybe_unused]] static void SetUpTestSuite()
     {
         etcdSrvDriver_ = std::make_unique<meta_store::test::EtcdServiceDriver>();
         int metaStoreServerPort = functionsystem::test::FindAvailablePort();
@@ -39,7 +39,7 @@ protected:
         etcdSrvDriver_->StartServer(metaStoreServerHost_);
     }
 
-    [[maybe_unused]] static void TearDownTestCase()
+    [[maybe_unused]] static void TearDownTestSuite()
     {
         etcdSrvDriver_->StopServer();
     }

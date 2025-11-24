@@ -21,8 +21,8 @@
 
 #include <async/async.hpp>
 
-#include "heartbeat/ping_pong_driver.h"
-#include "logs/logging.h"
+#include "common/heartbeat/heartbeat_client.h"
+#include "common/logs/logging.h"
 #include "local_scheduler/function_agent_manager/function_agent_mgr.h"
 namespace functionsystem::test {
 

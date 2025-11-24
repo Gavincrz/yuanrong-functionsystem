@@ -22,7 +22,7 @@
 #include "common/etcd_service/etcd_service_driver.h"
 #include "common/explorer/explorer.h"
 #include "common/leader/txn_leader_actor.h"
-#include "metadata/metadata.h"
+#include "common/metadata/metadata.h"
 #include "utils/future_test_helper.h"
 #include "utils/port_helper.h"
 
@@ -34,14 +34,14 @@ class TxnLeaderTest : public ::testing::Test {
 public:
     void SetUp() override
     {
-        EXPECT_AWAIT_READY(metaStoreClient_->Delete("/", { .prevKv = false, .prefix = true }));
+        EXPECT_AWAIT_READY(metaStoreClient_->Delete("/", { .prefix = true }));
     }
 
     void TearDown() override
     {
     }
 
-    static void SetUpTestCase()
+    [[maybe_unused]] static void SetUpTestSuite()
     {
         etcdSrvDriver_ = std::make_unique<meta_store::test::EtcdServiceDriver>();
         int metaStoreServerPort = functionsystem::test::FindAvailablePort();
@@ -51,7 +51,7 @@ public:
         metaStoreClient_ = MetaStoreClient::Create({ .etcdAddress = metaStoreServerHost }, {}, {});
     }
 
-    static void TearDownTestCase()
+    [[maybe_unused]] static void TearDownTestSuite()
     {
         metaStoreClient_ = nullptr;
 
@@ -129,8 +129,10 @@ TEST_F(TxnLeaderTest, TxnLeader_Fail_Test)
     actor->leaseID_ = 0;  // mock grant success
     litebus::Async(aid, &TxnLeaderActor::KeepAlive, -1);
 
-    auto result = litebus::Async(aid, &TxnLeaderActor::Sync);
+    auto getResponse = metaStoreClient_->Get(DEFAULT_MASTER_ELECTION_KEY, {});
+    ASSERT_AWAIT_READY(getResponse);
 
+    auto result = litebus::Async(aid, &TxnLeaderActor::Sync, getResponse.Get());
     ASSERT_AWAIT_READY(result);
     EXPECT_TRUE(result.Get().status.IsOk());
 

@@ -21,8 +21,8 @@
 
 #include "async/async.hpp"
 #include "async/future.hpp"
-#include "logs/logging.h"
-#include "proto/pb/posix_pb.h"
+#include "common/logs/logging.h"
+#include "common/proto/pb/posix_pb.h"
 #include "mocks/mock_instance_ctrl.h"
 #include "mocks/mock_local_sched_srv.h"
 #include "mocks/mock_local_group_ctrl.h"
@@ -39,7 +39,7 @@ class PosixAPIHandlerTest : public ::testing::Test {
 public:
     void SetUp() override
     {
-        mockInstanceCtrl_ = std::make_shared<MockInstanceCtrl>(nullptr);
+        mockInstanceCtrl_ = std::make_shared<MockInstanceCtrl>();
         mockLocalSchedSrv_ = std::make_shared<MockLocalSchedSrv>();
         mockSharedClientManagerProxy_ = std::make_shared<MockSharedClientManagerProxy>();
         mockLocalGroupCtrl_ = std::make_shared<MockGroupCtrl>();
@@ -185,6 +185,22 @@ protected:
         return killRsp;
     }
 
+    std::shared_ptr<StreamingMessage> GenExitReq(const common::ErrorCode &code)
+    {
+        auto request = std::make_unique<StreamingMessage>();
+        request->mutable_exitreq()->set_code(code);
+        request->mutable_exitreq()->set_message("ok");
+        return request;
+    }
+
+    ExitResponse GenExitRsp(const common::ErrorCode &code, const std::string &message)
+    {
+        ExitResponse killRsp;
+        killRsp.set_code(code);
+        killRsp.set_message(message);
+        return killRsp;
+    }
+
 protected:
     std::shared_ptr<MockInstanceCtrl> mockInstanceCtrl_;
     std::shared_ptr<MockLocalSchedSrv> mockLocalSchedSrv_;
@@ -303,7 +319,7 @@ TEST_F(PosixAPIHandlerTest, GroupCreate)
         auto future = PosixAPIHandler::GroupCreate("instanceID", request);
         ASSERT_AWAIT_READY(future);
         EXPECT_EQ(future.Get()->has_creatersps(), true);
-        EXPECT_EQ(future.Get()->creatersps().code(), common::ERR_INNER_SYSTEM_ERROR);
+        EXPECT_EQ(future.Get()->creatersps().code(), common::ERR_INNER_COMMUNICATION);
     }
     {
         auto request = std::make_shared<StreamingMessage>();
@@ -364,6 +380,22 @@ TEST_F(PosixAPIHandlerTest, CreateResourceGroup)
     EXPECT_EQ(future.Get()->has_rgrouprsp(), true);
     rgrsp = future.Get()->rgrouprsp();
     EXPECT_EQ(rgrsp.code(), common::ERR_NONE);
+}
+
+TEST_F(PosixAPIHandlerTest, ExitTest)
+{
+    PosixAPIHandler::BindInstanceCtrl(mockInstanceCtrl_);
+    PosixAPIHandler::BindControlClientManager(mockSharedClientManagerProxy_);
+
+    auto exitRsp = GenExitRsp(common::ERR_NONE, "ok");
+    EXPECT_CALL(*mockInstanceCtrl_, Exit).WillOnce(testing::Return(exitRsp));
+
+    std::string from = "runtimeB";
+    auto future = PosixAPIHandler::Exit(from, GenExitReq(common::ERR_NPU_FAULT_ERROR));
+    ASSERT_AWAIT_READY(future);
+    auto response = future.Get()->exitrsp();
+    EXPECT_EQ(response.code(), common::ERR_NONE);
+    EXPECT_EQ(response.message(), "ok");
 }
 
 }  // namespace functionsystem::test

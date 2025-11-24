@@ -56,6 +56,12 @@ public:
                  const SyncerFunction &syncer),
                 (override));
 
+    MOCK_METHOD(litebus::Future<std::shared_ptr<Watcher>>, GetAndWatchWithHandler,
+                (const std::string &key, const WatchOption &option,
+                 const std::function<bool(const std::vector<WatchEvent> &, bool)> &observer,
+                 const SyncerFunction &syncer, const ResponseHandler &handler),
+                (override));
+
     MOCK_METHOD(std::shared_ptr<meta_store::TxnTransaction>, BeginTransaction, (), (override));
 
     MOCK_METHOD(litebus::Future<std::shared_ptr<::etcdserverpb::TxnResponse>>, Commit,

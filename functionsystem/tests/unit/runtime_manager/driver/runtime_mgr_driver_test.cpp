@@ -55,15 +55,15 @@ TEST_F(RuntimeMgrDriverTest, DriverTest)
         "--kill_process_timeout_seconds=2",
         R"(--log_config={"filepath": "/home/yr/log", "level": "DEBUG", "rolling": {"maxsize": 100, "maxfiles": 1},"alsologtostderr":true})"
     };
-    flags.ParseFlags(17, argv);
+    flags.ParseFlags(std::size(argv), argv);
     EXPECT_EQ(flags.GetRuntimeHomeDir(), litebus::os::GetEnv("HOME").Get());
     std::cout << "flags.GetRuntimeHomeDir(): " << flags.GetRuntimeHomeDir() << std::endl;
     EXPECT_EQ(flags.GetNodeJsEntryPath(), "/home/runtime/node.js");
     EXPECT_EQ(flags.GetResourceLabelPath(), "/tmp/labels");
     EXPECT_EQ(flags.GetNpuDeviceInfoPath(), "/home/sn/config/topology-info.json");
     EXPECT_EQ(flags.GetRuntimeDsConnectTimeout(), static_cast<uint32_t>(10));
-    EXPECT_EQ(flags.GetRuntimeLdLibraryPath(), "/tmp:/home/disk");
-    RuntimeManagerDriver driver(flags);
+	EXPECT_EQ(flags.GetRuntimeLdLibraryPath(), "/tmp:/home/disk");
+    RuntimeManagerDriver driver(flags, "runtime_manager");
     EXPECT_EQ(driver.Start(), Status::OK());
     EXPECT_EQ(driver.Stop(), Status::OK());
     driver.Await();
@@ -91,7 +91,7 @@ TEST_F(RuntimeMgrDriverTest, DriverParseFailTest)
         "--kill_process_timeout_seconds=2",
         R"(--log_config={"filepath": "/home/yr/log", "level": "DEBUG", "rolling": {"maxsize": 100, "maxfiles": 1},"alsologtostderr":true})"
     };
-    auto result = flags.ParseFlags(17, argv);
+    auto result = flags.ParseFlags(std::size(argv), argv);
     EXPECT_TRUE(result.IsSome());
     EXPECT_EQ(result.Get(), "Failed to parse value for: runtime_ld_library_path");
 }

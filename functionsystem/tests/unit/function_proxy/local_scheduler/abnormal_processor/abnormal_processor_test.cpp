@@ -22,8 +22,8 @@
 #include <memory>
 #include <utility>
 
-#include "logs/logging.h"
-#include "status/status.h"
+#include "common/logs/logging.h"
+#include "common/status/status.h"
 #include "common/utils/exec_utils.h"
 #include "gmock/gmock-actions.h"
 #include "gmock/gmock-spec-builders.h"
@@ -32,6 +32,7 @@
 #include "mocks/mock_observer.h"
 #include "mocks/mock_function_agent_mgr.h"
 #include "utils/future_test_helper.h"
+#include "utils/port_helper.h"
 
 namespace functionsystem::test {
 using namespace local_scheduler;
@@ -46,14 +47,18 @@ public:
     MOCK_METHOD(void, Raise, (int sig), (override));
 };
 
-const std::string TEST_META_STORE_ADDRESS = "127.0.0.1:32279";
 class AbnormalProcessorTest : public ::testing::Test {
 public:
+    [[maybe_unused]] static void SetUpTestSuite()
+    {
+        metaStoreAddress_ = "127.0.0.1:" + std::to_string(FindAvailablePort());
+    }
+    
     void SetUp() override
     {
         mockObserver_ = std::make_shared<MockObserver>();
-        mockMetaStoreClient_ = std::make_shared<MockMetaStoreClient>(TEST_META_STORE_ADDRESS);
-        mockInstanceCtrl_ = std::make_shared<MockInstanceCtrl>(nullptr);
+        mockMetaStoreClient_ = std::make_shared<MockMetaStoreClient>(metaStoreAddress_);
+        mockInstanceCtrl_ = std::make_shared<MockInstanceCtrl>();
         mockFuntionAgentMgr_ = std::make_shared<MockFunctionAgentMgr>("funcAgentMgr", nullptr);
         mockRaiseWrapper_ = std::make_shared<MockRaiseWrapper>();
         abnormalProcessor_ = std::make_shared<AbnormalProcessorActor>("nodeID");
@@ -78,6 +83,7 @@ protected:
     std::shared_ptr<MockMetaStoreClient> mockMetaStoreClient_;
     std::shared_ptr<MockRaiseWrapper> mockRaiseWrapper_;
     std::shared_ptr<MockFunctionAgentMgr> mockFuntionAgentMgr_;
+    inline static std::string metaStoreAddress_;
 };
 
 /**
@@ -148,7 +154,7 @@ TEST_F(AbnormalProcessorTest, RegisterWatchAbnormal)
 TEST_F(AbnormalProcessorTest, StartWithAbnormal)
 {
     std::string key = "/yr/abnormal/localscheduler/nodeID";
-    auto jsonStr = R"({"isAbnormal":"true"})";
+    auto jsonStr = R"({"nodeName":"nodeName-1","instanceManagerActorAid":"instanceManagerActorAid-1"})";
     KeyValue kv;
     kv.set_key(key);
     kv.set_value(jsonStr);
@@ -171,28 +177,50 @@ TEST_F(AbnormalProcessorTest, StartWithAbnormal)
     ASSERT_AWAIT_READY(sig);
     EXPECT_EQ(sig.IsOK(), true);
     EXPECT_EQ(sig.Get(), 2);
-};
+}
+
+TEST_F(AbnormalProcessorTest, StartWithAbnormalWithWrongJson)
+{
+    std::string key = "/yr/abnormal/localscheduler/nodeID";
+    auto notJsonStr = "not a json";
+    KeyValue kv;
+    kv.set_key(key);
+    kv.set_value(notJsonStr);
+    auto getResponse = std::make_shared<GetResponse>();
+    getResponse->kvs.push_back(std::move(kv));
+    EXPECT_CALL(*mockMetaStoreClient_, Get).WillOnce(Return(getResponse));
+    EXPECT_CALL(*mockInstanceCtrl_, SetAbnormal).WillOnce(Return());
+    EXPECT_CALL(*mockFuntionAgentMgr_, SetAbnormal).WillOnce(Return());
+    EXPECT_CALL(*mockObserver_, GetLocalInstances).WillOnce(Return(std::vector<std::string>()));
+    auto deleteResponse = std::make_shared<DeleteResponse>();
+    EXPECT_CALL(*mockMetaStoreClient_, Delete).WillOnce(Return(deleteResponse));
+    litebus::Future<int> sig;
+    EXPECT_CALL(*mockRaiseWrapper_, Raise).WillOnce(DoAll(FutureArg<0>(&sig), Return()));
+
+    auto future = litebus::Async(abnormalProcessor_->GetAID(), &AbnormalProcessorActor::CheckLocalSchedulerIsLegal);
+    ASSERT_AWAIT_READY(future);
+    EXPECT_EQ(future.IsOK(), true);
+    EXPECT_EQ(future.Get(), false);
+
+    ASSERT_AWAIT_READY(sig);
+    EXPECT_EQ(sig.IsOK(), true);
+    EXPECT_EQ(sig.Get(), 2);
+}
 
 TEST_F(AbnormalProcessorTest, AbnormalSyncerTest)
 {
     {
-        litebus::Future<std::shared_ptr<GetResponse>> getResponseFuture;
         std::shared_ptr<GetResponse> rep = std::make_shared<GetResponse>();
         rep->status = Status(StatusCode::FAILED, "");
-        getResponseFuture.SetValue(rep);
-        EXPECT_CALL(*mockMetaStoreClient_, Get).WillRepeatedly(testing::Return(getResponseFuture));
-        auto future = abnormalProcessor_->AbnormalSyncer();
+        auto future = abnormalProcessor_->AbnormalSyncer(rep);
         ASSERT_AWAIT_READY(future);
         ASSERT_FALSE(future.Get().status.IsOk());
     }
 
     {
-        litebus::Future<std::shared_ptr<GetResponse>> getResponseFuture;
         std::shared_ptr<GetResponse> rep = std::make_shared<GetResponse>();
         rep->status = Status::OK();
-        getResponseFuture.SetValue(rep);
-        EXPECT_CALL(*mockMetaStoreClient_, Get).WillRepeatedly(testing::Return(getResponseFuture));
-        auto future = abnormalProcessor_->AbnormalSyncer();
+        auto future = abnormalProcessor_->AbnormalSyncer(rep);
         ASSERT_AWAIT_READY(future);
         ASSERT_TRUE(future.Get().status.IsOk());
     }
@@ -215,14 +243,11 @@ TEST_F(AbnormalProcessorTest, AbnormalSyncerTest)
         getKeyValue.set_key(key);
         getKeyValue.set_value(jsonStr);
 
-        litebus::Future<std::shared_ptr<GetResponse>> getResponseFuture;
         std::shared_ptr<GetResponse> rep = std::make_shared<GetResponse>();
         rep->status = Status::OK();
         rep->kvs.emplace_back(getKeyValue);
-        getResponseFuture.SetValue(rep);
-        EXPECT_CALL(*mockMetaStoreClient_, Get).WillOnce(testing::Return(getResponseFuture));
 
-        auto future = abnormalProcessor_->AbnormalSyncer();
+        auto future = abnormalProcessor_->AbnormalSyncer(rep);
         ASSERT_AWAIT_READY(future);
         ASSERT_TRUE(future.Get().status.IsOk());
 

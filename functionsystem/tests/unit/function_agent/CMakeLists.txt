@@ -15,5 +15,6 @@
 aux_source_directory(${CMAKE_CURRENT_LIST_DIR} FUNCTION_AGENT_TEST_SRCS)
 aux_source_directory(${CMAKE_CURRENT_LIST_DIR}/agent_service FUNCTION_AGENT_TEST_SRCS)
 aux_source_directory(${CMAKE_CURRENT_LIST_DIR}/common FUNCTION_AGENT_TEST_SRCS)
+aux_source_directory(${CMAKE_CURRENT_LIST_DIR}/network FUNCTION_AGENT_TEST_SRCS)
 
 target_sources(${UNIT_TEST_MODULE} PRIVATE ${FUNCTION_AGENT_TEST_SRCS})

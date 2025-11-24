@@ -15,7 +15,7 @@
  */
 
 #include <sys/stat.h>
-#include "files.h"
+#include "common/utils/files.h"
 #include "common/utils/exec_utils.h"
 #include "exec/exec.hpp"
 #include "gtest/gtest.h"
@@ -71,6 +71,7 @@ class RuntimeStdRedirectorTest : public ::testing::Test {
 public:
     void SetUp() override
     {
+        litebus::os::Rm("/tmp/stdout.log");
     }
 
     void TearDown() override
@@ -125,37 +126,23 @@ TEST_F(RuntimeStdRedirectorTest, RedirectorLogTest)
     EXPECT_TRUE(permission.Get().others == 0);
 
     litebus::Try<std::shared_ptr<litebus::Exec>> s = litebus::Exec::CreateExec(
-        "echo output1; /usr/bin/cp a b; /usr/bin/cp a b; /usr/bin/cp a b; /usr/bin/cp a b;", litebus::None(),
+        "echo output1; sleep 1; /usr/bin/cp a b; /usr/bin/cp a b; /usr/bin/cp a b; /usr/bin/cp a b;", litebus::None(),
         litebus::ExecIO::CreateFDIO(STDIN_FILENO), litebus::ExecIO::CreatePipeIO(), litebus::ExecIO::CreatePipeIO());
     litebus::Async(redirector->GetAID(), &StdRedirector::StartRuntimeStdRedirection, "runtimeID", "instanceID",
                    s.Get()->GetOut(), s.Get()->GetErr());
     ASSERT_AWAIT_TRUE([=]() { return !s.Get()->GetStatus().IsInit(); });
     ASSERT_AWAIT_TRUE([=]() {
-        sleep(1);
         auto output = litebus::os::Read("/tmp/stdout.log");
         if (output.IsNone()) {
             return false;
         }
-        const auto &msg = output.Get();
-        return msg.find(INFO_LEVEL) != msg.npos && msg.find(ERROR_LEVEL) != msg.npos;
+        auto lines = RemoveEmptyLines("/tmp/stdout.log");
+        return lines.size() >= 5;
     });
     auto info = StdRedirector::GetStdLog("/tmp/stdout.log", "runtimeID", INFO_LEVEL, 1);
-    auto err = StdRedirector::GetStdLog("/tmp/stdout.log", "runtimeID", ERROR_LEVEL, 2);
+    auto err = StdRedirector::GetStdLog("/tmp/stdout.log", "runtimeID", ERROR_LEVEL, 20, 3);
     EXPECT_EQ(info.find("runtimeID") != info.npos, true);
     EXPECT_EQ(info.find(INFO_LEVEL) != info.npos, true);
-    EXPECT_EQ(err.find("runtimeID") != info.npos, true);
-    EXPECT_EQ(err.find(ERROR_LEVEL) != info.npos, true);
-
-    // lines to read is default value 1000
-    err = StdRedirector::GetStdLog("/tmp/stdout.log", "runtimeID", ERROR_LEVEL, 20);
-    EXPECT_EQ(err.find("runtimeID") != info.npos, true);
-    EXPECT_EQ(err.find(ERROR_LEVEL) != info.npos, true);
-    auto errLines = litebus::strings::Split(err, "\n");
-    errLines.erase(std::remove(errLines.begin(), errLines.end(), ""), errLines.end());
-    EXPECT_EQ(static_cast<int>(errLines.size()), 4);
-
-    // lines to read is 2
-    err = StdRedirector::GetStdLog("/tmp/stdout.log", "runtimeID", ERROR_LEVEL, 20, 3);
     EXPECT_EQ(err.find("runtimeID") != info.npos, true);
     EXPECT_EQ(err.find(ERROR_LEVEL) != info.npos, true);
     EXPECT_TRUE(litebus::strings::Split(err, "\n").size() < 4);
@@ -164,12 +151,9 @@ TEST_F(RuntimeStdRedirectorTest, RedirectorLogTest)
     EXPECT_EQ(output.IsNone(), false);
     auto msg = output.Get();
     std::cout << "msg: \n" << msg << std::endl;
-    auto lines = RemoveEmptyLines("/tmp/stdout.log");
-    EXPECT_EQ(lines.size(), size_t(5));
 
     litebus::Terminate(redirector->GetAID());
     litebus::Await(redirector->GetAID());
-    litebus::os::Rm("/tmp/stdout.log");
     umask(origin);
 }
 

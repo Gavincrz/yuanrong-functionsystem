@@ -19,10 +19,10 @@
 #include "common/constants/signal.h"
 
 #include "common/etcd_service/etcd_service_driver.h"
-#include "metadata/metadata.h"
-#include "resource_type.h"
+#include "common/metadata/metadata.h"
+#include "common/resource_view/resource_type.h"
 #include "common/types/instance_state.h"
-#include "meta_store_kv_operation.h"
+#include "common/utils/meta_store_kv_operation.h"
 #include "function_master/instance_manager/instance_manager_actor.h"
 #include "function_master/instance_manager/instance_manager_driver.h"
 #include "function_proxy/local_scheduler/instance_control/instance_ctrl_actor.h"
@@ -94,6 +94,9 @@ const std::string INSTANCE_ID_3 = "003";
 const std::string INSTANCE_ID_4 = "004";
 const std::string INSTANCE_ID_5 = "005";
 const std::string INSTANCE_ID_6 = "006";
+
+const std::string DEFAULT_FUNCTION_NAME = "123/0-yr-yr/0";
+const std::string DEFAULT_REQUEST_ID = "123456";
 
 std::shared_ptr<messages::GroupInfo> MakeGroupInfo(const std::string &groupID, const std::string &ownerProxyID,
                                                    const GroupState &state, const std::string &parentID)
@@ -290,7 +293,7 @@ protected:
         instCtrlActor3{ nullptr };
     std::shared_ptr<MockLocalGroupCtrlActorForGroupManagerTest> localGroupctlActor1{ nullptr };
 
-    [[maybe_unused]] static void SetUpTestCase()
+    [[maybe_unused]] static void SetUpTestSuite()
     {
         etcdSrvDriver_ = std::make_unique<meta_store::test::EtcdServiceDriver>();
         int metaStoreServerPort = functionsystem::test::FindAvailablePort();
@@ -298,7 +301,7 @@ protected:
         etcdSrvDriver_->StartServer(metaStoreServerHost_);
     }
 
-    [[maybe_unused]] static void TearDownTestCase()
+    [[maybe_unused]] static void TearDownTestSuite()
     {
         etcdSrvDriver_->StopServer();
     }
@@ -365,10 +368,28 @@ protected:
         ASSERT_TRUE(client->Put(GROUP_PATH_PREFIX + "/" + groupID, jsonString, {}).Get()->status.IsOk());
     }
 
+    void PutGroup(std::shared_ptr<messages::GroupInfo> &groupInfo)
+    {
+        auto client = MetaStoreClient::Create({ .etcdAddress = metaStoreServerHost_ });
+        std::string jsonString;
+        ASSERT_TRUE(TransToJsonFromGroupInfo(jsonString, *groupInfo));
+        ASSERT_TRUE(client->Put(GROUP_PATH_PREFIX + "/" + groupInfo->groupid(), jsonString, {}).Get()->status.IsOk());
+    }
+
     void DelGroup(const std::string &groupID)
     {
         auto client = MetaStoreClient::Create({ .etcdAddress = metaStoreServerHost_ });
         ASSERT_TRUE(client->Delete(GROUP_PATH_PREFIX + "/" + groupID, {}).Get()->status.IsOk());
+    }
+
+    void AddRequestsToGroup(std::shared_ptr<messages::GroupInfo> &groupInfo,
+                            const std::vector<std::string>& instanceIds) {
+        for (const auto& id : instanceIds) {
+            auto request = groupInfo->add_requests();
+            request->mutable_instance()->set_instanceid(id);
+            request->mutable_instance()->set_function(DEFAULT_FUNCTION_NAME);
+            request->mutable_instance()->set_requestid(DEFAULT_REQUEST_ID);
+        }
     }
 
     void PutDefaultGroupsAndInstances()
@@ -381,8 +402,14 @@ protected:
         // | node3 |                  |       inst-5       |   inst-6   |
         // +-------+------------------+--------------------+------------+
 
-        PutGroup(GROUP_ID_1, NODE_ID_1, GroupState::RUNNING, "");
-        PutGroup(GROUP_ID_2, NODE_ID_2, GroupState::RUNNING, "");
+
+        auto groupInfo1 = MakeGroupInfo(GROUP_ID_1, NODE_ID_1, GroupState::RUNNING, "");
+        AddRequestsToGroup(groupInfo1, {INSTANCE_ID_1, INSTANCE_ID_3, INSTANCE_ID_4});
+        PutGroup(groupInfo1);
+
+        auto groupInfo2 = MakeGroupInfo(GROUP_ID_2, NODE_ID_2, GroupState::RUNNING, "");
+        AddRequestsToGroup(groupInfo2, {INSTANCE_ID_2, INSTANCE_ID_5});
+        PutGroup(groupInfo2);
 
         PutInstance(INSTANCE_ID_1, GROUP_ID_1, NODE_ID_1, InstanceState::RUNNING);
         PutInstance(INSTANCE_ID_2, GROUP_ID_2, NODE_ID_1, InstanceState::RUNNING);
@@ -390,6 +417,18 @@ protected:
         PutInstance(INSTANCE_ID_4, GROUP_ID_1, NODE_ID_2, InstanceState::RUNNING);
         PutInstance(INSTANCE_ID_5, GROUP_ID_2, NODE_ID_3, InstanceState::RUNNING);
         PutInstance(INSTANCE_ID_6, "", NODE_ID_3, InstanceState::RUNNING);
+    }
+
+    void CheckGroupState(const std::string groupID, const GroupState &state)
+    {
+        auto groupInfoInEtcdFuture = MetaStoreClient::Create({ .etcdAddress = metaStoreServerHost_ })
+                ->Get(GROUP_PATH_PREFIX + "/" + groupID, {});
+        ASSERT_AWAIT_READY(groupInfoInEtcdFuture);
+        ASSERT_TRUE(groupInfoInEtcdFuture.Get()->status.IsOk());
+        ASSERT_TRUE(groupInfoInEtcdFuture.Get()->kvs.size() == 1);
+        auto info = messages::GroupInfo{};
+        ASSERT_TRUE(TransToGroupInfoFromJson(info, groupInfoInEtcdFuture.Get()->kvs[0].value()));
+        ASSERT_EQ(info.status(), static_cast<int32_t>(state));
     }
 
     GroupManagerActor::GroupCaches AsyncGetGroupCaches(std::shared_ptr<GroupManagerActor> groupMgrActor)
@@ -438,8 +477,6 @@ public:
 TEST_F(GroupManagerTest, PutAndDelGroupOK)
 {
     DEFAULT_START_INSTANCE_MANAGER_DRIVER(false);
-    auto mockGroupCaches = std::make_shared<MockGroupCaches>();
-    groupMgrActor->member_->groupCaches = mockGroupCaches;
 
     auto mockInstanceMgr = std::make_shared<MockInstanceManager>();
     EXPECT_CALL(*mockInstanceMgr, GetInstanceInfoByInstanceID)
@@ -456,48 +493,31 @@ TEST_F(GroupManagerTest, PutAndDelGroupOK)
 
     {
         litebus::Future<std::string> argGroupKey;
-        EXPECT_CALL(*mockGroupCaches, AddGroup).WillOnce(FutureArg<0>(&argGroupKey));
 
         // When: group is put into metastore
         PutGroup(GROUP_ID_1, NODE_ID_1, GroupState::RUNNING, INSTANCE_ID_1);
-        // Then: add group should be called
-        ASSERT_AWAIT_READY(argGroupKey);
-        ASSERT_EQ(argGroupKey.Get(), GROUP_PATH_PREFIX + "/" + GROUP_ID_1);
+        ASSERT_AWAIT_TRUE([=]() { return groupMgrActor->member_->groupCaches->GetGroups().find(GROUP_ID_1) != groupMgrActor->member_->groupCaches->GetGroups().end(); });
     }
 
     {
         litebus::Future<std::string> argGroupKey;
-        EXPECT_CALL(*mockGroupCaches, AddGroup).WillOnce(FutureArg<0>(&argGroupKey));
-
         // When: group 2 is put into metastore
         PutGroup(GROUP_ID_2, NODE_ID_2, GroupState::RUNNING, INSTANCE_ID_1);
-        // Then: add group should be called
-        ASSERT_AWAIT_READY(argGroupKey);
-        ASSERT_EQ(argGroupKey.Get(), GROUP_PATH_PREFIX + "/" + GROUP_ID_2);
+        ASSERT_AWAIT_TRUE([=]() { return groupMgrActor->member_->groupCaches->GetGroups().find(GROUP_ID_2) != groupMgrActor->member_->groupCaches->GetGroups().end(); });
     }
 
     {
         litebus::Future<std::string> argGroupID;
-        EXPECT_CALL(*mockGroupCaches, RemoveGroup).WillOnce(FutureArg<0>(&argGroupID));
-
         // When: group 2 is delete from metastore
         DelGroup(GROUP_ID_1);
-
-        // Then:
-        ASSERT_AWAIT_READY(argGroupID);
-        ASSERT_EQ(argGroupID.Get(), GROUP_ID_1);
+        ASSERT_AWAIT_TRUE([=]() { return groupMgrActor->member_->groupCaches->GetGroups().find(GROUP_ID_1) == groupMgrActor->member_->groupCaches->GetGroups().end(); });
     }
 
     {
         litebus::Future<std::string> argGroupID;
-        EXPECT_CALL(*mockGroupCaches, RemoveGroup).WillOnce(FutureArg<0>(&argGroupID));
-
         // When: group 2 is delete from metastore
         DelGroup(GROUP_ID_2);
-
-        // Then:
-        ASSERT_AWAIT_READY(argGroupID);
-        ASSERT_EQ(argGroupID.Get(), GROUP_ID_2);
+        ASSERT_AWAIT_TRUE([=]() { return groupMgrActor->member_->groupCaches->GetGroups().find(GROUP_ID_2) == groupMgrActor->member_->groupCaches->GetGroups().end(); });
     }
 
     DEFAULT_STOP_INSTANCE_MANAGER_DRIVER;
@@ -509,10 +529,6 @@ TEST_F(GroupManagerTest, PutAndDelGroupOK)
 TEST_F(GroupManagerTest, PutAndDelInstanceOK)
 {
     DEFAULT_START_INSTANCE_MANAGER_DRIVER(false);
-
-    auto mockGroupCaches = std::make_shared<MockGroupCaches>();
-    groupMgrActor->member_->groupCaches = mockGroupCaches;
-
     auto mockInstanceMgr = std::make_shared<MockInstanceManager>();
     EXPECT_CALL(*mockInstanceMgr, GetInstanceInfoByInstanceID)
         .WillRepeatedly(testing::Invoke([](const std::string &instanceID) {
@@ -525,36 +541,21 @@ TEST_F(GroupManagerTest, PutAndDelInstanceOK)
     // Given: 2 groups already in
     auto groupInfo1 = MakeGroupInfo(GROUP_ID_1, NODE_ID_1, GroupState::RUNNING, "not-exist");
     auto groupInfo2 = MakeGroupInfo(GROUP_ID_2, NODE_ID_2, GroupState::RUNNING, "not-exist");
-    mockGroupCaches->groups_[GROUP_ID_1] = { GROUP_PATH_PREFIX + "/" + GROUP_ID_1, groupInfo1 };
-    mockGroupCaches->nodeName2Groups_[NODE_ID_1] = { { GROUP_PATH_PREFIX + "/" + GROUP_ID_1, groupInfo1 } };
-    mockGroupCaches->groups_[GROUP_ID_2] = { GROUP_PATH_PREFIX + "/" + GROUP_ID_2, groupInfo2 };
-    mockGroupCaches->nodeName2Groups_[NODE_ID_2] = { { GROUP_PATH_PREFIX + "/" + GROUP_ID_2, groupInfo2 } };
+    groupMgrActor->member_->groupCaches->groups_[GROUP_ID_1] = { GROUP_PATH_PREFIX + "/" + GROUP_ID_1, groupInfo1 };
+    groupMgrActor->member_->groupCaches->nodeName2Groups_[NODE_ID_1] = { { GROUP_PATH_PREFIX + "/" + GROUP_ID_1, groupInfo1 } };
+    groupMgrActor->member_->groupCaches->groups_[GROUP_ID_2] = { GROUP_PATH_PREFIX + "/" + GROUP_ID_2, groupInfo2 };
+    groupMgrActor->member_->groupCaches->nodeName2Groups_[NODE_ID_2] = { { GROUP_PATH_PREFIX + "/" + GROUP_ID_2, groupInfo2 } };
 
     {
-        litebus::Future<std::string> faGroupID, faInstKey;
-        EXPECT_CALL(*mockGroupCaches, AddGroupInstance)
-            .WillOnce(testing::DoAll(FutureArg<0>(&faGroupID), FutureArg<1>(&faInstKey)));
-
         // When: put an instance
         PutInstance(INSTANCE_ID_1, GROUP_ID_1, NODE_ID_1, InstanceState::RUNNING);
-
-        // Then: AddGroupInstance is called
-        ASSERT_AWAIT_READY(faGroupID);
-        ASSERT_EQ(faGroupID.Get(), GROUP_ID_1);
-        ASSERT_AWAIT_READY(faInstKey);
-        ASSERT_EQ(faInstKey.Get(), INSTANCE_PATH_PREFIX + "/123/function/0-yr-yr/version/0/defaultaz/123456/" + INSTANCE_ID_1);
+        ASSERT_AWAIT_TRUE([=]() { return groupMgrActor->member_->groupCaches->groupID2Instances_.find(GROUP_ID_1) != groupMgrActor->member_->groupCaches->groupID2Instances_.end(); });
     }
 
     {
-        litebus::Future<std::string> faInstKey;
-        EXPECT_CALL(*mockGroupCaches, RemoveGroupInstance).WillOnce(FutureArg<0>(&faInstKey));
-
         // When: delete an instance
         DelInstance(INSTANCE_ID_1);
-
-        // Then: RemoveGroupInstance is called
-        ASSERT_AWAIT_READY(faInstKey);
-        ASSERT_EQ(faInstKey.Get(), INSTANCE_PATH_PREFIX + "/123/function/0-yr-yr/version/0/defaultaz/123456/" + INSTANCE_ID_1);
+        ASSERT_AWAIT_TRUE([=]() { return groupMgrActor->member_->groupCaches->groupID2Instances_.find(GROUP_ID_1) == groupMgrActor->member_->groupCaches->groupID2Instances_.end(); });
     }
 
     DEFAULT_STOP_INSTANCE_MANAGER_DRIVER;
@@ -1052,6 +1053,7 @@ TEST_F(GroupManagerTest, GroupPutWithParentAbnormal)
         auto clearGroupFuture = localGroupctlActor1->ExpectCallMockClearGroupResponseReturnOK()->GetFuture();
 
         // When : put the group
+        //        PutGroup(GROUP_ID_1, NODE_ID_1, GroupState::RUNNING, INSTANCE_ID_1);
         auto groupInfo = MakeGroupInfo(GROUP_ID_1, NODE_ID_1, GroupState::RUNNING, INSTANCE_ID_1);
         litebus::Async(groupMgrActor->GetAID(), &GroupManagerActor::OnGroupPut, GROUP_PATH_PREFIX + "/" + GROUP_ID_1,
                        groupInfo);
@@ -1090,6 +1092,7 @@ TEST_F(GroupManagerTest, GroupPutWithParentAbnormal)
             .WillOnce(testing::DoAll(FutureArg<1>(&faPutValue), testing::Return(std::make_shared<PutResponse>())));
 
         // When : put the group
+        //        PutGroup(GROUP_ID_1, NODE_ID_1, GroupState::RUNNING, INSTANCE_ID_1);
         auto groupInfo = MakeGroupInfo(GROUP_ID_1, NODE_ID_1, GroupState::RUNNING, INSTANCE_ID_2);
         litebus::Async(groupMgrActor->GetAID(), &GroupManagerActor::OnGroupPut, GROUP_PATH_PREFIX + "/" + GROUP_ID_1,
                        groupInfo);
@@ -1139,53 +1142,44 @@ TEST_F(GroupManagerTest, GroupInfoSyncerTest)
                    GetLeaderInfo(groupMgrActor->GetAID()));
 
     {   // for get failed
-        litebus::Future<std::shared_ptr<GetResponse>> getResponseFuture;
         std::shared_ptr<GetResponse> rep = std::make_shared<GetResponse>();
         rep->status = Status(StatusCode::FAILED, "");
-        getResponseFuture.SetValue(rep);
-        EXPECT_CALL(*mockMetaClient, Get).WillOnce(testing::Return(getResponseFuture));
 
-        auto future = groupMgrActor->GroupInfoSyncer();
+        auto future = groupMgrActor->GroupInfoSyncer(rep);
         ASSERT_AWAIT_READY(future);
         ASSERT_FALSE(future.Get().status.IsOk());
     }
 
     {   // for get response is empty
-        litebus::Future<std::shared_ptr<GetResponse>> getResponseFuture;
         std::shared_ptr<GetResponse> rep = std::make_shared<GetResponse>();
         rep->status = Status::OK();
-        getResponseFuture.SetValue(rep);
-        EXPECT_CALL(*mockMetaClient, Get).WillOnce(testing::Return(getResponseFuture));
 
-        auto future = groupMgrActor->GroupInfoSyncer();
+        auto future = groupMgrActor->GroupInfoSyncer(rep);
         ASSERT_AWAIT_READY(future);
         ASSERT_TRUE(future.Get().status.IsOk());
     }
 
     {   // for get response is empty
-        litebus::Future<std::shared_ptr<GetResponse>> getResponseFuture;
         std::shared_ptr<GetResponse> rep = std::make_shared<GetResponse>();
         rep->status = Status::OK();
-        getResponseFuture.SetValue(rep);
-        EXPECT_CALL(*mockMetaClient, Get).WillOnce(testing::Return(getResponseFuture));
 
-        auto future = groupMgrActor->GroupInfoSyncer();
+        auto future = groupMgrActor->GroupInfoSyncer(rep);
         ASSERT_AWAIT_READY(future);
         ASSERT_TRUE(future.Get().status.IsOk());
     }
 
     {   // both in etcd and cache
         auto key1 = R"(/yr/group/ce052e60c86d76ee00/group-6c764080-aa61-4000-8000-000024957149)";
-        auto value1 = R"({"requestID":"ce052e60c86d76ee00","traceID":"job-b4465ac5-trace-X","groupID":"group-6c764080-aa61-4000-8000-000024957149","parentID":"0d810043-06a6-4000-8000-00006ac6907d","ownerProxy":"siaphisprh00132","groupOpts":{"timeout":"300","groupName":"3abcdef0008","sameRunningLifecycle":true},"requests":[{"instance":{"instanceID":"d8ab6100-0000-4000-801a-f4f814674753","requestID":"ce052e60c86d76ee00-0","function":"12345678901234561234567890123456/0-yr10882-yr-gangschedule/$latest","resources":{"resources":{"CPU":{"name":"CPU","scalar":{"value":300}},"Memory":{"name":"Memory","scalar":{"value":128}}}},"scheduleOption":{"affinity":{"instanceAffinity":{},"resource":{},"instance":{"topologyKey":"agent"}},"extension":{"DELEGATE_DIRECTORY_QUOTA":"512"},"range":{}},"createOptions":{"tenantId":"12345678901234561234567890123456","DELEGATE_DIRECTORY_QUOTA":"512","RecoverRetryTimes":"0","DATA_AFFINITY_ENABLED":"false"},"instanceStatus":{"code":1,"msg":"new instance"},"jobID":"job-b4465ac5","parentID":"0d810043-06a6-4000-8000-00006ac6907d","parentFunctionProxyAID":"siaphisprh00132-LocalSchedInstanceCtrlActor@127.0.0.1:22772","storageType":"s3","scheduleTimes":1,"deployTimes":1,"args":[{"value":"AAAA"},{"value":"AAAAAAAAAAAAAAAAAAAAAAE="}],"gracefulShutdownTime":"-1","tenantID":"12345678901234561234567890123456","groupID":"group-6c764080-aa61-4000-8000-000024957149"},"requestID":"ce052e60c86d76ee00-0","traceID":"job-b4465ac5-trace-X","contexts":{"LabelAffinityScorePlugin":{"preferredAffinityCtx":{}}}},{"instance":{"instanceID":"b4cbac61-0000-4000-8000-b0076050a971","requestID":"ce052e60c86d76ee00-1","function":"12345678901234561234567890123456/0-yr10882-yr-gangschedule/$latest","resources":{"resources":{"CPU":{"name":"CPU","scalar":{"value":300}},"Memory":{"name":"Memory","scalar":{"value":128}}}},"scheduleOption":{"affinity":{"instanceAffinity":{},"resource":{},"instance":{"topologyKey":"agent"}},"extension":{"DELEGATE_DIRECTORY_QUOTA":"512"},"range":{}},"createOptions":{"tenantId":"12345678901234561234567890123456","RecoverRetryTimes":"0","DATA_AFFINITY_ENABLED":"false","DELEGATE_DIRECTORY_QUOTA":"512"},"instanceStatus":{"code":1,"msg":"new instance"},"jobID":"job-b4465ac5","parentID":"0d810043-06a6-4000-8000-00006ac6907d","parentFunctionProxyAID":"siaphisprh00132-LocalSchedInstanceCtrlActor@127.0.0.1:22772","storageType":"s3","scheduleTimes":1,"deployTimes":1,"args":[{"value":"AAAA"},{"value":"AAAAAAAAAAAAAAAAAAAAAAE="}],"gracefulShutdownTime":"-1","tenantID":"12345678901234561234567890123456","groupID":"group-6c764080-aa61-4000-8000-000024957149"},"requestID":"ce052e60c86d76ee00-1","traceID":"job-b4465ac5-trace-X","contexts":{"LabelAffinityScorePlugin":{"preferredAffinityCtx":{}}}},{"instance":{"instanceID":"3aad6100-0000-4000-8018-0c3b0e297ae0","requestID":"ce052e60c86d76ee00-2","function":"12345678901234561234567890123456/0-yr10882-yr-gangschedule/$latest","resources":{"resources":{"Memory":{"name":"Memory","scalar":{"value":128}},"CPU":{"name":"CPU","scalar":{"value":300}}}},"scheduleOption":{"affinity":{"instanceAffinity":{},"resource":{},"instance":{"topologyKey":"agent"}},"extension":{"DELEGATE_DIRECTORY_QUOTA":"512"},"range":{}},"createOptions":{"RecoverRetryTimes":"0","DATA_AFFINITY_ENABLED":"false","DELEGATE_DIRECTORY_QUOTA":"512","tenantId":"12345678901234561234567890123456"},"instanceStatus":{"code":1,"msg":"new instance"},"jobID":"job-b4465ac5","parentID":"0d810043-06a6-4000-8000-00006ac6907d","parentFunctionProxyAID":"siaphisprh00132-LocalSchedInstanceCtrlActor@127.0.0.1:22772","storageType":"s3","scheduleTimes":1,"deployTimes":1,"args":[{"value":"AAAA"},{"value":"AAAAAAAAAAAAAAAAAAAAAAE="}],"gracefulShutdownTime":"-1","tenantID":"12345678901234561234567890123456","groupID":"group-6c764080-aa61-4000-8000-000024957149"},"requestID":"ce052e60c86d76ee00-2","traceID":"job-b4465ac5-trace-X","contexts":{"LabelAffinityScorePlugin":{"preferredAffinityCtx":{}}}},{"instance":{"instanceID":"ae610000-0000-4000-bb54-2c1e5cb40d27","requestID":"ce052e60c86d76ee00-3","function":"12345678901234561234567890123456/0-yr10882-yr-gangschedule/$latest","resources":{"resources":{"Memory":{"name":"Memory","scalar":{"value":128}},"CPU":{"name":"CPU","scalar":{"value":300}}}},"scheduleOption":{"affinity":{"instanceAffinity":{},"resource":{},"instance":{"topologyKey":"agent"}},"extension":{"DELEGATE_DIRECTORY_QUOTA":"512"},"range":{}},"createOptions":{"DELEGATE_DIRECTORY_QUOTA":"512","tenantId":"12345678901234561234567890123456","DATA_AFFINITY_ENABLED":"false","RecoverRetryTimes":"0"},"instanceStatus":{"code":1,"msg":"new instance"},"jobID":"job-b4465ac5","parentID":"0d810043-06a6-4000-8000-00006ac6907d","parentFunctionProxyAID":"siaphisprh00132-LocalSchedInstanceCtrlActor@127.0.0.1:22772","storageType":"s3","scheduleTimes":1,"deployTimes":1,"args":[{"value":"AAAA"},{"value":"AAAAAAAAAAAAAAAAAAAAAAE="}],"gracefulShutdownTime":"-1","tenantID":"12345678901234561234567890123456","groupID":"group-6c764080-aa61-4000-8000-000024957149"},"requestID":"ce052e60c86d76ee00-3","traceID":"job-b4465ac5-trace-X","contexts":{"LabelAffinityScorePlugin":{"preferredAffinityCtx":{}}}},{"instance":{"instanceID":"6282c1dc-d5af-4100-8000-0000006740f0","requestID":"ce052e60c86d76ee00-4","function":"12345678901234561234567890123456/0-yr10882-yr-gangschedule/$latest","resources":{"resources":{"Memory":{"name":"Memory","scalar":{"value":128}},"CPU":{"name":"CPU","scalar":{"value":300}}}},"scheduleOption":{"affinity":{"instanceAffinity":{},"resource":{},"instance":{"topologyKey":"agent"}},"extension":{"DELEGATE_DIRECTORY_QUOTA":"512"},"range":{}},"createOptions":{"DELEGATE_DIRECTORY_QUOTA":"512","RecoverRetryTimes":"0","tenantId":"12345678901234561234567890123456","DATA_AFFINITY_ENABLED":"false"},"instanceStatus":{"code":1,"msg":"new instance"},"jobID":"job-b4465ac5","parentID":"0d810043-06a6-4000-8000-00006ac6907d","parentFunctionProxyAID":"siaphisprh00132-LocalSchedInstanceCtrlActor@127.0.0.1:22772","storageType":"s3","scheduleTimes":1,"deployTimes":1,"args":[{"value":"AAAA"},{"value":"AAAAAAAAAAAAAAAAAAAAAAE="}],"gracefulShutdownTime":"-1","tenantID":"12345678901234561234567890123456","groupID":"group-6c764080-aa61-4000-8000-000024957149"},"requestID":"ce052e60c86d76ee00-4","traceID":"job-b4465ac5-trace-X","contexts":{"LabelAffinityScorePlugin":{"preferredAffinityCtx":{}}}},{"instance":{"instanceID":"07b20ff7-dcb0-4100-8000-000000551b0a","requestID":"ce052e60c86d76ee00-5","function":"12345678901234561234567890123456/0-yr10882-yr-gangschedule/$latest","resources":{"resources":{"Memory":{"name":"Memory","scalar":{"value":128}},"CPU":{"name":"CPU","scalar":{"value":300}}}},"scheduleOption":{"affinity":{"instanceAffinity":{},"resource":{},"instance":{"topologyKey":"agent"}},"extension":{"DELEGATE_DIRECTORY_QUOTA":"512"},"range":{}},"createOptions":{"DELEGATE_DIRECTORY_QUOTA":"512","DATA_AFFINITY_ENABLED":"false","tenantId":"12345678901234561234567890123456","RecoverRetryTimes":"0"},"instanceStatus":{"code":1,"msg":"new instance"},"jobID":"job-b4465ac5","parentID":"0d810043-06a6-4000-8000-00006ac6907d","parentFunctionProxyAID":"siaphisprh00132-LocalSchedInstanceCtrlActor@127.0.0.1:22772","storageType":"s3","scheduleTimes":1,"deployTimes":1,"args":[{"value":"AAAA"},{"value":"AAAAAAAAAAAAAAAAAAAAAAE="}],"gracefulShutdownTime":"-1","tenantID":"12345678901234561234567890123456","groupID":"group-6c764080-aa61-4000-8000-000024957149"},"requestID":"ce052e60c86d76ee00-5","traceID":"job-b4465ac5-trace-X","contexts":{"LabelAffinityScorePlugin":{"preferredAffinityCtx":{}}}},{"instance":{"instanceID":"d4928db1-6100-4000-8000-0081a0de67af","requestID":"ce052e60c86d76ee00-6","function":"12345678901234561234567890123456/0-yr10882-yr-gangschedule/$latest","resources":{"resources":{"CPU":{"name":"CPU","scalar":{"value":300}},"Memory":{"name":"Memory","scalar":{"value":128}}}},"scheduleOption":{"affinity":{"instanceAffinity":{},"resource":{},"instance":{"topologyKey":"agent"}},"extension":{"DELEGATE_DIRECTORY_QUOTA":"512"},"range":{}},"createOptions":{"DATA_AFFINITY_ENABLED":"false","tenantId":"12345678901234561234567890123456","DELEGATE_DIRECTORY_QUOTA":"512","RecoverRetryTimes":"0"},"instanceStatus":{"code":1,"msg":"new instance"},"jobID":"job-b4465ac5","parentID":"0d810043-06a6-4000-8000-00006ac6907d","parentFunctionProxyAID":"siaphisprh00132-LocalSchedInstanceCtrlActor@127.0.0.1:22772","storageType":"s3","scheduleTimes":1,"deployTimes":1,"args":[{"value":"AAAA"},{"value":"AAAAAAAAAAAAAAAAAAAAAAE="}],"gracefulShutdownTime":"-1","tenantID":"12345678901234561234567890123456","groupID":"group-6c764080-aa61-4000-8000-000024957149"},"requestID":"ce052e60c86d76ee00-6","traceID":"job-b4465ac5-trace-X","contexts":{"LabelAffinityScorePlugin":{"preferredAffinityCtx":{}}}}],"status":2})";
+        auto value1 = R"({"requestID":"ce052e60c86d76ee00","traceID":"job-b4465ac5-trace-X","groupID":"group-6c764080-aa61-4000-8000-000024957149","parentID":"0d810043-06a6-4000-8000-00006ac6907d","ownerProxy":"siaphisprh00132","groupOpts":{"timeout":"300","groupName":"3abcdef0008","sameRunningLifecycle":true},"requests":[{"instance":{"instanceID":"d8ab6100-0000-4000-801a-f4f814674753","requestID":"ce052e60c86d76ee00-0","function":"12345678901234561234567890123456/0-yr10882-yr-gangschedule/$latest","resources":{"resources":{"CPU":{"name":"CPU","scalar":{"value":300}},"Memory":{"name":"Memory","scalar":{"value":128}}}},"scheduleOption":{"affinity":{"instanceAffinity":{},"resource":{},"instance":{"topologyKey":"agent"}},"extension":{"DELEGATE_DIRECTORY_QUOTA":"512"},"range":{}},"createOptions":{"tenantId":"12345678901234561234567890123456","DELEGATE_DIRECTORY_QUOTA":"512","RecoverRetryTimes":"0","DATA_AFFINITY_ENABLED":"false"},"instanceStatus":{"code":1,"msg":"new instance"},"jobID":"job-b4465ac5","parentID":"0d810043-06a6-4000-8000-00006ac6907d","parentFunctionProxyAID":"siaphisprh00132-LocalSchedInstanceCtrlActor@7.189.31.67:22772","storageType":"s3","scheduleTimes":1,"deployTimes":1,"args":[{"value":"AAAA"},{"value":"AAAAAAAAAAAAAAAAAAAAAAE="}],"gracefulShutdownTime":"-1","tenantID":"12345678901234561234567890123456","groupID":"group-6c764080-aa61-4000-8000-000024957149"},"requestID":"ce052e60c86d76ee00-0","traceID":"job-b4465ac5-trace-X","contexts":{"LabelAffinityScorePlugin":{"preferredAffinityCtx":{}}}},{"instance":{"instanceID":"b4cbac61-0000-4000-8000-b0076050a971","requestID":"ce052e60c86d76ee00-1","function":"12345678901234561234567890123456/0-yr10882-yr-gangschedule/$latest","resources":{"resources":{"CPU":{"name":"CPU","scalar":{"value":300}},"Memory":{"name":"Memory","scalar":{"value":128}}}},"scheduleOption":{"affinity":{"instanceAffinity":{},"resource":{},"instance":{"topologyKey":"agent"}},"extension":{"DELEGATE_DIRECTORY_QUOTA":"512"},"range":{}},"createOptions":{"tenantId":"12345678901234561234567890123456","RecoverRetryTimes":"0","DATA_AFFINITY_ENABLED":"false","DELEGATE_DIRECTORY_QUOTA":"512"},"instanceStatus":{"code":1,"msg":"new instance"},"jobID":"job-b4465ac5","parentID":"0d810043-06a6-4000-8000-00006ac6907d","parentFunctionProxyAID":"siaphisprh00132-LocalSchedInstanceCtrlActor@7.189.31.67:22772","storageType":"s3","scheduleTimes":1,"deployTimes":1,"args":[{"value":"AAAA"},{"value":"AAAAAAAAAAAAAAAAAAAAAAE="}],"gracefulShutdownTime":"-1","tenantID":"12345678901234561234567890123456","groupID":"group-6c764080-aa61-4000-8000-000024957149"},"requestID":"ce052e60c86d76ee00-1","traceID":"job-b4465ac5-trace-X","contexts":{"LabelAffinityScorePlugin":{"preferredAffinityCtx":{}}}},{"instance":{"instanceID":"3aad6100-0000-4000-8018-0c3b0e297ae0","requestID":"ce052e60c86d76ee00-2","function":"12345678901234561234567890123456/0-yr10882-yr-gangschedule/$latest","resources":{"resources":{"Memory":{"name":"Memory","scalar":{"value":128}},"CPU":{"name":"CPU","scalar":{"value":300}}}},"scheduleOption":{"affinity":{"instanceAffinity":{},"resource":{},"instance":{"topologyKey":"agent"}},"extension":{"DELEGATE_DIRECTORY_QUOTA":"512"},"range":{}},"createOptions":{"RecoverRetryTimes":"0","DATA_AFFINITY_ENABLED":"false","DELEGATE_DIRECTORY_QUOTA":"512","tenantId":"12345678901234561234567890123456"},"instanceStatus":{"code":1,"msg":"new instance"},"jobID":"job-b4465ac5","parentID":"0d810043-06a6-4000-8000-00006ac6907d","parentFunctionProxyAID":"siaphisprh00132-LocalSchedInstanceCtrlActor@7.189.31.67:22772","storageType":"s3","scheduleTimes":1,"deployTimes":1,"args":[{"value":"AAAA"},{"value":"AAAAAAAAAAAAAAAAAAAAAAE="}],"gracefulShutdownTime":"-1","tenantID":"12345678901234561234567890123456","groupID":"group-6c764080-aa61-4000-8000-000024957149"},"requestID":"ce052e60c86d76ee00-2","traceID":"job-b4465ac5-trace-X","contexts":{"LabelAffinityScorePlugin":{"preferredAffinityCtx":{}}}},{"instance":{"instanceID":"ae610000-0000-4000-bb54-2c1e5cb40d27","requestID":"ce052e60c86d76ee00-3","function":"12345678901234561234567890123456/0-yr10882-yr-gangschedule/$latest","resources":{"resources":{"Memory":{"name":"Memory","scalar":{"value":128}},"CPU":{"name":"CPU","scalar":{"value":300}}}},"scheduleOption":{"affinity":{"instanceAffinity":{},"resource":{},"instance":{"topologyKey":"agent"}},"extension":{"DELEGATE_DIRECTORY_QUOTA":"512"},"range":{}},"createOptions":{"DELEGATE_DIRECTORY_QUOTA":"512","tenantId":"12345678901234561234567890123456","DATA_AFFINITY_ENABLED":"false","RecoverRetryTimes":"0"},"instanceStatus":{"code":1,"msg":"new instance"},"jobID":"job-b4465ac5","parentID":"0d810043-06a6-4000-8000-00006ac6907d","parentFunctionProxyAID":"siaphisprh00132-LocalSchedInstanceCtrlActor@7.189.31.67:22772","storageType":"s3","scheduleTimes":1,"deployTimes":1,"args":[{"value":"AAAA"},{"value":"AAAAAAAAAAAAAAAAAAAAAAE="}],"gracefulShutdownTime":"-1","tenantID":"12345678901234561234567890123456","groupID":"group-6c764080-aa61-4000-8000-000024957149"},"requestID":"ce052e60c86d76ee00-3","traceID":"job-b4465ac5-trace-X","contexts":{"LabelAffinityScorePlugin":{"preferredAffinityCtx":{}}}},{"instance":{"instanceID":"6282c1dc-d5af-4100-8000-0000006740f0","requestID":"ce052e60c86d76ee00-4","function":"12345678901234561234567890123456/0-yr10882-yr-gangschedule/$latest","resources":{"resources":{"Memory":{"name":"Memory","scalar":{"value":128}},"CPU":{"name":"CPU","scalar":{"value":300}}}},"scheduleOption":{"affinity":{"instanceAffinity":{},"resource":{},"instance":{"topologyKey":"agent"}},"extension":{"DELEGATE_DIRECTORY_QUOTA":"512"},"range":{}},"createOptions":{"DELEGATE_DIRECTORY_QUOTA":"512","RecoverRetryTimes":"0","tenantId":"12345678901234561234567890123456","DATA_AFFINITY_ENABLED":"false"},"instanceStatus":{"code":1,"msg":"new instance"},"jobID":"job-b4465ac5","parentID":"0d810043-06a6-4000-8000-00006ac6907d","parentFunctionProxyAID":"siaphisprh00132-LocalSchedInstanceCtrlActor@7.189.31.67:22772","storageType":"s3","scheduleTimes":1,"deployTimes":1,"args":[{"value":"AAAA"},{"value":"AAAAAAAAAAAAAAAAAAAAAAE="}],"gracefulShutdownTime":"-1","tenantID":"12345678901234561234567890123456","groupID":"group-6c764080-aa61-4000-8000-000024957149"},"requestID":"ce052e60c86d76ee00-4","traceID":"job-b4465ac5-trace-X","contexts":{"LabelAffinityScorePlugin":{"preferredAffinityCtx":{}}}},{"instance":{"instanceID":"07b20ff7-dcb0-4100-8000-000000551b0a","requestID":"ce052e60c86d76ee00-5","function":"12345678901234561234567890123456/0-yr10882-yr-gangschedule/$latest","resources":{"resources":{"Memory":{"name":"Memory","scalar":{"value":128}},"CPU":{"name":"CPU","scalar":{"value":300}}}},"scheduleOption":{"affinity":{"instanceAffinity":{},"resource":{},"instance":{"topologyKey":"agent"}},"extension":{"DELEGATE_DIRECTORY_QUOTA":"512"},"range":{}},"createOptions":{"DELEGATE_DIRECTORY_QUOTA":"512","DATA_AFFINITY_ENABLED":"false","tenantId":"12345678901234561234567890123456","RecoverRetryTimes":"0"},"instanceStatus":{"code":1,"msg":"new instance"},"jobID":"job-b4465ac5","parentID":"0d810043-06a6-4000-8000-00006ac6907d","parentFunctionProxyAID":"siaphisprh00132-LocalSchedInstanceCtrlActor@7.189.31.67:22772","storageType":"s3","scheduleTimes":1,"deployTimes":1,"args":[{"value":"AAAA"},{"value":"AAAAAAAAAAAAAAAAAAAAAAE="}],"gracefulShutdownTime":"-1","tenantID":"12345678901234561234567890123456","groupID":"group-6c764080-aa61-4000-8000-000024957149"},"requestID":"ce052e60c86d76ee00-5","traceID":"job-b4465ac5-trace-X","contexts":{"LabelAffinityScorePlugin":{"preferredAffinityCtx":{}}}},{"instance":{"instanceID":"d4928db1-6100-4000-8000-0081a0de67af","requestID":"ce052e60c86d76ee00-6","function":"12345678901234561234567890123456/0-yr10882-yr-gangschedule/$latest","resources":{"resources":{"CPU":{"name":"CPU","scalar":{"value":300}},"Memory":{"name":"Memory","scalar":{"value":128}}}},"scheduleOption":{"affinity":{"instanceAffinity":{},"resource":{},"instance":{"topologyKey":"agent"}},"extension":{"DELEGATE_DIRECTORY_QUOTA":"512"},"range":{}},"createOptions":{"DATA_AFFINITY_ENABLED":"false","tenantId":"12345678901234561234567890123456","DELEGATE_DIRECTORY_QUOTA":"512","RecoverRetryTimes":"0"},"instanceStatus":{"code":1,"msg":"new instance"},"jobID":"job-b4465ac5","parentID":"0d810043-06a6-4000-8000-00006ac6907d","parentFunctionProxyAID":"siaphisprh00132-LocalSchedInstanceCtrlActor@7.189.31.67:22772","storageType":"s3","scheduleTimes":1,"deployTimes":1,"args":[{"value":"AAAA"},{"value":"AAAAAAAAAAAAAAAAAAAAAAE="}],"gracefulShutdownTime":"-1","tenantID":"12345678901234561234567890123456","groupID":"group-6c764080-aa61-4000-8000-000024957149"},"requestID":"ce052e60c86d76ee00-6","traceID":"job-b4465ac5-trace-X","contexts":{"LabelAffinityScorePlugin":{"preferredAffinityCtx":{}}}}],"status":2})";
 
 
         // in etcd and not in cache
         auto key2 = R"(/yr/group/d9e1da12636d45e400/group-cda5051a-d278-48b3-a100-00000000000d)";
-        auto value2 = R"({"requestID":"d9e1da12636d45e400","traceID":"job-b4465ac5-trace-X","groupID":"group-cda5051a-d278-48b3-a100-00000000000d","parentID":"0d810043-06a6-4000-8000-00006ac6907d","ownerProxy":"siaphisprh00132","groupOpts":{"timeout":"300","groupName":"9abcdef0008","sameRunningLifecycle":true},"requests":[{"instance":{"instanceID":"4eb3b461-0000-4000-8000-d2434ffd0ae2","requestID":"d9e1da12636d45e400-0","function":"12345678901234561234567890123456/0-yr10882-yr-gangschedule/$latest","resources":{"resources":{"Memory":{"name":"Memory","scalar":{"value":128}},"CPU":{"name":"CPU","scalar":{"value":300}}}},"scheduleOption":{"affinity":{"instanceAffinity":{},"resource":{},"instance":{"topologyKey":"agent"}},"extension":{"DELEGATE_DIRECTORY_QUOTA":"512"},"range":{}},"createOptions":{"tenantId":"12345678901234561234567890123456","DATA_AFFINITY_ENABLED":"false","RecoverRetryTimes":"0","DELEGATE_DIRECTORY_QUOTA":"512"},"instanceStatus":{"code":1,"msg":"new instance"},"jobID":"job-b4465ac5","parentID":"0d810043-06a6-4000-8000-00006ac6907d","parentFunctionProxyAID":"siaphisprh00132-LocalSchedInstanceCtrlActor@127.0.0.1:22772","storageType":"s3","scheduleTimes":1,"deployTimes":1,"args":[{"value":"AAAA"},{"value":"AAAAAAAAAAAAAAAAAAAAAAE="}],"gracefulShutdownTime":"-1","tenantID":"12345678901234561234567890123456","groupID":"group-cda5051a-d278-48b3-a100-00000000000d"},"requestID":"d9e1da12636d45e400-0","traceID":"job-b4465ac5-trace-X","contexts":{"LabelAffinityScorePlugin":{"preferredAffinityCtx":{}}}},{"instance":{"instanceID":"288ee2b5-6100-4000-8000-0024482c6b4d","requestID":"d9e1da12636d45e400-1","function":"12345678901234561234567890123456/0-yr10882-yr-gangschedule/$latest","resources":{"resources":{"CPU":{"name":"CPU","scalar":{"value":300}},"Memory":{"name":"Memory","scalar":{"value":128}}}},"scheduleOption":{"affinity":{"instanceAffinity":{},"resource":{},"instance":{"topologyKey":"agent"}},"extension":{"DELEGATE_DIRECTORY_QUOTA":"512"},"range":{}},"createOptions":{"tenantId":"12345678901234561234567890123456","DATA_AFFINITY_ENABLED":"false","RecoverRetryTimes":"0","DELEGATE_DIRECTORY_QUOTA":"512"},"instanceStatus":{"code":1,"msg":"new instance"},"jobID":"job-b4465ac5","parentID":"0d810043-06a6-4000-8000-00006ac6907d","parentFunctionProxyAID":"siaphisprh00132-LocalSchedInstanceCtrlActor@127.0.0.1:22772","storageType":"s3","scheduleTimes":1,"deployTimes":1,"args":[{"value":"AAAA"},{"value":"AAAAAAAAAAAAAAAAAAAAAAE="}],"gracefulShutdownTime":"-1","tenantID":"12345678901234561234567890123456","groupID":"group-cda5051a-d278-48b3-a100-00000000000d"},"requestID":"d9e1da12636d45e400-1","traceID":"job-b4465ac5-trace-X","contexts":{"LabelAffinityScorePlugin":{"preferredAffinityCtx":{}}}},{"instance":{"instanceID":"adb66100-0000-4000-809f-0d1bd179ea08","requestID":"d9e1da12636d45e400-2","function":"12345678901234561234567890123456/0-yr10882-yr-gangschedule/$latest","resources":{"resources":{"Memory":{"name":"Memory","scalar":{"value":128}},"CPU":{"name":"CPU","scalar":{"value":300}}}},"scheduleOption":{"affinity":{"instanceAffinity":{},"resource":{},"instance":{"topologyKey":"agent"}},"extension":{"DELEGATE_DIRECTORY_QUOTA":"512"},"range":{}},"createOptions":{"DATA_AFFINITY_ENABLED":"false","DELEGATE_DIRECTORY_QUOTA":"512","RecoverRetryTimes":"0","tenantId":"12345678901234561234567890123456"},"instanceStatus":{"code":1,"msg":"new instance"},"jobID":"job-b4465ac5","parentID":"0d810043-06a6-4000-8000-00006ac6907d","parentFunctionProxyAID":"siaphisprh00132-LocalSchedInstanceCtrlActor@127.0.0.1:22772","storageType":"s3","scheduleTimes":1,"deployTimes":1,"args":[{"value":"AAAA"},{"value":"AAAAAAAAAAAAAAAAAAAAAAE="}],"gracefulShutdownTime":"-1","tenantID":"12345678901234561234567890123456","groupID":"group-cda5051a-d278-48b3-a100-00000000000d"},"requestID":"d9e1da12636d45e400-2","traceID":"job-b4465ac5-trace-X","contexts":{"LabelAffinityScorePlugin":{"preferredAffinityCtx":{}}}},{"instance":{"instanceID":"36d4a234-0c2e-4761-8000-0000000042c6","requestID":"d9e1da12636d45e400-3","function":"12345678901234561234567890123456/0-yr10882-yr-gangschedule/$latest","resources":{"resources":{"Memory":{"name":"Memory","scalar":{"value":128}},"CPU":{"name":"CPU","scalar":{"value":300}}}},"scheduleOption":{"affinity":{"instanceAffinity":{},"resource":{},"instance":{"topologyKey":"agent"}},"extension":{"DELEGATE_DIRECTORY_QUOTA":"512"},"range":{}},"createOptions":{"DATA_AFFINITY_ENABLED":"false","RecoverRetryTimes":"0","DELEGATE_DIRECTORY_QUOTA":"512","tenantId":"12345678901234561234567890123456"},"instanceStatus":{"code":1,"msg":"new instance"},"jobID":"job-b4465ac5","parentID":"0d810043-06a6-4000-8000-00006ac6907d","parentFunctionProxyAID":"siaphisprh00132-LocalSchedInstanceCtrlActor@127.0.0.1:22772","storageType":"s3","scheduleTimes":1,"deployTimes":1,"args":[{"value":"AAAA"},{"value":"AAAAAAAAAAAAAAAAAAAAAAE="}],"gracefulShutdownTime":"-1","tenantID":"12345678901234561234567890123456","groupID":"group-cda5051a-d278-48b3-a100-00000000000d"},"requestID":"d9e1da12636d45e400-3","traceID":"job-b4465ac5-trace-X","contexts":{"LabelAffinityScorePlugin":{"preferredAffinityCtx":{}}}},{"instance":{"instanceID":"1fabb861-0000-4000-8000-725edf9bd3a0","requestID":"d9e1da12636d45e400-4","function":"12345678901234561234567890123456/0-yr10882-yr-gangschedule/$latest","resources":{"resources":{"Memory":{"name":"Memory","scalar":{"value":128}},"CPU":{"name":"CPU","scalar":{"value":300}}}},"scheduleOption":{"affinity":{"instanceAffinity":{},"resource":{},"instance":{"topologyKey":"agent"}},"extension":{"DELEGATE_DIRECTORY_QUOTA":"512"},"range":{}},"createOptions":{"tenantId":"12345678901234561234567890123456","DATA_AFFINITY_ENABLED":"false","DELEGATE_DIRECTORY_QUOTA":"512","RecoverRetryTimes":"0"},"instanceStatus":{"code":1,"msg":"new instance"},"jobID":"job-b4465ac5","parentID":"0d810043-06a6-4000-8000-00006ac6907d","parentFunctionProxyAID":"siaphisprh00132-LocalSchedInstanceCtrlActor@127.0.0.1:22772","storageType":"s3","scheduleTimes":1,"deployTimes":1,"args":[{"value":"AAAA"},{"value":"AAAAAAAAAAAAAAAAAAAAAAE="}],"gracefulShutdownTime":"-1","tenantID":"12345678901234561234567890123456","groupID":"group-cda5051a-d278-48b3-a100-00000000000d"},"requestID":"d9e1da12636d45e400-4","traceID":"job-b4465ac5-trace-X","contexts":{"LabelAffinityScorePlugin":{"preferredAffinityCtx":{}}}},{"instance":{"instanceID":"43b906b9-6100-4000-8000-009cc54e1076","requestID":"d9e1da12636d45e400-5","function":"12345678901234561234567890123456/0-yr10882-yr-gangschedule/$latest","resources":{"resources":{"Memory":{"name":"Memory","scalar":{"value":128}},"CPU":{"name":"CPU","scalar":{"value":300}}}},"scheduleOption":{"affinity":{"instanceAffinity":{},"resource":{},"instance":{"topologyKey":"agent"}},"extension":{"DELEGATE_DIRECTORY_QUOTA":"512"},"range":{}},"createOptions":{"DELEGATE_DIRECTORY_QUOTA":"512","tenantId":"12345678901234561234567890123456","RecoverRetryTimes":"0","DATA_AFFINITY_ENABLED":"false"},"instanceStatus":{"code":1,"msg":"new instance"},"jobID":"job-b4465ac5","parentID":"0d810043-06a6-4000-8000-00006ac6907d","parentFunctionProxyAID":"siaphisprh00132-LocalSchedInstanceCtrlActor@127.0.0.1:22772","storageType":"s3","scheduleTimes":1,"deployTimes":1,"args":[{"value":"AAAA"},{"value":"AAAAAAAAAAAAAAAAAAAAAAE="}],"gracefulShutdownTime":"-1","tenantID":"12345678901234561234567890123456","groupID":"group-cda5051a-d278-48b3-a100-00000000000d"},"requestID":"d9e1da12636d45e400-5","traceID":"job-b4465ac5-trace-X","contexts":{"LabelAffinityScorePlugin":{"preferredAffinityCtx":{}}}},{"instance":{"instanceID":"8d02ba61-0000-4000-8000-7e3fb0844dfe","requestID":"d9e1da12636d45e400-6","function":"12345678901234561234567890123456/0-yr10882-yr-gangschedule/$latest","resources":{"resources":{"CPU":{"name":"CPU","scalar":{"value":300}},"Memory":{"name":"Memory","scalar":{"value":128}}}},"scheduleOption":{"affinity":{"instanceAffinity":{},"resource":{},"instance":{"topologyKey":"agent"}},"extension":{"DELEGATE_DIRECTORY_QUOTA":"512"},"range":{}},"createOptions":{"RecoverRetryTimes":"0","DELEGATE_DIRECTORY_QUOTA":"512","tenantId":"12345678901234561234567890123456","DATA_AFFINITY_ENABLED":"false"},"instanceStatus":{"code":1,"msg":"new instance"},"jobID":"job-b4465ac5","parentID":"0d810043-06a6-4000-8000-00006ac6907d","parentFunctionProxyAID":"siaphisprh00132-LocalSchedInstanceCtrlActor@127.0.0.1:22772","storageType":"s3","scheduleTimes":1,"deployTimes":1,"args":[{"value":"AAAA"},{"value":"AAAAAAAAAAAAAAAAAAAAAAE="}],"gracefulShutdownTime":"-1","tenantID":"12345678901234561234567890123456","groupID":"group-cda5051a-d278-48b3-a100-00000000000d"},"requestID":"d9e1da12636d45e400-6","traceID":"job-b4465ac5-trace-X","contexts":{"LabelAffinityScorePlugin":{"preferredAffinityCtx":{}}}}],"status":2})";
+        auto value2 = R"({"requestID":"d9e1da12636d45e400","traceID":"job-b4465ac5-trace-X","groupID":"group-cda5051a-d278-48b3-a100-00000000000d","parentID":"0d810043-06a6-4000-8000-00006ac6907d","ownerProxy":"siaphisprh00132","groupOpts":{"timeout":"300","groupName":"9abcdef0008","sameRunningLifecycle":true},"requests":[{"instance":{"instanceID":"4eb3b461-0000-4000-8000-d2434ffd0ae2","requestID":"d9e1da12636d45e400-0","function":"12345678901234561234567890123456/0-yr10882-yr-gangschedule/$latest","resources":{"resources":{"Memory":{"name":"Memory","scalar":{"value":128}},"CPU":{"name":"CPU","scalar":{"value":300}}}},"scheduleOption":{"affinity":{"instanceAffinity":{},"resource":{},"instance":{"topologyKey":"agent"}},"extension":{"DELEGATE_DIRECTORY_QUOTA":"512"},"range":{}},"createOptions":{"tenantId":"12345678901234561234567890123456","DATA_AFFINITY_ENABLED":"false","RecoverRetryTimes":"0","DELEGATE_DIRECTORY_QUOTA":"512"},"instanceStatus":{"code":1,"msg":"new instance"},"jobID":"job-b4465ac5","parentID":"0d810043-06a6-4000-8000-00006ac6907d","parentFunctionProxyAID":"siaphisprh00132-LocalSchedInstanceCtrlActor@7.189.31.67:22772","storageType":"s3","scheduleTimes":1,"deployTimes":1,"args":[{"value":"AAAA"},{"value":"AAAAAAAAAAAAAAAAAAAAAAE="}],"gracefulShutdownTime":"-1","tenantID":"12345678901234561234567890123456","groupID":"group-cda5051a-d278-48b3-a100-00000000000d"},"requestID":"d9e1da12636d45e400-0","traceID":"job-b4465ac5-trace-X","contexts":{"LabelAffinityScorePlugin":{"preferredAffinityCtx":{}}}},{"instance":{"instanceID":"288ee2b5-6100-4000-8000-0024482c6b4d","requestID":"d9e1da12636d45e400-1","function":"12345678901234561234567890123456/0-yr10882-yr-gangschedule/$latest","resources":{"resources":{"CPU":{"name":"CPU","scalar":{"value":300}},"Memory":{"name":"Memory","scalar":{"value":128}}}},"scheduleOption":{"affinity":{"instanceAffinity":{},"resource":{},"instance":{"topologyKey":"agent"}},"extension":{"DELEGATE_DIRECTORY_QUOTA":"512"},"range":{}},"createOptions":{"tenantId":"12345678901234561234567890123456","DATA_AFFINITY_ENABLED":"false","RecoverRetryTimes":"0","DELEGATE_DIRECTORY_QUOTA":"512"},"instanceStatus":{"code":1,"msg":"new instance"},"jobID":"job-b4465ac5","parentID":"0d810043-06a6-4000-8000-00006ac6907d","parentFunctionProxyAID":"siaphisprh00132-LocalSchedInstanceCtrlActor@7.189.31.67:22772","storageType":"s3","scheduleTimes":1,"deployTimes":1,"args":[{"value":"AAAA"},{"value":"AAAAAAAAAAAAAAAAAAAAAAE="}],"gracefulShutdownTime":"-1","tenantID":"12345678901234561234567890123456","groupID":"group-cda5051a-d278-48b3-a100-00000000000d"},"requestID":"d9e1da12636d45e400-1","traceID":"job-b4465ac5-trace-X","contexts":{"LabelAffinityScorePlugin":{"preferredAffinityCtx":{}}}},{"instance":{"instanceID":"adb66100-0000-4000-809f-0d1bd179ea08","requestID":"d9e1da12636d45e400-2","function":"12345678901234561234567890123456/0-yr10882-yr-gangschedule/$latest","resources":{"resources":{"Memory":{"name":"Memory","scalar":{"value":128}},"CPU":{"name":"CPU","scalar":{"value":300}}}},"scheduleOption":{"affinity":{"instanceAffinity":{},"resource":{},"instance":{"topologyKey":"agent"}},"extension":{"DELEGATE_DIRECTORY_QUOTA":"512"},"range":{}},"createOptions":{"DATA_AFFINITY_ENABLED":"false","DELEGATE_DIRECTORY_QUOTA":"512","RecoverRetryTimes":"0","tenantId":"12345678901234561234567890123456"},"instanceStatus":{"code":1,"msg":"new instance"},"jobID":"job-b4465ac5","parentID":"0d810043-06a6-4000-8000-00006ac6907d","parentFunctionProxyAID":"siaphisprh00132-LocalSchedInstanceCtrlActor@7.189.31.67:22772","storageType":"s3","scheduleTimes":1,"deployTimes":1,"args":[{"value":"AAAA"},{"value":"AAAAAAAAAAAAAAAAAAAAAAE="}],"gracefulShutdownTime":"-1","tenantID":"12345678901234561234567890123456","groupID":"group-cda5051a-d278-48b3-a100-00000000000d"},"requestID":"d9e1da12636d45e400-2","traceID":"job-b4465ac5-trace-X","contexts":{"LabelAffinityScorePlugin":{"preferredAffinityCtx":{}}}},{"instance":{"instanceID":"36d4a234-0c2e-4761-8000-0000000042c6","requestID":"d9e1da12636d45e400-3","function":"12345678901234561234567890123456/0-yr10882-yr-gangschedule/$latest","resources":{"resources":{"Memory":{"name":"Memory","scalar":{"value":128}},"CPU":{"name":"CPU","scalar":{"value":300}}}},"scheduleOption":{"affinity":{"instanceAffinity":{},"resource":{},"instance":{"topologyKey":"agent"}},"extension":{"DELEGATE_DIRECTORY_QUOTA":"512"},"range":{}},"createOptions":{"DATA_AFFINITY_ENABLED":"false","RecoverRetryTimes":"0","DELEGATE_DIRECTORY_QUOTA":"512","tenantId":"12345678901234561234567890123456"},"instanceStatus":{"code":1,"msg":"new instance"},"jobID":"job-b4465ac5","parentID":"0d810043-06a6-4000-8000-00006ac6907d","parentFunctionProxyAID":"siaphisprh00132-LocalSchedInstanceCtrlActor@7.189.31.67:22772","storageType":"s3","scheduleTimes":1,"deployTimes":1,"args":[{"value":"AAAA"},{"value":"AAAAAAAAAAAAAAAAAAAAAAE="}],"gracefulShutdownTime":"-1","tenantID":"12345678901234561234567890123456","groupID":"group-cda5051a-d278-48b3-a100-00000000000d"},"requestID":"d9e1da12636d45e400-3","traceID":"job-b4465ac5-trace-X","contexts":{"LabelAffinityScorePlugin":{"preferredAffinityCtx":{}}}},{"instance":{"instanceID":"1fabb861-0000-4000-8000-725edf9bd3a0","requestID":"d9e1da12636d45e400-4","function":"12345678901234561234567890123456/0-yr10882-yr-gangschedule/$latest","resources":{"resources":{"Memory":{"name":"Memory","scalar":{"value":128}},"CPU":{"name":"CPU","scalar":{"value":300}}}},"scheduleOption":{"affinity":{"instanceAffinity":{},"resource":{},"instance":{"topologyKey":"agent"}},"extension":{"DELEGATE_DIRECTORY_QUOTA":"512"},"range":{}},"createOptions":{"tenantId":"12345678901234561234567890123456","DATA_AFFINITY_ENABLED":"false","DELEGATE_DIRECTORY_QUOTA":"512","RecoverRetryTimes":"0"},"instanceStatus":{"code":1,"msg":"new instance"},"jobID":"job-b4465ac5","parentID":"0d810043-06a6-4000-8000-00006ac6907d","parentFunctionProxyAID":"siaphisprh00132-LocalSchedInstanceCtrlActor@7.189.31.67:22772","storageType":"s3","scheduleTimes":1,"deployTimes":1,"args":[{"value":"AAAA"},{"value":"AAAAAAAAAAAAAAAAAAAAAAE="}],"gracefulShutdownTime":"-1","tenantID":"12345678901234561234567890123456","groupID":"group-cda5051a-d278-48b3-a100-00000000000d"},"requestID":"d9e1da12636d45e400-4","traceID":"job-b4465ac5-trace-X","contexts":{"LabelAffinityScorePlugin":{"preferredAffinityCtx":{}}}},{"instance":{"instanceID":"43b906b9-6100-4000-8000-009cc54e1076","requestID":"d9e1da12636d45e400-5","function":"12345678901234561234567890123456/0-yr10882-yr-gangschedule/$latest","resources":{"resources":{"Memory":{"name":"Memory","scalar":{"value":128}},"CPU":{"name":"CPU","scalar":{"value":300}}}},"scheduleOption":{"affinity":{"instanceAffinity":{},"resource":{},"instance":{"topologyKey":"agent"}},"extension":{"DELEGATE_DIRECTORY_QUOTA":"512"},"range":{}},"createOptions":{"DELEGATE_DIRECTORY_QUOTA":"512","tenantId":"12345678901234561234567890123456","RecoverRetryTimes":"0","DATA_AFFINITY_ENABLED":"false"},"instanceStatus":{"code":1,"msg":"new instance"},"jobID":"job-b4465ac5","parentID":"0d810043-06a6-4000-8000-00006ac6907d","parentFunctionProxyAID":"siaphisprh00132-LocalSchedInstanceCtrlActor@7.189.31.67:22772","storageType":"s3","scheduleTimes":1,"deployTimes":1,"args":[{"value":"AAAA"},{"value":"AAAAAAAAAAAAAAAAAAAAAAE="}],"gracefulShutdownTime":"-1","tenantID":"12345678901234561234567890123456","groupID":"group-cda5051a-d278-48b3-a100-00000000000d"},"requestID":"d9e1da12636d45e400-5","traceID":"job-b4465ac5-trace-X","contexts":{"LabelAffinityScorePlugin":{"preferredAffinityCtx":{}}}},{"instance":{"instanceID":"8d02ba61-0000-4000-8000-7e3fb0844dfe","requestID":"d9e1da12636d45e400-6","function":"12345678901234561234567890123456/0-yr10882-yr-gangschedule/$latest","resources":{"resources":{"CPU":{"name":"CPU","scalar":{"value":300}},"Memory":{"name":"Memory","scalar":{"value":128}}}},"scheduleOption":{"affinity":{"instanceAffinity":{},"resource":{},"instance":{"topologyKey":"agent"}},"extension":{"DELEGATE_DIRECTORY_QUOTA":"512"},"range":{}},"createOptions":{"RecoverRetryTimes":"0","DELEGATE_DIRECTORY_QUOTA":"512","tenantId":"12345678901234561234567890123456","DATA_AFFINITY_ENABLED":"false"},"instanceStatus":{"code":1,"msg":"new instance"},"jobID":"job-b4465ac5","parentID":"0d810043-06a6-4000-8000-00006ac6907d","parentFunctionProxyAID":"siaphisprh00132-LocalSchedInstanceCtrlActor@7.189.31.67:22772","storageType":"s3","scheduleTimes":1,"deployTimes":1,"args":[{"value":"AAAA"},{"value":"AAAAAAAAAAAAAAAAAAAAAAE="}],"gracefulShutdownTime":"-1","tenantID":"12345678901234561234567890123456","groupID":"group-cda5051a-d278-48b3-a100-00000000000d"},"requestID":"d9e1da12636d45e400-6","traceID":"job-b4465ac5-trace-X","contexts":{"LabelAffinityScorePlugin":{"preferredAffinityCtx":{}}}}],"status":2})";
 
         // in cache and not in etcd
         auto key3 = R"(/yr/group/d4b532ab08a7d4d000/group-5b9f3eba-404e-48a2-a100-0000000000a3)";
-        auto value3 = R"({"requestID":"d4b532ab08a7d4d000","traceID":"job-b4465ac5-trace-X","groupID":"group-5b9f3eba-404e-48a2-a100-0000000000a3","parentID":"0d810043-06a6-4000-8000-00006ac6907d","ownerProxy":"siaphisprh00132","groupOpts":{"timeout":"300","groupName":"6abcdef0008","sameRunningLifecycle":true},"requests":[{"instance":{"instanceID":"a3610000-0000-4000-b581-7112ee42b43b","requestID":"d4b532ab08a7d4d000-0","function":"12345678901234561234567890123456/0-yr10882-yr-gangschedule/$latest","resources":{"resources":{"Memory":{"name":"Memory","scalar":{"value":128}},"CPU":{"name":"CPU","scalar":{"value":300}}}},"scheduleOption":{"affinity":{"instanceAffinity":{},"resource":{},"instance":{"topologyKey":"agent"}},"extension":{"DELEGATE_DIRECTORY_QUOTA":"512"},"range":{}},"createOptions":{"RecoverRetryTimes":"0","DATA_AFFINITY_ENABLED":"false","DELEGATE_DIRECTORY_QUOTA":"512","tenantId":"12345678901234561234567890123456"},"instanceStatus":{"code":1,"msg":"new instance"},"jobID":"job-b4465ac5","parentID":"0d810043-06a6-4000-8000-00006ac6907d","parentFunctionProxyAID":"siaphisprh00132-LocalSchedInstanceCtrlActor@127.0.0.1:22772","storageType":"s3","scheduleTimes":1,"deployTimes":1,"args":[{"value":"AAAA"},{"value":"AAAAAAAAAAAAAAAAAAAAAAE="}],"gracefulShutdownTime":"-1","tenantID":"12345678901234561234567890123456","groupID":"group-5b9f3eba-404e-48a2-a100-0000000000a3"},"requestID":"d4b532ab08a7d4d000-0","traceID":"job-b4465ac5-trace-X","contexts":{"LabelAffinityScorePlugin":{"preferredAffinityCtx":{}}}},{"instance":{"instanceID":"b40e9b7a-e614-4461-8000-000000007942","requestID":"d4b532ab08a7d4d000-1","function":"12345678901234561234567890123456/0-yr10882-yr-gangschedule/$latest","resources":{"resources":{"CPU":{"name":"CPU","scalar":{"value":300}},"Memory":{"name":"Memory","scalar":{"value":128}}}},"scheduleOption":{"affinity":{"instanceAffinity":{},"resource":{},"instance":{"topologyKey":"agent"}},"extension":{"DELEGATE_DIRECTORY_QUOTA":"512"},"range":{}},"createOptions":{"DELEGATE_DIRECTORY_QUOTA":"512","tenantId":"12345678901234561234567890123456","DATA_AFFINITY_ENABLED":"false","RecoverRetryTimes":"0"},"instanceStatus":{"code":1,"msg":"new instance"},"jobID":"job-b4465ac5","parentID":"0d810043-06a6-4000-8000-00006ac6907d","parentFunctionProxyAID":"siaphisprh00132-LocalSchedInstanceCtrlActor@127.0.0.1:22772","storageType":"s3","scheduleTimes":1,"deployTimes":1,"args":[{"value":"AAAA"},{"value":"AAAAAAAAAAAAAAAAAAAAAAE="}],"gracefulShutdownTime":"-1","tenantID":"12345678901234561234567890123456","groupID":"group-5b9f3eba-404e-48a2-a100-0000000000a3"},"requestID":"d4b532ab08a7d4d000-1","traceID":"job-b4465ac5-trace-X","contexts":{"LabelAffinityScorePlugin":{"preferredAffinityCtx":{}}}},{"instance":{"instanceID":"791aa563-ff30-4561-8000-0000000026a6","requestID":"d4b532ab08a7d4d000-2","function":"12345678901234561234567890123456/0-yr10882-yr-gangschedule/$latest","resources":{"resources":{"CPU":{"name":"CPU","scalar":{"value":300}},"Memory":{"name":"Memory","scalar":{"value":128}}}},"scheduleOption":{"affinity":{"instanceAffinity":{},"resource":{},"instance":{"topologyKey":"agent"}},"extension":{"DELEGATE_DIRECTORY_QUOTA":"512"},"range":{}},"createOptions":{"tenantId":"12345678901234561234567890123456","DATA_AFFINITY_ENABLED":"false","RecoverRetryTimes":"0","DELEGATE_DIRECTORY_QUOTA":"512"},"instanceStatus":{"code":1,"msg":"new instance"},"jobID":"job-b4465ac5","parentID":"0d810043-06a6-4000-8000-00006ac6907d","parentFunctionProxyAID":"siaphisprh00132-LocalSchedInstanceCtrlActor@127.0.0.1:22772","storageType":"s3","scheduleTimes":1,"deployTimes":1,"args":[{"value":"AAAA"},{"value":"AAAAAAAAAAAAAAAAAAAAAAE="}],"gracefulShutdownTime":"-1","tenantID":"12345678901234561234567890123456","groupID":"group-5b9f3eba-404e-48a2-a100-0000000000a3"},"requestID":"d4b532ab08a7d4d000-2","traceID":"job-b4465ac5-trace-X","contexts":{"LabelAffinityScorePlugin":{"preferredAffinityCtx":{}}}},{"instance":{"instanceID":"3e37a9b4-894e-4661-8000-00000000e7ba","requestID":"d4b532ab08a7d4d000-3","function":"12345678901234561234567890123456/0-yr10882-yr-gangschedule/$latest","resources":{"resources":{"Memory":{"name":"Memory","scalar":{"value":128}},"CPU":{"name":"CPU","scalar":{"value":300}}}},"scheduleOption":{"affinity":{"instanceAffinity":{},"resource":{},"instance":{"topologyKey":"agent"}},"extension":{"DELEGATE_DIRECTORY_QUOTA":"512"},"range":{}},"createOptions":{"RecoverRetryTimes":"0","tenantId":"12345678901234561234567890123456","DELEGATE_DIRECTORY_QUOTA":"512","DATA_AFFINITY_ENABLED":"false"},"instanceStatus":{"code":1,"msg":"new instance"},"jobID":"job-b4465ac5","parentID":"0d810043-06a6-4000-8000-00006ac6907d","parentFunctionProxyAID":"siaphisprh00132-LocalSchedInstanceCtrlActor@127.0.0.1:22772","storageType":"s3","scheduleTimes":1,"deployTimes":1,"args":[{"value":"AAAA"},{"value":"AAAAAAAAAAAAAAAAAAAAAAE="}],"gracefulShutdownTime":"-1","tenantID":"12345678901234561234567890123456","groupID":"group-5b9f3eba-404e-48a2-a100-0000000000a3"},"requestID":"d4b532ab08a7d4d000-3","traceID":"job-b4465ac5-trace-X","contexts":{"LabelAffinityScorePlugin":{"preferredAffinityCtx":{}}}},{"instance":{"instanceID":"b6d05947-d2a7-4100-8000-0000007c27b9","requestID":"d4b532ab08a7d4d000-4","function":"12345678901234561234567890123456/0-yr10882-yr-gangschedule/$latest","resources":{"resources":{"Memory":{"name":"Memory","scalar":{"value":128}},"CPU":{"name":"CPU","scalar":{"value":300}}}},"scheduleOption":{"affinity":{"instanceAffinity":{},"resource":{},"instance":{"topologyKey":"agent"}},"extension":{"DELEGATE_DIRECTORY_QUOTA":"512"},"range":{}},"createOptions":{"DELEGATE_DIRECTORY_QUOTA":"512","DATA_AFFINITY_ENABLED":"false","RecoverRetryTimes":"0","tenantId":"12345678901234561234567890123456"},"instanceStatus":{"code":1,"msg":"new instance"},"jobID":"job-b4465ac5","parentID":"0d810043-06a6-4000-8000-00006ac6907d","parentFunctionProxyAID":"siaphisprh00132-LocalSchedInstanceCtrlActor@127.0.0.1:22772","storageType":"s3","scheduleTimes":1,"deployTimes":1,"args":[{"value":"AAAA"},{"value":"AAAAAAAAAAAAAAAAAAAAAAE="}],"gracefulShutdownTime":"-1","tenantID":"12345678901234561234567890123456","groupID":"group-5b9f3eba-404e-48a2-a100-0000000000a3"},"requestID":"d4b532ab08a7d4d000-4","traceID":"job-b4465ac5-trace-X","contexts":{"LabelAffinityScorePlugin":{"preferredAffinityCtx":{}}}},{"instance":{"instanceID":"9674a861-0000-4000-8000-ecdcb9363dd8","requestID":"d4b532ab08a7d4d000-5","function":"12345678901234561234567890123456/0-yr10882-yr-gangschedule/$latest","resources":{"resources":{"CPU":{"name":"CPU","scalar":{"value":300}},"Memory":{"name":"Memory","scalar":{"value":128}}}},"scheduleOption":{"affinity":{"instanceAffinity":{},"resource":{},"instance":{"topologyKey":"agent"}},"extension":{"DELEGATE_DIRECTORY_QUOTA":"512"},"range":{}},"createOptions":{"DELEGATE_DIRECTORY_QUOTA":"512","tenantId":"12345678901234561234567890123456","DATA_AFFINITY_ENABLED":"false","RecoverRetryTimes":"0"},"instanceStatus":{"code":1,"msg":"new instance"},"jobID":"job-b4465ac5","parentID":"0d810043-06a6-4000-8000-00006ac6907d","parentFunctionProxyAID":"siaphisprh00132-LocalSchedInstanceCtrlActor@127.0.0.1:22772","storageType":"s3","scheduleTimes":1,"deployTimes":1,"args":[{"value":"AAAA"},{"value":"AAAAAAAAAAAAAAAAAAAAAAE="}],"gracefulShutdownTime":"-1","tenantID":"12345678901234561234567890123456","groupID":"group-5b9f3eba-404e-48a2-a100-0000000000a3"},"requestID":"d4b532ab08a7d4d000-5","traceID":"job-b4465ac5-trace-X","contexts":{"LabelAffinityScorePlugin":{"preferredAffinityCtx":{}}}},{"instance":{"instanceID":"3d9ca0a9-6100-4000-8000-00a0ad160bce","requestID":"d4b532ab08a7d4d000-6","function":"12345678901234561234567890123456/0-yr10882-yr-gangschedule/$latest","resources":{"resources":{"CPU":{"name":"CPU","scalar":{"value":300}},"Memory":{"name":"Memory","scalar":{"value":128}}}},"scheduleOption":{"affinity":{"instanceAffinity":{},"resource":{},"instance":{"topologyKey":"agent"}},"extension":{"DELEGATE_DIRECTORY_QUOTA":"512"},"range":{}},"createOptions":{"DELEGATE_DIRECTORY_QUOTA":"512","tenantId":"12345678901234561234567890123456","RecoverRetryTimes":"0","DATA_AFFINITY_ENABLED":"false"},"instanceStatus":{"code":1,"msg":"new instance"},"jobID":"job-b4465ac5","parentID":"0d810043-06a6-4000-8000-00006ac6907d","parentFunctionProxyAID":"siaphisprh00132-LocalSchedInstanceCtrlActor@127.0.0.1:22772","storageType":"s3","scheduleTimes":1,"deployTimes":1,"args":[{"value":"AAAA"},{"value":"AAAAAAAAAAAAAAAAAAAAAAE="}],"gracefulShutdownTime":"-1","tenantID":"12345678901234561234567890123456","groupID":"group-5b9f3eba-404e-48a2-a100-0000000000a3"},"requestID":"d4b532ab08a7d4d000-6","traceID":"job-b4465ac5-trace-X","contexts":{"LabelAffinityScorePlugin":{"preferredAffinityCtx":{}}}}],"status":2})";
+        auto value3 = R"({"requestID":"d4b532ab08a7d4d000","traceID":"job-b4465ac5-trace-X","groupID":"group-5b9f3eba-404e-48a2-a100-0000000000a3","parentID":"0d810043-06a6-4000-8000-00006ac6907d","ownerProxy":"siaphisprh00132","groupOpts":{"timeout":"300","groupName":"6abcdef0008","sameRunningLifecycle":true},"requests":[{"instance":{"instanceID":"a3610000-0000-4000-b581-7112ee42b43b","requestID":"d4b532ab08a7d4d000-0","function":"12345678901234561234567890123456/0-yr10882-yr-gangschedule/$latest","resources":{"resources":{"Memory":{"name":"Memory","scalar":{"value":128}},"CPU":{"name":"CPU","scalar":{"value":300}}}},"scheduleOption":{"affinity":{"instanceAffinity":{},"resource":{},"instance":{"topologyKey":"agent"}},"extension":{"DELEGATE_DIRECTORY_QUOTA":"512"},"range":{}},"createOptions":{"RecoverRetryTimes":"0","DATA_AFFINITY_ENABLED":"false","DELEGATE_DIRECTORY_QUOTA":"512","tenantId":"12345678901234561234567890123456"},"instanceStatus":{"code":1,"msg":"new instance"},"jobID":"job-b4465ac5","parentID":"0d810043-06a6-4000-8000-00006ac6907d","parentFunctionProxyAID":"siaphisprh00132-LocalSchedInstanceCtrlActor@7.189.31.67:22772","storageType":"s3","scheduleTimes":1,"deployTimes":1,"args":[{"value":"AAAA"},{"value":"AAAAAAAAAAAAAAAAAAAAAAE="}],"gracefulShutdownTime":"-1","tenantID":"12345678901234561234567890123456","groupID":"group-5b9f3eba-404e-48a2-a100-0000000000a3"},"requestID":"d4b532ab08a7d4d000-0","traceID":"job-b4465ac5-trace-X","contexts":{"LabelAffinityScorePlugin":{"preferredAffinityCtx":{}}}},{"instance":{"instanceID":"b40e9b7a-e614-4461-8000-000000007942","requestID":"d4b532ab08a7d4d000-1","function":"12345678901234561234567890123456/0-yr10882-yr-gangschedule/$latest","resources":{"resources":{"CPU":{"name":"CPU","scalar":{"value":300}},"Memory":{"name":"Memory","scalar":{"value":128}}}},"scheduleOption":{"affinity":{"instanceAffinity":{},"resource":{},"instance":{"topologyKey":"agent"}},"extension":{"DELEGATE_DIRECTORY_QUOTA":"512"},"range":{}},"createOptions":{"DELEGATE_DIRECTORY_QUOTA":"512","tenantId":"12345678901234561234567890123456","DATA_AFFINITY_ENABLED":"false","RecoverRetryTimes":"0"},"instanceStatus":{"code":1,"msg":"new instance"},"jobID":"job-b4465ac5","parentID":"0d810043-06a6-4000-8000-00006ac6907d","parentFunctionProxyAID":"siaphisprh00132-LocalSchedInstanceCtrlActor@7.189.31.67:22772","storageType":"s3","scheduleTimes":1,"deployTimes":1,"args":[{"value":"AAAA"},{"value":"AAAAAAAAAAAAAAAAAAAAAAE="}],"gracefulShutdownTime":"-1","tenantID":"12345678901234561234567890123456","groupID":"group-5b9f3eba-404e-48a2-a100-0000000000a3"},"requestID":"d4b532ab08a7d4d000-1","traceID":"job-b4465ac5-trace-X","contexts":{"LabelAffinityScorePlugin":{"preferredAffinityCtx":{}}}},{"instance":{"instanceID":"791aa563-ff30-4561-8000-0000000026a6","requestID":"d4b532ab08a7d4d000-2","function":"12345678901234561234567890123456/0-yr10882-yr-gangschedule/$latest","resources":{"resources":{"CPU":{"name":"CPU","scalar":{"value":300}},"Memory":{"name":"Memory","scalar":{"value":128}}}},"scheduleOption":{"affinity":{"instanceAffinity":{},"resource":{},"instance":{"topologyKey":"agent"}},"extension":{"DELEGATE_DIRECTORY_QUOTA":"512"},"range":{}},"createOptions":{"tenantId":"12345678901234561234567890123456","DATA_AFFINITY_ENABLED":"false","RecoverRetryTimes":"0","DELEGATE_DIRECTORY_QUOTA":"512"},"instanceStatus":{"code":1,"msg":"new instance"},"jobID":"job-b4465ac5","parentID":"0d810043-06a6-4000-8000-00006ac6907d","parentFunctionProxyAID":"siaphisprh00132-LocalSchedInstanceCtrlActor@7.189.31.67:22772","storageType":"s3","scheduleTimes":1,"deployTimes":1,"args":[{"value":"AAAA"},{"value":"AAAAAAAAAAAAAAAAAAAAAAE="}],"gracefulShutdownTime":"-1","tenantID":"12345678901234561234567890123456","groupID":"group-5b9f3eba-404e-48a2-a100-0000000000a3"},"requestID":"d4b532ab08a7d4d000-2","traceID":"job-b4465ac5-trace-X","contexts":{"LabelAffinityScorePlugin":{"preferredAffinityCtx":{}}}},{"instance":{"instanceID":"3e37a9b4-894e-4661-8000-00000000e7ba","requestID":"d4b532ab08a7d4d000-3","function":"12345678901234561234567890123456/0-yr10882-yr-gangschedule/$latest","resources":{"resources":{"Memory":{"name":"Memory","scalar":{"value":128}},"CPU":{"name":"CPU","scalar":{"value":300}}}},"scheduleOption":{"affinity":{"instanceAffinity":{},"resource":{},"instance":{"topologyKey":"agent"}},"extension":{"DELEGATE_DIRECTORY_QUOTA":"512"},"range":{}},"createOptions":{"RecoverRetryTimes":"0","tenantId":"12345678901234561234567890123456","DELEGATE_DIRECTORY_QUOTA":"512","DATA_AFFINITY_ENABLED":"false"},"instanceStatus":{"code":1,"msg":"new instance"},"jobID":"job-b4465ac5","parentID":"0d810043-06a6-4000-8000-00006ac6907d","parentFunctionProxyAID":"siaphisprh00132-LocalSchedInstanceCtrlActor@7.189.31.67:22772","storageType":"s3","scheduleTimes":1,"deployTimes":1,"args":[{"value":"AAAA"},{"value":"AAAAAAAAAAAAAAAAAAAAAAE="}],"gracefulShutdownTime":"-1","tenantID":"12345678901234561234567890123456","groupID":"group-5b9f3eba-404e-48a2-a100-0000000000a3"},"requestID":"d4b532ab08a7d4d000-3","traceID":"job-b4465ac5-trace-X","contexts":{"LabelAffinityScorePlugin":{"preferredAffinityCtx":{}}}},{"instance":{"instanceID":"b6d05947-d2a7-4100-8000-0000007c27b9","requestID":"d4b532ab08a7d4d000-4","function":"12345678901234561234567890123456/0-yr10882-yr-gangschedule/$latest","resources":{"resources":{"Memory":{"name":"Memory","scalar":{"value":128}},"CPU":{"name":"CPU","scalar":{"value":300}}}},"scheduleOption":{"affinity":{"instanceAffinity":{},"resource":{},"instance":{"topologyKey":"agent"}},"extension":{"DELEGATE_DIRECTORY_QUOTA":"512"},"range":{}},"createOptions":{"DELEGATE_DIRECTORY_QUOTA":"512","DATA_AFFINITY_ENABLED":"false","RecoverRetryTimes":"0","tenantId":"12345678901234561234567890123456"},"instanceStatus":{"code":1,"msg":"new instance"},"jobID":"job-b4465ac5","parentID":"0d810043-06a6-4000-8000-00006ac6907d","parentFunctionProxyAID":"siaphisprh00132-LocalSchedInstanceCtrlActor@7.189.31.67:22772","storageType":"s3","scheduleTimes":1,"deployTimes":1,"args":[{"value":"AAAA"},{"value":"AAAAAAAAAAAAAAAAAAAAAAE="}],"gracefulShutdownTime":"-1","tenantID":"12345678901234561234567890123456","groupID":"group-5b9f3eba-404e-48a2-a100-0000000000a3"},"requestID":"d4b532ab08a7d4d000-4","traceID":"job-b4465ac5-trace-X","contexts":{"LabelAffinityScorePlugin":{"preferredAffinityCtx":{}}}},{"instance":{"instanceID":"9674a861-0000-4000-8000-ecdcb9363dd8","requestID":"d4b532ab08a7d4d000-5","function":"12345678901234561234567890123456/0-yr10882-yr-gangschedule/$latest","resources":{"resources":{"CPU":{"name":"CPU","scalar":{"value":300}},"Memory":{"name":"Memory","scalar":{"value":128}}}},"scheduleOption":{"affinity":{"instanceAffinity":{},"resource":{},"instance":{"topologyKey":"agent"}},"extension":{"DELEGATE_DIRECTORY_QUOTA":"512"},"range":{}},"createOptions":{"DELEGATE_DIRECTORY_QUOTA":"512","tenantId":"12345678901234561234567890123456","DATA_AFFINITY_ENABLED":"false","RecoverRetryTimes":"0"},"instanceStatus":{"code":1,"msg":"new instance"},"jobID":"job-b4465ac5","parentID":"0d810043-06a6-4000-8000-00006ac6907d","parentFunctionProxyAID":"siaphisprh00132-LocalSchedInstanceCtrlActor@7.189.31.67:22772","storageType":"s3","scheduleTimes":1,"deployTimes":1,"args":[{"value":"AAAA"},{"value":"AAAAAAAAAAAAAAAAAAAAAAE="}],"gracefulShutdownTime":"-1","tenantID":"12345678901234561234567890123456","groupID":"group-5b9f3eba-404e-48a2-a100-0000000000a3"},"requestID":"d4b532ab08a7d4d000-5","traceID":"job-b4465ac5-trace-X","contexts":{"LabelAffinityScorePlugin":{"preferredAffinityCtx":{}}}},{"instance":{"instanceID":"3d9ca0a9-6100-4000-8000-00a0ad160bce","requestID":"d4b532ab08a7d4d000-6","function":"12345678901234561234567890123456/0-yr10882-yr-gangschedule/$latest","resources":{"resources":{"CPU":{"name":"CPU","scalar":{"value":300}},"Memory":{"name":"Memory","scalar":{"value":128}}}},"scheduleOption":{"affinity":{"instanceAffinity":{},"resource":{},"instance":{"topologyKey":"agent"}},"extension":{"DELEGATE_DIRECTORY_QUOTA":"512"},"range":{}},"createOptions":{"DELEGATE_DIRECTORY_QUOTA":"512","tenantId":"12345678901234561234567890123456","RecoverRetryTimes":"0","DATA_AFFINITY_ENABLED":"false"},"instanceStatus":{"code":1,"msg":"new instance"},"jobID":"job-b4465ac5","parentID":"0d810043-06a6-4000-8000-00006ac6907d","parentFunctionProxyAID":"siaphisprh00132-LocalSchedInstanceCtrlActor@7.189.31.67:22772","storageType":"s3","scheduleTimes":1,"deployTimes":1,"args":[{"value":"AAAA"},{"value":"AAAAAAAAAAAAAAAAAAAAAAE="}],"gracefulShutdownTime":"-1","tenantID":"12345678901234561234567890123456","groupID":"group-5b9f3eba-404e-48a2-a100-0000000000a3"},"requestID":"d4b532ab08a7d4d000-6","traceID":"job-b4465ac5-trace-X","contexts":{"LabelAffinityScorePlugin":{"preferredAffinityCtx":{}}}}],"status":2})";
 
         auto group1 = std::make_shared<messages::GroupInfo>();
         ASSERT_TRUE(TransToGroupInfoFromJson(*group1, value1));
@@ -1213,15 +1207,12 @@ TEST_F(GroupManagerTest, GroupInfoSyncerTest)
         groupKv1.set_key(key2) ;
         groupKv1.set_value(value2);
 
-        litebus::Future<std::shared_ptr<GetResponse>> getResponseFuture;
         std::shared_ptr<GetResponse> rep = std::make_shared<GetResponse>();
         rep->status = Status::OK();
         rep->kvs.emplace_back(groupKv1);
         rep->kvs.emplace_back(groupKv2);
-        getResponseFuture.SetValue(rep);
-        EXPECT_CALL(*mockMetaClient, Get).WillOnce(testing::Return(getResponseFuture));
 
-        auto future = groupMgrActor->GroupInfoSyncer();
+        auto future = groupMgrActor->GroupInfoSyncer(rep);
         ASSERT_AWAIT_READY(future);
         ASSERT_TRUE(future.Get().status.IsOk());
 
@@ -1231,6 +1222,160 @@ TEST_F(GroupManagerTest, GroupInfoSyncerTest)
         // test need to be deleted
         EXPECT_FALSE(groupMgrActor->member_->groupCaches->GetGroupInfo(group3->groupid()).second);
     }
+
+    DEFAULT_STOP_INSTANCE_MANAGER_DRIVER;
+}
+
+TEST_F(GroupManagerTest, OnInstancePutTest)
+{
+    auto mockGlobalScheduler = std::make_shared<MockGlobalSched>();
+    auto groupCaches = std::make_shared<GroupManagerActor::GroupCaches>();
+    auto member = std::make_shared<GroupManagerActor::Member>();
+    member->groupCaches = groupCaches;
+    member->globalScheduler = mockGlobalScheduler;
+    uint16_t port = GetPortEnv("LITEBUS_PORT", 0);
+    EXPECT_CALL(*mockGlobalScheduler, GetLocalAddress)
+        .WillOnce(testing::Return(litebus::Option<std::string>("127.0.0.1:" + std::to_string(port))));
+    YRLOG_INFO("port:{}  instCtrlActor1:{}", std::to_string(port), std::string(instCtrlActor1->GetAID()));
+    auto mockMetaClient = std::make_shared<MockMetaStoreClient>(metaStoreServerHost_);
+    auto groupMgrActor = std::make_shared<GroupManagerActor>(mockMetaClient, mockGlobalScheduler);
+    litebus::Spawn(groupMgrActor);
+    auto masterBusiness = std::make_shared<GroupManagerActor::MasterBusiness>(member, groupMgrActor);
+    auto info = MakeInstanceInfo(INSTANCE_ID_1, GROUP_ID_1, NODE_ID_1, InstanceState::RUNNING);
+    auto instanceKey = INSTANCE_PATH_PREFIX + "/" + INSTANCE_ID_1;
+    masterBusiness->member_->groupCaches->AddGroup(GROUP_KEY_1, MakeGroupInfo(GROUP_ID_1, NODE_ID_1,
+                                                                              GroupState::FAILED, "--"));
+    masterBusiness->member_->groupCaches->AddGroupInstance(info->groupid(), instanceKey, info);
+
+    auto future = masterBusiness->OnInstancePut(instanceKey, info);
+    ASSERT_AWAIT_READY(future);
+    EXPECT_EQ(future.Get().IsOk(), true);
+    litebus::Terminate(groupMgrActor->GetAID());
+    litebus::Await(groupMgrActor->GetAID());
+}
+
+TEST_F(GroupManagerTest, OnChangeTest)
+{
+    auto mockGlobalScheduler = std::make_shared<MockGlobalSched>();
+    auto groupCaches = std::make_shared<GroupManagerActor::GroupCaches>();
+    auto member = std::make_shared<GroupManagerActor::Member>();
+    member->groupCaches = groupCaches;
+    member->globalScheduler = mockGlobalScheduler;
+    uint16_t port = GetPortEnv("LITEBUS_PORT", 0);
+    EXPECT_CALL(*mockGlobalScheduler, GetLocalAddress)
+        .WillOnce(testing::Return(litebus::Option<std::string>("127.0.0.1:" + std::to_string(port))));
+
+    auto mockForwardCustomSignalReceived = std::make_shared<litebus::Promise<internal::ForwardKillRequest>>();
+    EXPECT_CALL(*instCtrlActor1, MockForwardCustomSignalResponse)
+        .WillRepeatedly(testing::Invoke([mockForwardCustomSignalReceived](
+                                            const litebus::AID &from, const std::string &name, const std::string &msg) {
+            internal::ForwardKillRequest fkReq;
+            fkReq.ParseFromString(msg);
+            mockForwardCustomSignalReceived->Set(fkReq);
+            internal::ForwardKillResponse fkRsp;
+            fkRsp.set_requestid(fkReq.requestid());
+            return std::make_pair(true, fkRsp);
+        }));
+    auto mockMetaClient = std::make_shared<MockMetaStoreClient>(metaStoreServerHost_);
+    auto groupMgrActor = std::make_shared<GroupManagerActor>(mockMetaClient, mockGlobalScheduler);
+    litebus::Spawn(groupMgrActor);
+    auto masterBusiness = std::make_shared<GroupManagerActor::MasterBusiness>(member, groupMgrActor);
+    auto info = MakeInstanceInfo(INSTANCE_ID_1, GROUP_ID_1, NODE_ID_1, InstanceState::RUNNING);
+    auto instanceKey = INSTANCE_PATH_PREFIX + "/" + INSTANCE_ID_1;
+    masterBusiness->member_->groupCaches->AddGroup(GROUP_KEY_1, MakeGroupInfo(GROUP_ID_1, NODE_ID_1,
+                                                                              GroupState::FAILED, "--"));
+    masterBusiness->member_->groupCaches->AddGroupInstance(info->groupid(), instanceKey, info);
+
+    masterBusiness->OnChange();
+    ASSERT_AWAIT_READY(mockForwardCustomSignalReceived->GetFuture());
+    litebus::Terminate(groupMgrActor->GetAID());
+    litebus::Await(groupMgrActor->GetAID());
+}
+
+// Checks if the master verifies group instance consistency after switching from slave to master upon instance deletion.
+TEST_F(GroupManagerTest, VerifyGroupInstanceConsistencyAfterSlaveDeletionEvent) {
+    DEFAULT_START_INSTANCE_MANAGER_DRIVER(false);
+
+    auto mockInstanceMgr = std::make_shared<MockInstanceManager>();
+    EXPECT_CALL(*mockInstanceMgr, GetInstanceInfoByInstanceID)
+            .WillRepeatedly(testing::Invoke([](const std::string &instanceID) {
+                auto inst = std::make_shared<InstanceInfo>();
+                inst->mutable_instancestatus()->set_code(static_cast<int32_t>(InstanceState::RUNNING));
+                return std::make_pair("", inst);
+            }));
+    groupMgrActor->BindInstanceManager(mockInstanceMgr);
+
+    uint16_t port = GetPortEnv("LITEBUS_PORT", 0);
+    EXPECT_CALL(*scheduler, GetLocalAddress)
+            .WillRepeatedly(testing::Return(litebus::Option<std::string>("127.0.0.1:" + std::to_string(port))));
+    auto mockForwardCustomSignalReceived = std::make_shared<litebus::Promise<internal::ForwardKillRequest>>();
+    EXPECT_CALL(*instCtrlActor2, MockForwardCustomSignalResponse)
+        .Times(2)
+        .WillRepeatedly(testing::Invoke([mockForwardCustomSignalReceived](
+                const litebus::AID &from, const std::string &name, const std::string &msg) {
+            internal::ForwardKillRequest fkReq;
+            fkReq.ParseFromString(msg);
+            mockForwardCustomSignalReceived->Set(fkReq);
+            return std::make_pair(true, internal::ForwardKillResponse());
+        }));
+
+    PutDefaultGroupsAndInstances();
+    DelInstance(INSTANCE_ID_1);
+
+    litebus::Async(groupMgrActor->GetAID(), &GroupManagerActor::UpdateLeaderInfo,
+                   GetLeaderInfo(groupMgrActor->GetAID()));
+
+    ASSERT_AWAIT_READY(mockForwardCustomSignalReceived->GetFuture());
+    CheckGroupState(GROUP_ID_1, GroupState::FAILED);
+    CheckGroupState(GROUP_ID_2, GroupState::RUNNING);
+
+    DEFAULT_STOP_INSTANCE_MANAGER_DRIVER;
+}
+
+// Validates whether the master ensures group instance consistency after crash recovery,
+// especially for deleted instances.
+TEST_F(GroupManagerTest, VerifyGroupInstanceConsistencyAfterCrashRecovery) {
+    PutDefaultGroupsAndInstances();
+    DelInstance(INSTANCE_ID_1);
+    DEFAULT_START_INSTANCE_MANAGER_DRIVER(false);
+
+    auto mockInstanceMgr = std::make_shared<MockInstanceManager>();
+    EXPECT_CALL(*mockInstanceMgr, GetInstanceInfoByInstanceID)
+            .WillRepeatedly(testing::Invoke([](const std::string &instanceID) {
+                auto inst = std::make_shared<InstanceInfo>();
+                inst->mutable_instancestatus()->set_code(static_cast<int32_t>(InstanceState::RUNNING));
+                return std::make_pair("", inst);
+            }));
+    groupMgrActor->BindInstanceManager(mockInstanceMgr);
+
+    uint16_t port = GetPortEnv("LITEBUS_PORT", 0);
+    EXPECT_CALL(*scheduler, GetLocalAddress)
+            .WillRepeatedly(testing::Return(litebus::Option<std::string>("127.0.0.1:" + std::to_string(port))));
+    auto mockForwardCustomSignalReceived = std::make_shared<litebus::Promise<internal::ForwardKillRequest>>();
+    EXPECT_CALL(*instCtrlActor2, MockForwardCustomSignalResponse)
+            .Times(2)
+            .WillRepeatedly(testing::Invoke([mockForwardCustomSignalReceived](
+                    const litebus::AID &from, const std::string &name, const std::string &msg) {
+                internal::ForwardKillRequest fkReq;
+                fkReq.ParseFromString(msg);
+                mockForwardCustomSignalReceived->Set(fkReq);
+                return std::make_pair(true, internal::ForwardKillResponse());
+            }));
+
+    auto start = std::chrono::steady_clock::now();
+    while (groupMgrActor->member_->groupCaches->GetGroups().size() != 2) {
+        if (std::chrono::steady_clock::now() - start > std::chrono::seconds(5)) {
+            EXPECT_TRUE(false) << "Timeout after 5 seconds";
+        }
+        std::this_thread::yield();
+    }
+
+    litebus::Async(groupMgrActor->GetAID(), &GroupManagerActor::UpdateLeaderInfo,
+                   GetLeaderInfo(groupMgrActor->GetAID()));
+
+    ASSERT_AWAIT_READY(mockForwardCustomSignalReceived->GetFuture());
+    CheckGroupState(GROUP_ID_1, GroupState::FAILED);
+    CheckGroupState(GROUP_ID_2, GroupState::RUNNING);
 
     DEFAULT_STOP_INSTANCE_MANAGER_DRIVER;
 }

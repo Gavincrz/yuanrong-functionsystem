@@ -19,7 +19,7 @@
 #include <gtest/gtest.h>
 #include <utils/os_utils.hpp>
 
-#include "metadata/metadata.h"
+#include "common/metadata/metadata.h"
 namespace functionsystem::test {
 using namespace ::testing;
 
@@ -710,12 +710,42 @@ TEST_F(LoaderTest, GetInstanceMetaFromJson)
         "instanceMetaData": {
             "maxInstance": 20,
             "minInstance": 2,
-            "concurrentNum": 1000
+            "concurrentNum": 1000,
+            "diskLimit": 0,
+            "scalePolicy": "concurrency"
         }
     })";
     FunctionMeta ins_function = GetFuncMetaFromJson(ins_json);
     EXPECT_EQ(ins_function.instanceMetaData.maxInstance, 20);
     EXPECT_EQ(ins_function.instanceMetaData.minInstance, 2);
     EXPECT_EQ(ins_function.instanceMetaData.concurrentNum, 1000);
+    EXPECT_EQ(ins_function.instanceMetaData.scalePolicy, "concurrency");
+}
+
+TEST_F(LoaderTest, GetExtendedMetaDataFromJson)
+{
+    const std::string ins_json = R"({
+        "extendedMetaData": {
+            "initializer": {
+                "initializer_handler": "",
+                "initializer_timeout": 180
+            },
+            "user_agency": {
+                "accessKey": "123",
+                "secretKey": "",
+                "token": "",
+                "securityAk": "",
+                "securitySk": "",
+                "securityToken": ""
+            },
+            "runtime_graceful_shutdown": {
+                "maxShutdownTimeout": 10
+            }
+        }
+    })";
+    FunctionMeta ins_function = GetFuncMetaFromJson(ins_json);
+    EXPECT_EQ(ins_function.extendedMetaData.initializer.timeout, 180);
+    EXPECT_EQ(ins_function.extendedMetaData.userAgency.accessKey, "123");
+    EXPECT_EQ(ins_function.extendedMetaData.customGracefulShutdown.maxShutdownTimeout, 10);
 }
 }

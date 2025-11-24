@@ -21,7 +21,7 @@
 
 #include "async/uuid_generator.hpp"
 #include "common/resource_view/resource_tool.h"
-#include "resource_type.h"
+#include "common/resource_view/resource_type.h"
 
 namespace functionsystem::test::view_utils {
 

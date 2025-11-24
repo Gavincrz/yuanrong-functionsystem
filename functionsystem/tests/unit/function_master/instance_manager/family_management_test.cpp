@@ -19,10 +19,10 @@
 #include "common/constants/signal.h"
 
 #include "common/etcd_service/etcd_service_driver.h"
-#include "metadata/metadata.h"
-#include "resource_type.h"
+#include "common/metadata/metadata.h"
+#include "common/resource_view/resource_type.h"
 #include "common/types/instance_state.h"
-#include "meta_store_kv_operation.h"
+#include "common/utils/meta_store_kv_operation.h"
 #include "function_master/instance_manager/instance_family_caches.h"
 #include "function_master/instance_manager/instance_manager_actor.h"
 #include "function_master/instance_manager/instance_manager_driver.h"
@@ -181,6 +181,28 @@ TEST_F(FamilyManagementTest, GetDescendants)  // NOLINT
     caches.RemoveInstance("D");
     descendantsOfAll = caches.GetAllDescendantsOf("");
     ASSERT_EQ(descendantsOfAll.size(), 6u);
+    EXPECT_TRUE(caches.GetInstance("") == nullptr);
+    EXPECT_TRUE(caches.GetInstance("NotExist") == nullptr);
+    EXPECT_TRUE(caches.GetInstance("C") != nullptr);
 }
 
-};  // namespace functionsystem::instance_manager::test
+TEST_F(FamilyManagementTest, AddAndRemoveDetachedInstance)  // NOLINT
+{
+    InstanceFamilyCaches caches;
+    auto insA = MakeInstanceInfo("A", "", "", "node001", InstanceState::RUNNING);
+    auto insB = MakeInstanceInfo("B", "", "A", "node001", InstanceState::RUNNING);
+    auto insC = MakeInstanceInfo("C", "", "B", "node001", InstanceState::RUNNING);
+    insC->set_detached(true);
+    auto insD = MakeInstanceInfo("D", "", "C", "node001", InstanceState::RUNNING);
+    auto insE = MakeInstanceInfo("E", "", "D", "node001", InstanceState::RUNNING);
+    caches.AddInstance(insA);
+    caches.AddInstance(insB);
+    caches.AddInstance(insC);
+    caches.AddInstance(insD);
+    caches.AddInstance(insE);
+    EXPECT_EQ(caches.GetAllDescendantsOf("A").size(), 1);
+    EXPECT_EQ(caches.GetAllDescendantsOf("C").size(), 2);
+    caches.RemoveInstance("C");
+    EXPECT_EQ(caches.GetAllDescendantsOf("D").size(), 1);
+}
+}  // namespace functionsystem::instance_manager::test
