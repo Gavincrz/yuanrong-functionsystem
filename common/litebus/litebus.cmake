@@ -12,21 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-set(src_dir ${ROOT_DIR}/common/litebus)
-get_filename_component(absolute_src_dir ${src_dir} ABSOLUTE)
-set(src_dir ${absolute_src_dir})
-
-message(STATUS "litebus src dir: ${src_dir}")
-if (NOT EXISTS ${src_dir}/output)
-    if (EXISTS ${src_dir})
-        message(STATUS "begin build litebus on ${src_dir}")
-        execute_process(COMMAND bash build/build.sh -X 1.1.1 -W off -t off WORKING_DIRECTORY ${src_dir})
+message(STATUS "litebus src dir: ${CMAKE_CURRENT_LIST_DIR}")
+if (NOT EXISTS ${CMAKE_CURRENT_LIST_DIR}/output)
+    if (EXISTS ${CMAKE_CURRENT_LIST_DIR})
+        message(STATUS "begin build litebus on ${CMAKE_CURRENT_LIST_DIR}")
+        execute_process(COMMAND bash build/build.sh -X 1.1.1 -W off -t off WORKING_DIRECTORY ${CMAKE_CURRENT_LIST_DIR})
     endif()
 endif()
 
 
-set(litebus_INCLUDE_DIR ${src_dir}/output/include)
-set(litebus_LIB_DIR ${src_dir}/output/lib)
+set(litebus_INCLUDE_DIR ${CMAKE_CURRENT_LIST_DIR}/output/include)
+set(litebus_LIB_DIR ${CMAKE_CURRENT_LIST_DIR}/output/lib)
 set(litebus_LIB ${litebus_LIB_DIR}/liblitebus.so)
 
 include_directories(${litebus_INCLUDE_DIR})

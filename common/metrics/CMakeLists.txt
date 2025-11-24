@@ -53,13 +53,14 @@ include(securec)
 include(openssl)
 include(cjson)
 include(curl)
-# 引入二方件编译的 cmake 文件
-include(${CMAKE_CURRENT_LIST_DIR}/../logs/logs.cmake)
-include(${CMAKE_CURRENT_LIST_DIR}/../litebus/litebus.cmake)
-
 if (LOGS_BUILD_TEST)
     include(gtest_1_12_1)
 endif()
+# 引入二方件编译的 cmake 文件
+include(${CMAKE_CURRENT_LIST_DIR}/../logs/logs.cmake)
+include(${CMAKE_CURRENT_LIST_DIR}/../litebus/litebus.cmake)
+set(litebus_ALL_LIB ${securec_LIB} ${yrlogs_LIB} ${litebus_LIB} pthread)
+
 message(STATUS "Config vendor cmake files done")
 # ---------------------------------------------------------------------------------------
 

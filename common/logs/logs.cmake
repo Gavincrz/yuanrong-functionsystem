@@ -12,22 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-set(src_name yrlogs)
-set(src_dir ${ROOT_DIR}/common/logs)
-get_filename_component(ABSOLUTE_src_dir ${src_dir} ABSOLUTE)
-set(src_dir ${ABSOLUTE_src_dir})
+message(STATUS "logs src dir: ${CMAKE_CURRENT_LIST_DIR}")
 
-message(STATUS "logs src dir: ${src_dir}")
-
-if (NOT EXISTS ${src_dir}/output)
-    if (EXISTS ${src_dir})
+if (NOT EXISTS ${CMAKE_CURRENT_LIST_DIR}/output)
+    if (EXISTS ${CMAKE_CURRENT_LIST_DIR})
         message(STATUS "begin build yrlogs, download opensrc: ${DOWNLOAD_OPENSRC}, thirdparty src dir: ${THIRDPARTY_SRC_DIR}")
-        execute_process(COMMAND bash build.sh -x ${DOWNLOAD_OPENSRC} -T ${THIRDPARTY_SRC_DIR} WORKING_DIRECTORY ${src_dir})
+        execute_process(COMMAND bash build.sh -x ${DOWNLOAD_OPENSRC} -T ${THIRDPARTY_SRC_DIR} WORKING_DIRECTORY ${CMAKE_CURRENT_LIST_DIR})
     endif()
 endif()
 
-set(${src_name}_INCLUDE_DIR ${src_dir}/output/include)
-set(${src_name}_LIB_DIR ${src_dir}/output/lib)
+set(src_name yrlogs)
+set(${src_name}_INCLUDE_DIR ${CMAKE_CURRENT_LIST_DIR}/output/include)
+set(${src_name}_LIB_DIR ${CMAKE_CURRENT_LIST_DIR}/output/lib)
 set(${src_name}_LIB ${${src_name}_LIB_DIR}/libyrlogs.so ${${src_name}_LIB_DIR}/libspdlog.so)
 
 include_directories(${${src_name}_INCLUDE_DIR})
