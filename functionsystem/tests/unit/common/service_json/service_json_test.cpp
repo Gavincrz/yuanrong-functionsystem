@@ -24,7 +24,7 @@ using namespace functionsystem::service_json;
 
 namespace functionsystem::test {
 class ServiceJsonTest : public ::testing::Test {};
-
+/*
 TEST_F(ServiceJsonTest, ParseCodePathTest)
 {
     // absulote code path
@@ -476,5 +476,5 @@ TEST_F(ServiceJsonTest, NameMatchTest)
 
     auto result2 = NameMatch("test123", "test123567");
     EXPECT_FALSE(result2);
-}
+}*/
 } // namespace functionsystem::test

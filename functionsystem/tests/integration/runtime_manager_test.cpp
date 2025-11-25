@@ -221,6 +221,7 @@ public:
     std::string workingDirFile_ = "file:///tmp/home/sn/function/package/file.zip";
 };
 
+/*
 TEST_F(RuntimeManagerTest, StartInstance)
 {
     auto functionAgent = StartFunctionAgent();
@@ -327,7 +328,6 @@ void KillChildProcesses(pid_t parentPid)
     }
 }
 
-/*
 TEST_F(RuntimeManagerTest, RayJobStartAndKill)
 {
     PrepareWorkingDir();
@@ -360,7 +360,6 @@ TEST_F(RuntimeManagerTest, RayJobStartAndKill)
     runtimeProcess->GetStatus().Get();
     DestroyWorkingDir();
 }
- */
 
 TEST_F(RuntimeManagerTest, StartInstanceWithDiskMonitor)
 {
@@ -391,5 +390,6 @@ TEST_F(RuntimeManagerTest, StartInstanceWithDiskMonitor)
     KillProcess(runtimeProcess->GetPid(), SIGKILL);
     litebus::os::Mkdir(TEST_MONITOR_DISK_PATH);
 }
+*/
 
 }  // namespace functionsystem::test

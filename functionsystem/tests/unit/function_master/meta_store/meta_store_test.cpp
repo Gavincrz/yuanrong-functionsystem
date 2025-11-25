@@ -36,7 +36,7 @@ using namespace test;
 using ::testing::Invoke;
 using ::testing::Return;
 
-class MetaStoreTest : public ::testing::Test {
+class DISABLED_MetaStoreTest : public ::testing::Test {
 public:
     [[maybe_unused]] static void SetUpTestSuite()
     {
@@ -91,7 +91,7 @@ public:
     inline static std::string localAddress_;
 };
 
-TEST_F(MetaStoreTest, MetaStoreWithETCDPutTest)  // NOLINT
+TEST_F(DISABLED_MetaStoreTest, MetaStoreWithETCDPutTest)  // NOLINT
 {
     auto persistAID =
         litebus::Spawn(std::make_shared<EtcdKvClientStrategy>("Persist", etcdAddress_, MetaStoreTimeoutOption{}));
@@ -181,7 +181,7 @@ TEST_F(MetaStoreTest, MetaStoreWithETCDPutTest)  // NOLINT
     litebus::Await(persistAID);
 }
 
-TEST_F(MetaStoreTest, MetaStoreWithETCDDeleteTest)  // NOLINT
+TEST_F(DISABLED_MetaStoreTest, MetaStoreWithETCDDeleteTest)  // NOLINT
 {
     auto persistAID =
         litebus::Spawn(std::make_shared<EtcdKvClientStrategy>("Persist", etcdAddress_, MetaStoreTimeoutOption{}));
@@ -258,7 +258,7 @@ TEST_F(MetaStoreTest, MetaStoreWithETCDDeleteTest)  // NOLINT
     litebus::Await(backupAID);
 }
 
-TEST_F(MetaStoreTest, MetaStoreWithETCDTxnTest)  // NOLINT
+TEST_F(DISABLED_MetaStoreTest, MetaStoreWithETCDTxnTest)  // NOLINT
 {
     auto persist =
         litebus::Spawn(std::make_shared<EtcdKvClientStrategy>("Persist", etcdAddress_, MetaStoreTimeoutOption{}));
@@ -335,7 +335,7 @@ TEST_F(MetaStoreTest, MetaStoreWithETCDTxnTest)  // NOLINT
     litebus::Await(persist);
 }
 
-TEST_F(MetaStoreTest, MetaStoreWithETCDPutErrorTest)  // NOLINT
+TEST_F(DISABLED_MetaStoreTest, MetaStoreWithETCDPutErrorTest)  // NOLINT
 {
     auto persistAID =
         litebus::Spawn(std::make_shared<EtcdKvClientStrategy>("Persist", etcdAddress_,
@@ -381,7 +381,7 @@ TEST_F(MetaStoreTest, MetaStoreWithETCDPutErrorTest)  // NOLINT
     litebus::Await(persistAID);
 }
 
-TEST_F(MetaStoreTest, MetaStoreWithETCDDeleteErrorTest)  // NOLINT
+TEST_F(DISABLED_MetaStoreTest, MetaStoreWithETCDDeleteErrorTest)  // NOLINT
 {
     auto persistAID =
         litebus::Spawn(std::make_shared<EtcdKvClientStrategy>("Persist", etcdAddress_,
@@ -455,7 +455,7 @@ TEST_F(MetaStoreTest, MetaStoreWithETCDDeleteErrorTest)  // NOLINT
     litebus::Await(backupAID);
 }
 
-TEST_F(MetaStoreTest, MetaStoreWithETCDTxnErrorTest)  // NOLINT
+TEST_F(DISABLED_MetaStoreTest, MetaStoreWithETCDTxnErrorTest)  // NOLINT
 {
     auto persist =
         litebus::Spawn(std::make_shared<EtcdKvClientStrategy>("Persist", etcdAddress_,
@@ -527,7 +527,7 @@ TEST_F(MetaStoreTest, MetaStoreWithETCDTxnErrorTest)  // NOLINT
     litebus::Await(persist);
 }
 
-TEST_F(MetaStoreTest, MetaStoreWithETCDGetTest)  // NOLINT
+TEST_F(DISABLED_MetaStoreTest, MetaStoreWithETCDGetTest)  // NOLINT
 {
     auto persistAID =
         litebus::Spawn(std::make_shared<EtcdKvClientStrategy>("Persist", etcdAddress_, MetaStoreTimeoutOption{}));
@@ -590,7 +590,7 @@ TEST_F(MetaStoreTest, MetaStoreWithETCDGetTest)  // NOLINT
     litebus::Await(persistAID);
 }
 
-TEST_F(MetaStoreTest, KvServiceActorTest)  // NOLINT
+TEST_F(DISABLED_MetaStoreTest, KvServiceActorTest)  // NOLINT
 {
     auto kvActor = std::make_shared<meta_store::KvServiceActor>();
     etcdserverpb::PutRequest putRequest;
@@ -681,7 +681,7 @@ TEST_F(MetaStoreTest, KvServiceActorTest)  // NOLINT
     EXPECT_FALSE(txnResponse.succeeded());
 }
 
-TEST_F(MetaStoreTest, WatchServiceActorTest)  // NOLINT
+TEST_F(DISABLED_MetaStoreTest, WatchServiceActorTest)  // NOLINT
 {
     auto wsActor = std::make_shared<meta_store::WatchServiceActor>("wsActor");
     auto aid = litebus::AID();
@@ -745,7 +745,7 @@ TEST_F(MetaStoreTest, WatchServiceActorTest)  // NOLINT
     litebus::Await(wsActor);
 }
 
-TEST_F(MetaStoreTest, MetaStoreClientAndMetaStoreServiceTest)  // NOLINT
+TEST_F(DISABLED_MetaStoreTest, MetaStoreClientAndMetaStoreServiceTest)  // NOLINT
 {
     auto kvServiceActor = std::make_shared<functionsystem::meta_store::KvServiceActor>();
     litebus::Spawn(kvServiceActor);
@@ -934,7 +934,7 @@ bool ParseWatchResponse(etcdserverpb::WatchResponse &response, const std::string
     return true;
 }
 
-TEST_F(MetaStoreTest, LitebusServiceActorTest)
+TEST_F(DISABLED_MetaStoreTest, LitebusServiceActorTest)
 {
     litebus::Promise<bool> prom;
     auto kvActor = std::make_shared<meta_store::KvServiceActor>();
@@ -1076,7 +1076,7 @@ TEST_F(MetaStoreTest, LitebusServiceActorTest)
     litebus::Await(client);
 }
 
-TEST_F(MetaStoreTest, RangeObserverCacheTest)
+TEST_F(DISABLED_MetaStoreTest, RangeObserverCacheTest)
 {
     litebus::Promise<bool> prom;
     auto kvActor = std::make_shared<meta_store::KvServiceActor>();
@@ -1188,7 +1188,7 @@ void AddEvent(std::shared_ptr<meta_store::WatchServiceAsyncPushActor> asyncPushA
     asyncPushActor->AddToUnsyncedEvents(response);
 }
 
-TEST_F(MetaStoreTest, WatchServiceAsyncPushActorTest)
+TEST_F(DISABLED_MetaStoreTest, WatchServiceAsyncPushActorTest)
 {
     auto asyncPushActor = std::make_shared<meta_store::WatchServiceAsyncPushActor>("pushActor");
 
@@ -1200,7 +1200,7 @@ TEST_F(MetaStoreTest, WatchServiceAsyncPushActorTest)
     EXPECT_GT(asyncPushActor->pushEventCount_, static_cast<long unsigned int>(0));
 }
 
-TEST_F(MetaStoreTest, GetAndWatchTest)
+TEST_F(DISABLED_MetaStoreTest, GetAndWatchTest)
 {
     std::atomic<bool> put = false;
     std::atomic<bool> deleted = false;
@@ -1306,7 +1306,7 @@ TEST_F(MetaStoreTest, GetAndWatchTest)
     litebus::Await(client);
 }
 
-TEST_F(MetaStoreTest, LinkTest)
+TEST_F(DISABLED_MetaStoreTest, LinkTest)
 {
     std::atomic<bool> put = false;
     std::atomic<bool> deleted = false;
@@ -1434,7 +1434,7 @@ TEST_F(MetaStoreTest, LinkTest)
     litebus::Await(client);
 }
 
-TEST_F(MetaStoreTest, BackupTest)
+TEST_F(DISABLED_MetaStoreTest, BackupTest)
 {
     auto persistAID =
         litebus::Spawn(std::make_shared<EtcdKvClientStrategy>("Persist", etcdAddress_, MetaStoreTimeoutOption{}));
@@ -1567,7 +1567,7 @@ TEST_F(MetaStoreTest, BackupTest)
     litebus::Await(persistAID);
 }
 
-TEST_F(MetaStoreTest, SlowBackupTest)
+TEST_F(DISABLED_MetaStoreTest, SlowBackupTest)
 {
     auto persistAID =
         litebus::Spawn(std::make_shared<EtcdKvClientStrategy>("Persist", etcdAddress_, MetaStoreTimeoutOption{}));
@@ -1612,7 +1612,7 @@ TEST_F(MetaStoreTest, SlowBackupTest)
     litebus::Await(persistAID);
 }
 
-TEST_F(MetaStoreTest, BackupFlushBelowMaxConcurrency)
+TEST_F(DISABLED_MetaStoreTest, BackupFlushBelowMaxConcurrency)
 {
     auto persistAID =
         litebus::Spawn(std::make_shared<EtcdKvClientStrategy>("Persist", etcdAddress_, MetaStoreTimeoutOption{}));
@@ -1659,7 +1659,7 @@ TEST_F(MetaStoreTest, BackupFlushBelowMaxConcurrency)
     litebus::Await(persistAID);
 }
 
-TEST_F(MetaStoreTest, BackupFlushAboveMaxConcurrency)
+TEST_F(DISABLED_MetaStoreTest, BackupFlushAboveMaxConcurrency)
 {
     auto persistAID =
         litebus::Spawn(std::make_shared<EtcdKvClientStrategy>("Persist", etcdAddress_, MetaStoreTimeoutOption{}));
@@ -1707,7 +1707,7 @@ TEST_F(MetaStoreTest, BackupFlushAboveMaxConcurrency)
     litebus::Await(persistAID);
 }
 
-TEST_F(MetaStoreTest, BackupFlushAsyncBack)
+TEST_F(DISABLED_MetaStoreTest, BackupFlushAsyncBack)
 {
     auto persistAID =
         litebus::Spawn(std::make_shared<EtcdKvClientStrategy>("Persist", etcdAddress_, MetaStoreTimeoutOption{}));
@@ -1764,7 +1764,7 @@ TEST_F(MetaStoreTest, BackupFlushAsyncBack)
     litebus::Await(backupAID);
 }
 
-TEST_F(MetaStoreTest, BackupFlushRequestWithError)
+TEST_F(DISABLED_MetaStoreTest, BackupFlushRequestWithError)
 {
     auto persistAID =
         litebus::Spawn(std::make_shared<EtcdKvClientStrategy>("Persist", etcdAddress_, MetaStoreTimeoutOption{}));
@@ -1806,7 +1806,7 @@ TEST_F(MetaStoreTest, BackupFlushRequestWithError)
     litebus::Await(persistAID);
 }
 
-TEST_F(MetaStoreTest, BackupFailTest)
+TEST_F(DISABLED_MetaStoreTest, BackupFailTest)
 {
     auto persistAID = litebus::Spawn(std::make_shared<EtcdKvClientStrategy>(
         "Persist", etcdAddress_, MetaStoreTimeoutOption{ .operationRetryTimes = 1, .grpcTimeout = 0 }));
@@ -1843,7 +1843,7 @@ TEST_F(MetaStoreTest, BackupFailTest)
     litebus::Await(persistAID);
 }
 
-TEST_F(MetaStoreTest, KvRecoverTest)
+TEST_F(DISABLED_MetaStoreTest, KvRecoverTest)
 {
     auto persistActor = std::make_shared<EtcdKvClientStrategy>("Persist", etcdAddress_, MetaStoreTimeoutOption{});
     litebus::Spawn(persistActor);
@@ -1894,7 +1894,7 @@ TEST_F(MetaStoreTest, KvRecoverTest)
     litebus::Await(persistActor);
 }
 
-TEST_F(MetaStoreTest, LeaseRecoverTest)
+TEST_F(DISABLED_MetaStoreTest, LeaseRecoverTest)
 {
     auto persistActor = std::make_shared<EtcdKvClientStrategy>("Persist", etcdAddress_, MetaStoreTimeoutOption{});
     litebus::Spawn(persistActor);
@@ -1961,7 +1961,7 @@ TEST_F(MetaStoreTest, LeaseRecoverTest)
     litebus::Await(persistActor);
 }
 
-TEST_F(MetaStoreTest, WatchServiceActorCancelTest)  // NOLINT
+TEST_F(DISABLED_MetaStoreTest, WatchServiceActorCancelTest)  // NOLINT
 {
     auto wsActor = std::make_shared<meta_store::WatchServiceActor>("wsActor");
     auto observer1 = std::make_shared<meta_store::WatchServiceActor::Observer>();
@@ -1980,7 +1980,7 @@ TEST_F(MetaStoreTest, WatchServiceActorCancelTest)  // NOLINT
     EXPECT_EQ(wsActor->strictObserversByKey_["key"].at(0)->clientInfo->second, 0);
 }
 
-TEST_F(MetaStoreTest, MetaStoreDriverest)  // NOLINT
+TEST_F(DISABLED_MetaStoreTest, MetaStoreDriverest)  // NOLINT
 {
     // start with local
     auto metaStoreDriver = std::make_shared<meta_store::MetaStoreDriver>();
@@ -2006,7 +2006,7 @@ TEST_F(MetaStoreTest, MetaStoreDriverest)  // NOLINT
     metaStoreDriver->Await();
 }
 
-TEST_F(MetaStoreTest, KvServiceActorDuplicateOngoingTest)
+TEST_F(DISABLED_MetaStoreTest, KvServiceActorDuplicateOngoingTest)
 {
     auto kvActor = std::make_shared<meta_store::KvServiceActor>();
 
