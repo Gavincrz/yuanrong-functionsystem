@@ -1,8 +1,9 @@
 # Copyright (c) 2025 Huawei Technologies Co., Ltd
-import json
 import os
+import json
 import utils
 import tasks
+import compile
 
 log = utils.stream_logger()
 
@@ -21,7 +22,7 @@ def run_build(root_dir, cmd_args):
     compile_logs(args)
     compile_litebus(args)
     compile_metrics(args)
-    compile_functionsystem(args)
+    compile_functionsystem(root_dir, args)
 
 
 def compile_vendor(args):
@@ -71,13 +72,10 @@ def compile_metrics(args):
     )
 
 
-def compile_functionsystem(args):
+def compile_functionsystem(root_dir, args):
     cwd = os.path.join(args['root_dir'], "functionsystem")
     log.info("Start to compile functionsystem")
-    utils.sync_command(
-        ["bash", "build.sh", "-r", "-j", str(args['job_num']), "-v", args['version']],
-        cwd=cwd
-    )
+    compile.compile_binary(root_dir, args["job_num"], args["version"])
     utils.sync_command(
         ["bash", "build.sh", "-y", "-j", str(args['job_num']), "-v", args['version']],
         cwd=cwd

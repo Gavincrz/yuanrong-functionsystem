@@ -20,6 +20,7 @@ def sync_command(cmd: list[str], cwd: str = None):
         cmd,
         cwd=cwd,
         text=True,
+        check=True
     )
 
 

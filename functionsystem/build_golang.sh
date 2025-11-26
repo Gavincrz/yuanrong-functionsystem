@@ -35,6 +35,7 @@ MODE='-buildmode=pie'
 function build_linux() {
     CC='gcc -fstack-protector-strong -D_FORTIFY_SOURCE=2 -O2' go build -buildmode=pie -ldflags "${FLAGS}"  -o \
     build/_output/bin/${CLI_NAME} ../../cmd/cli/main.go
+    ls -l build/_output/bin/${CLI_NAME}
 }
 
 function build_windows() {

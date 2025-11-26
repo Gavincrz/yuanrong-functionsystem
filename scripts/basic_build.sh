@@ -21,7 +21,7 @@ BASE_DIR=$(
 )
 YR_ROOT_DIR="${BASE_DIR}/../"
 YUANRONG_DIR="${YR_ROOT_DIR}/output/function_system"
-BUILD_DIR="$YR_ROOT_DIR"/build
+BUILD_DIR="$YR_ROOT_DIR"/functionsystem/build
 
 [[ ! -f "${YR_ROOT_DIR}/tools/utils.sh" ]] && echo "${YR_ROOT_DIR}/tools/utils.sh is not exist" && exit 1
 . ${YR_ROOT_DIR}/tools/utils.sh
@@ -60,16 +60,6 @@ function build_etcd()
     go mod tidy
     cd "$BUILD_DIR"/etcd/
     bash build.sh
-
-    # clean and create output dir
-    [[ -d "${YUANRONG_DIR}"/third_party ]] && rm -rf "${YUANRONG_DIR}"/third_party
-    mkdir -p "${YUANRONG_DIR}"/third_party/etcd
-    cp "$BUILD_DIR"/etcd/bin/etcd "${YUANRONG_DIR}"/third_party/etcd
-    cp "$BUILD_DIR"/etcd/bin/etcdctl "${YUANRONG_DIR}"/third_party/etcd
-    cp "${BASE_DIR}"/deploy/third_party/health_check.sh "${YUANRONG_DIR}"/third_party/
-    cp "${BASE_DIR}"/deploy/third_party/install.sh "${YUANRONG_DIR}"/third_party/
-    cp "${BASE_DIR}"/deploy/third_party/utils.sh "${YUANRONG_DIR}"/third_party/
-    find "${YUANRONG_DIR}"/third_party/ -type f -exec  chmod 550 {} \;
 
     log_info  "---- build etcd success ----"
 }

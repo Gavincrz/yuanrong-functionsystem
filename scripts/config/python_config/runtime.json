@@ -1,7 +1,0 @@
-{
-  "maxRequestBodySize": "6",
-  "maxFdNum": 1024,
-  "dataSystemConnectionTimeout": "1",
-  "maxLogSize": 40,
-  "maxLogFileNum": 20
-}

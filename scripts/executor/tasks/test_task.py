@@ -39,9 +39,12 @@ def run_test(root_dir, cmd_args):
     if args['action'] in ["all", "exec"]:
         # 执行测试用例
         log.info(f"Step(2/3, action = [exec]): Exec test case with args: {json.dumps(args)}")
-        tasks.run_code_gate(args["it_bin"], args["ut_bin"], args["test_suite"], args["test_case"],
+        exit_code = tasks.run_code_gate(args["it_bin"], args["ut_bin"], args["test_suite"], args["test_case"],
                             exec_timeout=args['exec_timeout'], retry_times=args['retry_times'],
                             job_num=args['job_num'], print_logs=args['print_logs'])
+        if exit_code != 0:
+            log.error(f"Run the test case and exit the code with a non-zero value of {exit_code}. Program termination")
+            exit(exit_code)
     else:
         log.info(f"Step(2/3, action = [exec]): Skip to exec test case")
 

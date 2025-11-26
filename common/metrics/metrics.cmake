@@ -31,7 +31,6 @@ set(metrics_sdk_LIB ${metrics_LIB_DIR}/libobservability-metrics-sdk.so)
 set(metrics_file_exporter_LIB ${metrics_LIB_DIR}/libobservability-metrics-file-exporter.so)
 set(metrics_exporter_ostream_LIB ${metrics_LIB_DIR}/libobservability-metrics-exporter-ostream.so)
 set(metrics_prometheus_push_exporter_LIB ${metrics_LIB_DIR}/libobservability-prometheus-push-exporter.so)
-set(metrics_aom_alarm_exporter_LIB ${metrics_LIB_DIR}/libobservability-aom-alarm-exporter.so)
 
 include_directories(${metrics_INCLUDE_DIR})
 
@@ -42,6 +41,5 @@ install(FILES
     ${metrics_sdk_LIB}
     ${metrics_file_exporter_LIB}
     ${metrics_exporter_ostream_LIB}
-    ${metrics_aom_alarm_exporter_LIB}
     ${metrics_prometheus_push_exporter_LIB}
     DESTINATION lib)

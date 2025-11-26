@@ -13,8 +13,8 @@ def compile_gtest(root_dir, job_num):
     compile_functionsystem(root_dir, job_num, build_type="Debug", gtest=True)
 
 
-def compile_binary(root_dir, job_num):
-    compile_functionsystem(root_dir, job_num, build_type="Release")
+def compile_binary(root_dir, job_num, version):
+    compile_functionsystem(root_dir, job_num, build_type="Release", version=version)
 
 
 def compile_functionsystem(root_dir, job_num, version="0.0.0", build_type="Debug",
