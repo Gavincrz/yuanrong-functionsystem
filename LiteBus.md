@@ -113,6 +113,7 @@ TCP epoll 读事件
   - 独占线程：`SingleThread` 中 `condition_variable` 阻塞等待消息，适合重计算 actor。
   - IO 线程：`recvEvloop`/`sendEvloop`/`UDP`/`HTTP` 等均自带独立线程与 epoll 循环，与 actor 线程池解耦。
 
+
 ## function_proxy 示例：LiteBus 初始化 → ServerLoop → Handler 调用链
 ### 1. 初始化阶段（拉起 LiteBus 与核心 actor）
 - **业务入口**：`function_proxy` 的 `OnCreate` 首先调用 `ModuleSwitcher::InitLiteBus`，拼装 `tcp://{address}` 并传入线程数，内部转到 `litebus::Initialize` 完成 LiteBus 全局初始化。【F:functionsystem/src/function_proxy/main.cpp†L420-L466】【F:functionsystem/src/common/utils/module_switcher.cpp†L46-L56】
@@ -155,5 +156,6 @@ EPOLLIN(client fd) → TCPMgr::ReadCallBack → RecvMsg → ConnectionUtil::Recv
       → ActorThread::Run → ActorBase::Run → HandlekMsg → proxy::Actor 业务 handler
 ```
 
+=======
 ## 总结
 LiteBus 以 Actor 模型为核心，通过 `Spawn` 将业务逻辑挂入线程池或独占线程；`ActorMgr` 将本地队列与协议 `IOMgr` 粘合，提供统一的消息分发。网络层使用 epoll + sendmsg/recvmsg（可选 SSL）承载 TCP/HTTP/UDP，HTTP/HTTPS 通过动态生成的 pipeline actor 保证连接内顺序与背压，整个链路自初始化到 Finalize 形成一条清晰的控制与数据流。
