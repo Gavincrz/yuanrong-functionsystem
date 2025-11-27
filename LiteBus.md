@@ -113,5 +113,49 @@ TCP epoll 读事件
   - 独占线程：`SingleThread` 中 `condition_variable` 阻塞等待消息，适合重计算 actor。
   - IO 线程：`recvEvloop`/`sendEvloop`/`UDP`/`HTTP` 等均自带独立线程与 epoll 循环，与 actor 线程池解耦。
 
+
+## function_proxy 示例：LiteBus 初始化 → ServerLoop → Handler 调用链
+### 1. 初始化阶段（拉起 LiteBus 与核心 actor）
+- **业务入口**：`function_proxy` 的 `OnCreate` 首先调用 `ModuleSwitcher::InitLiteBus`，拼装 `tcp://{address}` 并传入线程数，内部转到 `litebus::Initialize` 完成 LiteBus 全局初始化。【F:functionsystem/src/function_proxy/main.cpp†L420-L466】【F:functionsystem/src/common/utils/module_switcher.cpp†L46-L56】
+- **LiteBus 初始化**：`litebus::Initialize` 调用 `InitializeImp`，依次执行：
+  1. 忽略 `SIGPIPE` 与 SSL 初始化；
+  2. `SetThreadCount` 启动 actor 线程池；
+  3. 通过 `StartServer` 依据 URL 协议创建并注册对应 `IOMgr`；
+  4. 注册消息回调 `ActorMgr::Receive`，并 `StartIOServer` 绑定监听；
+  5. `Spawn(SysMgrActor)` 提供系统计时服务。【F:common/litebus/src/litebus.cpp†L132-L275】
+- **业务 actor 拉起**：LiteBus 就绪后，`BusproxyStartup::Run` 先 `Spawn(RequestRouter)`、`Spawn(proxy::Actor)`（负责转发/注册），并写入注册中心。【F:functionsystem/src/function_proxy/busproxy/startup/busproxy_startup.cpp†L81-L118】
+
+**初始化调用链（示例）**
+```
+main → OnCreate → ModuleSwitcher::InitLiteBus
+  → litebus::Initialize → InitializeImp
+      → SetThreadCount（创建 ActorThread 池）
+      → StartServer(tcp://address, ..., ActorMgr::Receive)
+          → SetServerIo(TCPMgr)
+          → TCPMgr::Init → 创建 recvEvloop/sendEvloop
+          → TCPMgr::StartIOServer（listen + epoll 注册）
+      → Spawn(SysMgrActor)
+  → BusproxyStartup::Run → Spawn(RequestRouter) & Spawn(proxy::Actor)
+```
+
+### 2. ServerLoop：网络监听与收包
+- `StartIOServer` 监听地址，随后在 `recvEvloop` 上注册 `OnAccept` 作为 server fd 的 EPOLLIN 回调。【F:common/litebus/src/tcp/tcpmgr.cpp†L340-L379】
+- `OnAccept` 接收新连接、创建 `Connection`，设置 `event/read/write` 回调并调用 `AddNewConnEventHandler` 将客户端 fd 加入 epoll 读事件；连接信息记录到 `LinkMgr`。【F:common/litebus/src/tcp/tcpmgr.cpp†L149-L194】
+- 客户端 fd 上出现 EPOLLIN 时，`TCPMgr::ReadCallBack` 进入循环调用 `RecvMsg`，根据当前解析模式选择 `RecvKMsg` 或 HTTP 回调。【F:common/litebus/src/tcp/tcpmgr.cpp†L381-L453】
+- `ConnectionUtil::RecvKMsg` 完成魔数/长度校验与反序列化，解析后的 `MessageBase` 通过注册的 `tcpMsgHandler` 回调到 `ActorMgr::Receive`。【F:common/litebus/src/tcp/tcpmgr.cpp†L418-L453】【F:common/litebus/src/litebus.cpp†L132-L183】
+
+### 3. Handler：消息入队与业务处理
+- `ActorMgr::Receive` 依据 `to` 选择本地/远程，KMSG 直接 `actor->EnqueMessage`，并在共享线程时调用 `SetActorReady` 唤醒。【F:common/litebus/src/actor/actormgr.cpp†L142-L209】
+- `ActorThread::Run`/`SingleThread` 从队列取出 `MessageBase`，`ActorBase::Run` 根据 `type` 跳转到 `HandlekMsg`，再按 `msg->Name()` 查表执行业务 handler（如 `proxy::Actor` 中的转发逻辑）。【F:common/litebus/src/actor/actor.hpp†L106-L170】【F:common/litebus/src/actor/actor.cpp†L38-L121】
+
+**收包到 handler 调用链（function_proxy 场景）**
+```
+EPOLLIN(server) → OnAccept → AddNewConnEventHandler
+EPOLLIN(client fd) → TCPMgr::ReadCallBack → RecvMsg → ConnectionUtil::RecvKMsg
+  → tcpMsgHandler(ActorMgr::Receive) → Actor::EnqueMessage/SetActorReady
+      → ActorThread::Run → ActorBase::Run → HandlekMsg → proxy::Actor 业务 handler
+```
+
+=======
 ## 总结
 LiteBus 以 Actor 模型为核心，通过 `Spawn` 将业务逻辑挂入线程池或独占线程；`ActorMgr` 将本地队列与协议 `IOMgr` 粘合，提供统一的消息分发。网络层使用 epoll + sendmsg/recvmsg（可选 SSL）承载 TCP/HTTP/UDP，HTTP/HTTPS 通过动态生成的 pipeline actor 保证连接内顺序与背压，整个链路自初始化到 Finalize 形成一条清晰的控制与数据流。
